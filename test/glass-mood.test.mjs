@@ -951,41 +951,30 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 //#endregion
 
 {
-  // Interaction feedback, straight from the immersive-material spec: a point light
-  // that follows the pointer (`lightEffect`) and a press that deforms the control
-  // (`interactive`). The light is a child of the panel, moved with a transform so the
-  // follow costs a composited move rather than a gradient repaint.
+  // Interaction feedback: a press that deforms the control, from the immersive
+  // material spec (`interactive`). The pointer light that briefly lived here was
+  // removed — the person using it called it meaningless, and a feature nobody wants
+  // should not keep three elements and a pointer listener alive.
   const m = mount()
-  const lights = m.document.querySelectorAll('[data-glass-light]')
-  assert.equal(lights.length, 3, 'each panel carries a point light')
-  assert.equal(lights[0].parent, m.shell.left, 'and it lives inside the panel it lights')
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
+  assert.ok(!/data-glass-light/.test(css), 'the pointer light is gone from the CSS')
+  assert.equal(m.document.querySelectorAll('[data-glass-light]').length, 0, 'and from the DOM')
+  assert.match(css, /@keyframes gm-press\{from\{scale:1\}to\{scale:\.972\}\}/, 'the press animation is declared')
+  assert.match(css, /body\[data-glass-press=on\] button:active/, 'and gated on the switch')
+  assert.match(css, /body\[data-glass-press=on\] \[role=menuitem\]:active\{animation:gm-press/, 'for genuinely pressable controls')
+  // It scales rather than transforms, so an app transform is never clobbered.
+  assert.ok(!/button:active\{[^}]*transform:/.test(css), 'the press does not touch transform')
+  assert.match(css, /prefers-reduced-motion[^}]*button:active[^}]*animation:none/, 'and reduced motion cancels it')
 
-  // Move the pointer inside the left column: it is 260 wide at x=0, so (120, 300)
-  // is 120/300 into the panel, and the light travels there.
-  m.document.emit('pointermove', { target: m.shell.leftSurface, clientX: 120, clientY: 300 })
-  assert.equal(lights[0].style.getPropertyValue('--gm-light-x'), '120px', 'the light follows the pointer in x')
-  assert.equal(lights[0].style.getPropertyValue('--gm-light-y'), '300px', 'and in y')
-  // Three panels: only the one under the pointer moved.
-  assert.equal(lights[1].style.getPropertyValue('--gm-light-x'), '', 'the other panels stay put')
-
-  // A pointer outside every panel is ignored.
-  m.document.emit('pointermove', { target: m.document.body, clientX: 10, clientY: 10 })
-  assert.equal(lights[0].style.getPropertyValue('--gm-light-x'), '120px', 'and nothing follows the pointer over the frame')
-
-  // The switch gates it, live: no movement, and the CSS holds the light hidden.
-  m.engine.setPanels({ interaction: false })
-  assert.equal(m.document.body.dataset.glassInteraction, 'off', 'the switch reaches the body')
-  m.document.emit('pointermove', { target: m.shell.leftSurface, clientX: 200, clientY: 200 })
-  assert.equal(lights[0].style.getPropertyValue('--gm-light-x'), '120px', 'and the light stops following')
-  m.engine.setPanels({ interaction: true })
-  m.document.emit('pointermove', { target: m.shell.leftSurface, clientX: 200, clientY: 200 })
-  assert.equal(lights[0].style.getPropertyValue('--gm-light-x'), '200px', 'and follows again when switched back on')
-
-  // Teardown: the listener goes and the lights leave with the panels.
+  // The switch is live and reaches the body.
+  assert.equal(m.document.body.dataset.glassPress, 'on', 'press deformation is on by default')
+  m.engine.setPanels({ press: false })
+  assert.equal(m.document.body.dataset.glassPress, 'off', 'and the switch reaches the body')
+  m.engine.setPanels({ press: true })
+  assert.equal(m.document.body.dataset.glassPress, 'on', 'and back on')
   m.engine.off()
-  const afterOff = m.document.querySelectorAll('[data-glass-light]').length
-  assert.equal(afterOff, 0, 'off() clears the lights too')
-  console.log('ok  the point light follows the pointer, and the switch gates it')
+  assert.equal(m.document.body.dataset.glassPress, undefined, 'off() clears the attribute')
+  console.log('ok  press deformation, with no pointer light left behind')
 }
 
 //#region panels
@@ -1543,10 +1532,10 @@ function findNodes(node, predicate, found = []) {
   const toggles = findNodes(panelsTree, (node) => node.type === 'input' && node.props.type === 'checkbox')
   const panelText = findNodes(panelsTree, (node) => typeof node === 'string').join(' ')
   assert.equal(panelRanges.length, 13, 'three panels x 不透明度/模糊/高光 plus 4 geometry knobs')
-  assert.equal(toggles.length, 3, '边缘折射 / 内容取色 / 交互光效: three switches, all live')
+  assert.equal(toggles.length, 3, '边缘折射 / 内容取色 / 按压形变: three switches, all live')
   assert.equal(toggles[0].props.checked, true, 'refraction is on by default')
   assert.equal(toggles[1].props.checked, true, 'and so is the content tint')
-  assert.equal(toggles[2].props.checked, true, 'and so is the interaction feedback')
+  assert.equal(toggles[2].props.checked, true, 'and so is the press deformation')
   assert.match(panelText, /左侧边栏/, 'the left column is labelled')
   assert.match(panelText, /主打|主界面/, 'the centre column is labelled')
   assert.match(panelText, /均已识别|未识别到面板/, 'the row reports which columns were found')

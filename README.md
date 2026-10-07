@@ -179,8 +179,8 @@
 | 高透材质 + **依据背景自动保证可读** | 鸿蒙 `colorInvert` | 本主题用“背景亮度感知的暗化层 + 不透明内容表面”实现同一目的；浏览器无法逐字反色 |
 | 赋色层必须带透明度 | 鸿蒙 `materialColor` | 所有洗色/镜边都是 rgba，没有不透明色块 |
 | 自带阴影（优先于通用阴影） | 鸿蒙 `applyShadow` | 面板自有接触投影，不依赖应用的 shadow |
-| 交互时发光 / 触点流光跟随 | 鸿蒙 `lightEffect`、Apple | **已实现**：指针在哪里，面板上就有一团光跟到哪里（只在悬停时出现） |
-| 按压弹性形变 | 鸿蒙 `interactive` | **已实现**：按下时控件缩到 0.972，松手自动恢复 |
+| 交互时发光 / 触点流光跟随 | 鸿蒙 `lightEffect`、Apple | **试过后移除**（v1.16 实现，v1.17 按反馈删掉）：它确实是规范里的行为，但实际看起来没有意义 |
+| 按压弹性形变 | 鸿蒙 `interactive` | **已实现且保留**：按下时控件缩到 0.972，松手自动恢复 |
 | Reduced Motion / Transparency / Contrast | Apple HIG | 仅 Reduced Motion；另两项**待补** |
 
 参考：[Apple — Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/liquid-glass)、[Apple HIG — Materials](https://developer.apple.com/design/human-interface-guidelines/materials)、[WWDC25 — Meet Liquid Glass](https://developer.apple.com/videos/play/wwdc2025/219/)、[鸿蒙 — 沉浸光感开发指导](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkts-immersive-light-sense-development)。
@@ -194,14 +194,20 @@
 - **节流**：每 4 秒采一帧（`SAMPLE_INTERVAL_MS`），远低于 1.5 秒的状态轮询；抽帧是一个 24×14 的离屏 canvas，跟整屏采样不是一个量级。
 - 诊断：`__dshGlassMood.media()` 返回 `{ ready, brightness, hue, saturation, dim }`。
 
-### 交互反馈：点光跟随与按压形变
+### 交互反馈：只保留按压形变
 
-这两条在两套规范里都有明文（鸿蒙材质的 `lightEffect` 与 `interactive`，苹果的"交互时从内部发光"），所以它们在这里，而我自创的那条光带不在这里：
+鸿蒙材质有两条交互反馈：`lightEffect`（触点流光跟随）和 `interactive`（按压形变）。我两条都实现了，
+但**光斑跟随被你判为“没什么意义”，所以它已经整体删除**（v1.17）—— 不是默认关闭，而是不再占用三个
+元素和每次指针移动的监听。一个没人要的功能不该留在代码里。
 
-- **点光跟随**：每个面板里有一个固定尺寸的光斑（`--gm-light-size` 420px 的圆），**只在鼠标悬停于该面板时**出现，并跟着指针移动。实现上用 **`transform` 移动**（而不是每次重绘渐变），并且**每帧只写一次**（rAF 合并）—— 否则一个全面板的辐射渐变每次移动都要重绘。它是面板的子元素，所以自然被面板的 `overflow: hidden` 与圆角裁切；灰度与冷暖跟着情绪走（`--gm-light-color`）。
-- **按压形变**：按下时控件缩到 0.972，松手自动恢复。它用 **`scale` 而不是 `transform`**，因此不会覆盖应用自己的 `transform` 动画；生效范围仅限于真正可点的控件（`button` / `[role=button|tab|menuitem]`），不碰面板与布局。
-- **一个开关管两件事**：面板行的「交互光效」。
-- **`prefers-reduced-motion`**：光斑取消过渡（仍跟随，但不滑），按压形变完全取消 —— 苹果 HIG 明文要求响应这个设置。
+**按压形变保留**，并且有两个刻意的选择：
+
+- **用 `scale` 而不是 `transform`**：这样**不会覆盖应用自己的 `transform` 动画**。（我上一次把 `backdrop-filter` 直接放在面板上时踩过同一类坑：抢了别人的属性）。
+- **只作用于真正可点的控件**（`button` / `[role=button|tab|menuitem]`），不碰面板与布局。
+- **开关**：面板行的「**按压形变**」，勾掉立即生效。
+- **`prefers-reduced-motion`**：完全取消形变 —— 苹果 HIG 明文要求响应这个设置。
+
+以后如果想把光斑要回来，它完整存在 tag `v1.16.0` 里（`git show v1.16.0:client.js`）。
 
 ### 为什么取色得放在面板上，而不是镜边上
 
@@ -411,7 +417,6 @@ node test/glass-mood.test.mjs
 - **面板默认值**：`PANEL_DEFAULTS`（三个面板的 `opacity`（`-1` = 跟随调色板）/`blur`/`sheen`，以及 `gap`/`frameRadius`/`panelRadius`/`divider`/`refraction`）。
 - **表面探测的边界**：`SURFACE_MAX_NODES`(48) / `SURFACE_MAX_DEPTH`(5) / `SURFACE_MIN_COVERAGE`(0.85) / `SURFACE_MIN_ALPHA`(0.04)。若某根列没被委托（`panelStatus().surfaces` 为假）而你想让它委托，先放宽 `SURFACE_MIN_COVERAGE`。
 - **可见度下视频的最低强度**：`VISIBILITY_MIN_CLIP`（默认 0.35）。
-- **点光尺寸与强度**：`--gm-light-size`（420px）与 `--gm-light-color`（按情绪与配色方案发布）。
 - **取色强度与可见度**：`SPILL_MIX`(0.45) / `SPILL_SATURATION`(0.34) / `SPILL_MAX_LIGHTNESS`(0.86)。嫌太淡就调大 `SPILL_SATURATION`；担心字不够清楚就调小 `SPILL_MIX`。
 - **外壳选择器**：`PANEL_SELECTOR`（左 `_sidebarCol`、主 `_centerCol`、右 `data-rightbar-col`）。官方若改类名，改这一处即可，样式侧不用动。
 - **镜边与折射**：`panelRim()`（高光渐变的三个色标 + 环境遮蔽 + 分隔线）、`REFRACTION_SVG`（`baseFrequency` / `scale` 决定折射的纹理与强度）。
