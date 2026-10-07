@@ -645,6 +645,9 @@ window.__ModuleLoader__.load({
 			   and the column steps aside — otherwise the two layers stack and the knob
 			   only moves the invisible one. */
 			"body[data-glass-panels] [data-glass-panel][data-glass-delegate=on]{background-color:transparent}",
+			/* A painter that cannot see the wallpaper gives up its own paint so the
+			   column's material (and its frost) is what shows. */
+			"body[data-glass-panels] [data-glass-hollow]{background-color:transparent;background-image:none}",
 			"body[data-glass-panels] [data-glass-surface]{position:relative;z-index:0}",
 			"body[data-glass-panels] [data-glass-surface=left]{--gm-panel-blur:var(--gm-panel-left-blur);background-color:var(--gm-panel-left-fill)}",
 			"body[data-glass-panels] [data-glass-surface=main]{--gm-panel-blur:var(--gm-panel-main-blur);background-color:var(--gm-panel-main-fill)}",
@@ -858,13 +861,24 @@ window.__ModuleLoader__.load({
 		 * @returns the surface element, or null when the column itself is the surface.
 		 */
 		function findSurface(win, column) {
+			var all = paintersIn(win, column);
+			return all.length === 0 ? null : all[all.length - 1];
+		}
+
+		/**
+		 * Every element in a column that spans it and paints, shallowest first.
+		 * @param win - the window (supplies getComputedStyle).
+		 * @param column - the column element.
+		 * @returns the painters, or an empty array.
+		 */
+		function paintersIn(win, column) {
 			if (win === undefined || win === null || typeof win.getComputedStyle !== "function") return null;
 			if (column === undefined || column === null || typeof column.getBoundingClientRect !== "function") return null;
 			var box = column.getBoundingClientRect();
 			if (!(box.width > 0) || !(box.height > 0)) return null;
 			var queue = [{ node: column, depth: 0 }];
 			var visited = 0;
-			var found = null;
+			var found = [];
 			while (queue.length > 0 && visited < SURFACE_MAX_NODES) {
 				var entry = queue.shift();
 				visited += 1;
@@ -887,7 +901,7 @@ window.__ModuleLoader__.load({
 					if (!paints && typeof style.backgroundImage === "string" && style.backgroundImage !== "none" && style.backgroundImage !== "") paints = true;
 					// Keep walking: the deepest painter is the one whose children are the
 					// panel's content, so it is where the material belongs.
-					if (paints) found = child;
+					if (paints) found.push(child);
 				}
 			}
 			return found;
@@ -1453,7 +1467,7 @@ window.__ModuleLoader__.load({
 				}
 				var stray = [
 					"[data-glass-panel]", "[data-glass-surface]", "[data-glass-frost]",
-					"[data-glass-delegate]", "[data-glass-frame]", "[data-glass-checker]"
+					"[data-glass-delegate]", "[data-glass-hollow]", "[data-glass-frame]", "[data-glass-checker]"
 				];
 				for (var i = 0; i < stray.length; i++) {
 					var nodes = doc.querySelectorAll(stray[i]);
@@ -1488,6 +1502,10 @@ window.__ModuleLoader__.load({
 			var panelNodes = { left: null, main: null, right: null };
 			/** The element that actually paints each panel, when it is not the column. */
 			var panelSurfaces = { left: null, main: null, right: null };
+			/** Painters hollowed so the column's own material shows instead. */
+			var panelHollow = { left: null, main: null, right: null };
+			/** Why a panel had to keep its material on the column. */
+			var panelDiag = { left: [], main: [], right: [] };
 			var refractionMounted = false;
 			var retagTimer = 0;
 			var disposed = false;
@@ -1858,8 +1876,12 @@ window.__ModuleLoader__.load({
 						fillAlpha: fill === "" ? null : effectiveAlpha(fill),
 						/** Whether the frost rule is even eligible (the no-blur escape hatch). */
 						blurGate: doc.body.dataset.glassBlur ?? "off",
-						/** An ancestor here is why the blur has nothing to blur. */
+						/** Live traits of whatever hosts the material now. */
 						backdropRoots: backdropRoots(node),
+						/** Why the probe chose this host (empty when nothing interfered). */
+						probeReason: panelDiag[key],
+						/** Painters hollowed so the column's material is the one that shows. */
+						hollowed: panelHollow[key] === null ? 0 : panelHollow[key].length,
 						blurVariable: style !== null && style !== undefined && typeof style.getPropertyValue === "function" ? String(style.getPropertyValue("--gm-panel-blur") ?? "") : "",
 						backdrop: style === null || style === undefined ? "" : String(style.backdropFilter ?? ""),
 						pseudoBackdrop: pseudo === null || pseudo === undefined ? "" : String(pseudo.backdropFilter ?? ""),
@@ -2307,7 +2329,26 @@ window.__ModuleLoader__.load({
 						column.setAttribute("data-glass-delegate", "on");
 						continue;
 					}
-					var next = findSurface(win, column);
+					var painters = paintersIn(win, column);
+					var next = painters.length === 0 ? null : painters[painters.length - 1];
+					// Hand the material to the column and hollow the painters instead, when the
+					// painter cannot see past itself.
+					var rooted = next === null ? [] : backdropRoots(next);
+					if (rooted.length > 0) {
+						if (panelHollow[key] !== null) {
+							for (var h = 0; h < panelHollow[key].length; h++) panelHollow[key][h].removeAttribute("data-glass-hollow");
+						}
+						panelHollow[key] = painters;
+						for (var hp = 0; hp < painters.length; hp++) painters[hp].setAttribute("data-glass-hollow", "");
+						panelDiag[key] = rooted;
+						next = null;
+					} else {
+						if (panelHollow[key] !== null) {
+							for (var hc = 0; hc < panelHollow[key].length; hc++) panelHollow[key][hc].removeAttribute("data-glass-hollow");
+						}
+						panelHollow[key] = null;
+						panelDiag[key] = [];
+					}
 					if (panelSurfaces[key] !== null && panelSurfaces[key] !== next) {
 						panelSurfaces[key].removeAttribute("data-glass-surface");
 					}
@@ -2628,7 +2669,11 @@ window.__ModuleLoader__.load({
 					for (var sf = 0; sf < surfaces.length; sf++) surfaces[sf].removeAttribute("data-glass-surface");
 					panelNodes = { left: null, main: null, right: null };
 					panelSurfaces = { left: null, main: null, right: null };
+					panelHollow = { left: null, main: null, right: null };
+					panelDiag = { left: [], main: [], right: [] };
 					for (var df = 0; df < tagged.length; df++) tagged[df].removeAttribute("data-glass-delegate");
+					var hollowed = doc.querySelectorAll("[data-glass-hollow]");
+					for (var hl = 0; hl < hollowed.length; hl++) hollowed[hl].removeAttribute("data-glass-hollow");
 					var frosted = doc.querySelectorAll("[data-glass-frost]");
 					for (var fr = 0; fr < frosted.length; fr++) frosted[fr].removeAttribute("data-glass-frost");
 					var frameNode = doc.querySelector("[data-glass-frame]");
@@ -2721,6 +2766,31 @@ window.__ModuleLoader__.load({
 				off: shutdown,
 				/** Clear anything a stray mount left in the DOM, without unmounting. */
 				sweep: sweepOrphans,
+				/**
+				 * One line per panel explaining how the blur is hosted, for a person who
+				 * cannot open a console.
+				 * @returns a short human-readable summary.
+				 */
+				blurSummary: function () {
+					var lines = [];
+					for (var i = 0; i < PANEL_KEYS.length; i++) {
+						var key = PANEL_KEYS[i];
+						var label = key === "left" ? "\u5de6\u4fa7\u680f" : (key === "main" ? "\u4e3b\u9762\u677f" : "\u53f3\u4fa7\u680f");
+						var node = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : panelNodes[key];
+						if (node === null || node === undefined) {
+							lines.push(label + "\uff1a\u672a\u8bc6\u522b");
+							continue;
+						}
+						var fill = doc.body.style.getPropertyValue("--gm-panel-" + key + "-fill");
+						var alpha = fill === "" ? "?" : String(effectiveAlpha(fill));
+						var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? "\u5185\u5c42\u5143\u7d20" : "\u5217\u81ea\u8eab";
+						var reason = panelDiag[key].length === 0
+							? "\u80cc\u666f\u53ef\u89c1"
+							: "\u5185\u5c42\u662f\u80cc\u666f\u6839\uff08" + panelDiag[key][0] + "\uff09\u2192 \u5df2\u6539\u6302\u5230\u5217\u4e0a\u5e76\u6316\u7a7a\u5185\u5c42";
+						lines.push(label + "\uff1a\u6750\u8d28\u5728" + host + "\uff0c\u9762\u677f alpha " + alpha + "\uff0c" + reason);
+					}
+					return lines;
+				},
 				/** The two accessibility preferences this theme answers. */
 				preferences: function () {
 					return { reducedTransparency: prefers.reducedTransparency, moreContrast: prefers.moreContrast };
@@ -3017,7 +3087,11 @@ window.__ModuleLoader__.load({
 				return h("div", { className: "gm-row" },
 					h("div", null,
 						h("div", { className: "gm-row-title" }, "玻璃主题 · 面板与光感"),
-						h("div", { className: "gm-row-hint" }, hint)
+						h("div", { className: "gm-row-hint" }, hint),
+						// The blur can fail in a way no computed value reveals (an element
+						// under `contain: paint` cannot see the wallpaper), so the row says
+						// out loud where the material ended up and why. No console needed.
+						h("div", { className: "gm-row-hint" }, "模糊挂载：" + engine.blurSummary().join("；"))
 					),
 					panelLine("left"),
 					panelLine("main"),
@@ -3119,6 +3193,7 @@ window.__ModuleLoader__.load({
 exports.WALL_PROTECT = WALL_PROTECT;
 		exports.raiseAlpha = raiseAlpha;
 		exports.boostContrast = boostContrast;
+		exports.paintersIn = paintersIn;
 		exports.solidifySurfaces = solidifySurfaces;
 		exports.LABEL_TIERS = LABEL_TIERS;
 		exports.biasTowardHue = biasTowardHue;

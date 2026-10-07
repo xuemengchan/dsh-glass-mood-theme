@@ -1182,16 +1182,30 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(report.main.delegated, false, 'which differs per panel')
   assert.equal(typeof report.left.fillAlpha, 'number', 'the pane alpha is reported, since an opaque pane hides any blur')
 
-  // The one failure a computed value cannot show: an ancestor that forms a backdrop
-  // root leaves the frost with nothing to blur. The report has to name it.
-  m.shell.leftSurface.computed = { contain: 'paint', opacity: '0.98' }
-  const rooted = m.engine.blurReport().left.backdropRoots
-  assert.ok(Array.isArray(rooted), 'the report lists backdrop-root ancestors')
+  // The one failure a computed value cannot show: a painter that forms a backdrop
+  // root cannot see the wallpaper, so its frost would report blur(20px) and blur
+  // nothing. The material has to move to the column, and the painter has to give up
+  // its own paint so the column's material is what shows.
+  m.shell.leftSurface.computed = { backgroundColor: 'rgba(255, 255, 255, 0.52)', contain: 'paint', opacity: '0.98' }
+  m.engine.retag(true)
+  const fixed = m.engine.blurReport().left
+  assert.equal(fixed.delegated, false, 'a painter that cannot see the wallpaper is not handed the material')
   assert.ok(
-    rooted.some((entry) => entry.includes('contain=paint')) && rooted.some((entry) => entry.includes('opacity=0.98')),
-    `and names the property responsible (${JSON.stringify(rooted)})`
+    fixed.probeReason.some((entry) => entry.includes('contain=paint')),
+    `and the reason is recorded (${JSON.stringify(fixed.probeReason)})`
   )
-  assert.equal(m.engine.blurReport().main.backdropRoots.length, 0, 'while a clean panel reports none')
+  assert.equal(fixed.hollowed, 1, 'the painter is hollowed so the column material shows')
+  assert.equal(m.shell.leftSurface.getAttribute('data-glass-hollow'), '', 'the surface gives up its paint')
+  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, 'and the column keeps the material')
+  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', 'while still being a panel')
+  assert.equal(m.engine.blurReport().main.backdropRoots.length, 0, 'a clean panel reports no backdrop root')
+
+  // Put the layout back: the delegation returns and the hollow is withdrawn.
+  m.shell.leftSurface.computed = { backgroundColor: 'rgba(255, 255, 255, 0.52)' }
+  m.engine.retag(true)
+  assert.equal(m.engine.blurReport().left.delegated, true, 'a clean painter is delegated to again')
+  assert.equal(m.shell.leftSurface.getAttribute('data-glass-hollow'), undefined, 'with the hollow withdrawn')
+  assert.equal(m.engine.blurReport().left.probeReason.length, 0, 'and nothing left to explain')
   m.dispose()
   console.log('ok  stage sits inside the shell + blur diagnostics')
 }
