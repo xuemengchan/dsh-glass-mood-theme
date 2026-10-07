@@ -861,8 +861,11 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
     (after[2] - after[0]) <= (before[2] - before[0]) - 5,
     `and warms for real, not by drifting into violet (${before[2] - before[0]} -> ${after[2] - after[0]})`
   )
-  // The pane fill itself is untouched: the readability floors were measured against it.
-  assert.match(bodyVar(m, '--gm-panel-main-fill'), /^rgba\(255, 255, 255, /, 'the pane keeps the palette fill untouched')
+  // The pane itself takes the content's colour — a hue rotation alone could not show
+  // on a pane that is within a couple of percent of neutral, so the tint aims at the
+  // content's hue at a usable saturation and steps a light pane down to make room.
+  const paneWarm = rgbOf(bodyVar(m, '--gm-panel-main-fill'))
+  assert.ok(paneWarm[0] > paneWarm[2], `the pane takes on the warm content (${bodyVar(m, '--gm-panel-main-fill')})`)
 
   // Both switches turn their own effect off, live, without touching the reading.
   m.engine.setWallpaper({ autoDim: false })
@@ -871,7 +874,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.engine.setWallpaper({ autoDim: true })
   assert.ok(Number(bodyVar(m, '--gm-media-dim')) > 0, 'and back on again')
   m.engine.setPanels({ rimSpill: false })
-  assert.equal(bodyVar(m, '--gm-rim-b'), plainRim, 'the spill switch restores the authored rim')
+  assert.equal(bodyVar(m, '--gm-rim-b'), plainRim, 'the content-tint switch restores the authored rim')
+  assert.match(bodyVar(m, '--gm-panel-main-fill'), /^rgba\(255, 255, 255, /, 'and the authored pane')
   m.engine.setPanels({ rimSpill: true })
   assert.notEqual(bodyVar(m, '--gm-rim-b'), plainRim, 'and back on again')
 
@@ -1499,6 +1503,34 @@ function findNodes(node, predicate, found = []) {
   assert.deepEqual(panelValues.slice(0, 3), ['0.52', '0px', '1.00'], 'the left panel prints its effective alpha / blur / highlight')
   assert.deepEqual(panelValues.slice(9), ['8px', '0px', '20px', '0.35'], 'the geometry knobs print their units')
 
+  // The bottom inset is the frame's padding, not each panel's margin. A column with
+  // an explicit `height: 100%` resolves it against the grid area, so its own bottom
+  // margin is added on top and it lands flush with the window — which is exactly why
+  // the centre panel had no bottom gap while the two side ones did.
+  const topology = createDocument()
+  const topologyShell = mountShellColumns(topology)
+  const live2 = loadBundle(topology, null, undefined)
+  const engine2 = live2.loaded.createEngine({
+    document: topology,
+    window: live2.window,
+    theme: { overrideTokens: () => () => {} },
+    ctx: { get: () => undefined, on: () => () => {} },
+    now: () => 1000,
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
+    localStorage: null,
+    indexedDB: null,
+    URL: null
+  })
+  engine2.start()
+  const topologyCss = topology.getElementById('dsh-glass-mood-style').textContent
+  assert.match(topologyCss, /\[data-glass-panel\]\{position:relative;z-index:0;margin:var\(--gm-gap\) calc\(var\(--gm-gap\) \/ 2\) 0;/, 'the panels carry no bottom margin')
+  assert.match(topologyCss, /\[data-glass-frame\]\{border-radius:var\(--gm-frame-radius\);padding-bottom:var\(--gm-gap\)\}/, 'the frame owns the bottom inset')
+  assert.equal(topologyShell.left.getAttribute('data-glass-panel'), 'left', 'and the panels are still tagged')
+  engine2.off()
+
   // Drive one per-panel knob and one global knob through the real engine.
   panelRanges[0].props.onChange({ target: { value: '0.5' } })
   assert.equal(live.panels().left.opacity, 0.5, 'the first knob writes the left panel opacity')
@@ -1620,6 +1652,19 @@ function findNodes(node, predicate, found = []) {
       const base = over(parse(pair['--dsw-alias-bg-base'][mode]), backdrop)
       const layer1 = over(parse(pair['--dsw-alias-bg-layer-1'][mode]), base)
       const layer2 = over(parse(pair['--dsw-alias-bg-layer-2'][mode]), base)
+
+      // The content tint moves the pane toward the footage's hue. It must never eat
+      // the contrast the label tiers were measured against, so it is checked at its
+      // strongest: a fully saturated reading, at the maximum mix.
+      const strong = { ready: true, hue: 29, brightness: 0.9, saturation: 1 }
+      const panels = { left: { opacity: -1 }, main: { opacity: -1 }, right: { opacity: -1 } }
+      const tintedStr = mount().loaded.panelFill('main', mode, panels, 0, false, mood, strong)
+      const tinted = over(parse(tintedStr), backdrop)
+      const primaryOnTinted = contrast(parse(pair['--dsw-alias-label-primary'][mode]), tinted)
+      assert.ok(
+        primaryOnTinted >= 7,
+        `${mood}/${mode}: primary text on a tinted pane ${primaryOnTinted.toFixed(2)} must reach 7`
+      )
       const worst = (name) => Math.min(
         contrast(parse(pair[name][mode]), layer1),
         contrast(parse(pair[name][mode]), layer2)

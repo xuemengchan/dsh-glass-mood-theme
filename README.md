@@ -350,6 +350,7 @@ node test/glass-mood.test.mjs
 - **面板默认值**：`PANEL_DEFAULTS`（三个面板的 `opacity`（`-1` = 跟随调色板）/`blur`/`sheen`，以及 `gap`/`frameRadius`/`panelRadius`/`divider`/`refraction`）。
 - **表面探测的边界**：`SURFACE_MAX_NODES`(48) / `SURFACE_MAX_DEPTH`(5) / `SURFACE_MIN_COVERAGE`(0.85) / `SURFACE_MIN_ALPHA`(0.04)。若某根列没被委托（`panelStatus().surfaces` 为假）而你想让它委托，先放宽 `SURFACE_MIN_COVERAGE`。
 - **可见度下视频的最低强度**：`VISIBILITY_MIN_CLIP`（默认 0.35）。
+- **取色强度与可见度**：`SPILL_MIX`(0.45) / `SPILL_SATURATION`(0.34) / `SPILL_MAX_LIGHTNESS`(0.86)。嫌太淡就调大 `SPILL_SATURATION`；担心字不够清楚就调小 `SPILL_MIX`。
 - **外壳选择器**：`PANEL_SELECTOR`（左 `_sidebarCol`、主 `_centerCol`、右 `data-rightbar-col`）。官方若改类名，改这一处即可，样式侧不用动。
 - **镜边与折射**：`panelRim()`（高光渐变的三个色标 + 环境遮蔽 + 分隔线）、`REFRACTION_SVG`（`baseFrequency` / `scale` 决定折射的纹理与强度）。
 - **染色在满清晰度下保留多少**：`TINT_THROUGH_CLARITY`（默认 0.3）。

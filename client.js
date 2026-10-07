@@ -158,7 +158,11 @@ window.__ModuleLoader__.load({
 		/** That layer never exceeds Apple's 35%, and never darkens dark footage. */
 		var DIM_MAX = 0.35;
 		/** How far the content's own hue pulls the glass toward it (0 = never). */
-		var SPILL_MIX = 0.16;
+		var SPILL_MIX = 0.45;
+		/** The saturation the tint aims for: enough chroma to read as colour. */
+		var SPILL_SATURATION = 0.34;
+		/** Light panes step down to here so their tint has room; dark panes do not move. */
+		var SPILL_MAX_LIGHTNESS = 0.86;
 		/** Below this saturation the footage is effectively grey: no hue to spill. */
 		var SPILL_MIN_SATURATION = 0.08;
 		/**
@@ -630,7 +634,7 @@ window.__ModuleLoader__.load({
 			   on exactly one surface per arrangement: with a gap, each column is its own
 			   card inset by the gutter; without one, the panels are square and the
 			   frame's own radius clips them into a single continuous sheet. */
-			"body[data-glass-panels] [data-glass-panel]{position:relative;z-index:0;margin:var(--gm-gap) calc(var(--gm-gap) / 2);border-radius:var(--gm-radius);overflow:hidden;box-shadow:var(--gm-panel-shadow,none)}",
+			"body[data-glass-panels] [data-glass-panel]{position:relative;z-index:0;margin:var(--gm-gap) calc(var(--gm-gap) / 2) 0;border-radius:var(--gm-radius);overflow:hidden;box-shadow:var(--gm-panel-shadow,none)}",
 			/* A fullscreen right panel is an overlay, not a column: leave it alone. */
 			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=right]{margin:0;overflow:visible;border-radius:0}",
 			/* The column IS the surface: its layout wrapper must not paint a second
@@ -665,7 +669,7 @@ window.__ModuleLoader__.load({
 			/* A collapsed right column leaves the centre as the last surface. */
 			"body[data-glass-panels] [data-glass-frame][data-rightbar-collapsed] [data-glass-panel=main]{margin-right:var(--gm-gap)}",
 			/* The outer sheet: transparent gutter, radius, and the single clipping contour. */
-			"body[data-glass-panels] [data-glass-frame]{border-radius:var(--gm-frame-radius)}",
+			"body[data-glass-panels] [data-glass-frame]{border-radius:var(--gm-frame-radius);padding-bottom:var(--gm-gap)}",
 			/* Only the flush arrangement needs the frame to cut; a gap must not clip the
 			   app's own floating controls (the sidebar reopen control is one). */
 			"body[data-glass-panels][data-glass-gap=off] [data-glass-frame]{overflow:hidden}",
@@ -928,9 +932,11 @@ window.__ModuleLoader__.load({
 		 * @param clarity - the wallpaper clarity, 0..1.
 		 * @param wallpaperOn - whether a clip is configured.
 		 * @param mood - the mood whose palette supplies the base colour.
+		 * @param sample - the last media reading, whose hue tints the pane when the
+		 * content-tinting switch is on. Nothing is tinted without it.
 		 * @returns a CSS color.
 		 */
-		function panelFill(key, scheme, panels, clarity, wallpaperOn, mood) {
+		function panelFill(key, scheme, panels, clarity, wallpaperOn, mood, sample) {
 			var token = PANEL_BASE_TOKEN[key];
 			var value = pairFor(mood === "work" ? "work" : "idle")[token][scheme];
 			var match = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$/.exec(value);
@@ -950,7 +956,18 @@ window.__ModuleLoader__.load({
 				}
 				if (wallpaperOn && rate > 0) alpha = Math.max(floor, alpha * (1 - rate * clarity));
 			}
-			return "rgba(" + match[1] + ", " + match[2] + ", " + match[3] + ", " + Math.round(alpha * 1000) / 1000 + ")";
+			// The content's own hue reaches the pane, never the footage: the clip keeps
+			// its colours and the glass takes on a hint of them. Nothing is tinted when
+			// the switch is off, because `sample` is then null.
+			var reading = sample === undefined || sample === null ? null : sample;
+			var tinted = tintTowardHue(
+				Number(match[1]),
+				Number(match[2]),
+				Number(match[3]),
+				reading !== null && reading.ready ? reading.hue : null,
+				SPILL_MIX
+			);
+			return "rgba(" + tinted[0] + ", " + tinted[1] + ", " + tinted[2] + ", " + Math.round(alpha * 1000) / 1000 + ")";
 		}
 
 		/**
@@ -1004,6 +1021,36 @@ window.__ModuleLoader__.load({
 			// A neutral stop carries no hue to move, and a tint would only dirty it.
 			if (saturation < 0.02) return [r, g, b];
 			var target = hslToRgb(((hue % 360) + 360) % 360, saturation, lightness);
+			var k = Math.min(1, mix);
+			return [
+				Math.round(r + (target[0] - r) * k),
+				Math.round(g + (target[1] - g) * k),
+				Math.round(b + (target[2] - b) * k)
+			];
+		}
+
+		/**
+		 * Tint a surface toward the content's hue, visibly.
+		 *
+		 * A hue rotation is not enough on its own: the panes are within a couple of
+		 * percent of neutral, so rotating their hue moves nothing. The target is the
+		 * content's hue at `SPILL_SATURATION`, at the surface's own lightness capped by
+		 * `SPILL_MAX_LIGHTNESS` (a light pane needs to step down before it can hold any
+		 * chroma), and the blend is a straight RGB lerp so it passes through neutral
+		 * rather than through magenta.
+		 * @param r - 0..255.
+		 * @param g - 0..255.
+		 * @param b - 0..255.
+		 * @param hue - target hue in degrees, or null to leave the colour alone.
+		 * @param mix - 0..1 share of the way to travel.
+		 * @returns [r, g, b].
+		 */
+		function tintTowardHue(r, g, b, hue, mix) {
+			if (hue === null || hue === undefined || !(mix > 0)) return [r, g, b];
+			var max = Math.max(r, g, b);
+			var min = Math.min(r, g, b);
+			var lightness = (max + min) / 510;
+			var target = hslToRgb(((hue % 360) + 360) % 360, SPILL_SATURATION, Math.min(lightness, SPILL_MAX_LIGHTNESS));
 			var k = Math.min(1, mix);
 			return [
 				Math.round(r + (target[0] - r) * k),
@@ -2158,12 +2205,14 @@ window.__ModuleLoader__.load({
 				// as a lens rather than as extra blur (the knob used to look like a
 				// blur switch, which is exactly what it must not be).
 				style.setProperty("--gm-blur-scale", panels.refraction ? "0.86" : "1");
+				// One switch for content-derived colour: it drives both the pane and the rim.
+				var spillSample = panels.rimSpill === true ? mediaSample : null;
 				for (var i = 0; i < PANEL_KEYS.length; i++) {
 					var key = PANEL_KEYS[i];
 					var panel = panels[key];
 					style.setProperty("--gm-panel-" + key + "-blur", panel.blur + "px");
 					style.setProperty("--gm-panel-" + key + "-sheen", String(panel.sheen));
-					var fill = panelFill(key, scheme, panels, wallpaper.clarity, wallpaperOn, moodNow);
+					var fill = panelFill(key, scheme, panels, wallpaper.clarity, wallpaperOn, moodNow, spillSample);
 					style.setProperty("--gm-panel-" + key + "-fill", fill);
 					// The effective alpha is what the row prints, so the slider always
 					// shows the truth even while it is following the palette.
@@ -2177,7 +2226,7 @@ window.__ModuleLoader__.load({
 						"0 10px 28px -14px rgba(" + (scheme === "dark" ? "0,0,0" : "84,94,124") + "," + contact + ")"
 					);
 				}
-				var rim = panelRim(moodNow, scheme, panels.rimSpill === true ? mediaSample : null);
+				var rim = panelRim(moodNow, scheme, spillSample);
 				style.setProperty("--gm-rim-a", rim.a);
 				style.setProperty("--gm-rim-b", rim.b);
 				style.setProperty("--gm-rim-c", rim.c);
@@ -2775,7 +2824,7 @@ window.__ModuleLoader__.load({
 					),
 					h("div", { className: "gm-fields" },
 						toggle("边缘折射", config.refraction, function (value) { setConfig(engine.setPanels({ refraction: value })) }),
-						toggle("镜边取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) })
+						toggle("内容取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) })
 					)
 				);
 			};
@@ -2863,6 +2912,7 @@ window.__ModuleLoader__.load({
 exports.WALL_PROTECT = WALL_PROTECT;
 		exports.raiseAlpha = raiseAlpha;
 		exports.biasTowardHue = biasTowardHue;
+		exports.tintTowardHue = tintTowardHue;
 		exports.hslToRgb = hslToRgb;
 		exports.biasColorString = biasColorString;
 		exports.brightnessOf = brightnessOf;
@@ -2871,6 +2921,8 @@ exports.WALL_PROTECT = WALL_PROTECT;
 		exports.DIM_KNEE = DIM_KNEE;
 		exports.DIM_MAX = DIM_MAX;
 		exports.SPILL_MIX = SPILL_MIX;
+		exports.SPILL_SATURATION = SPILL_SATURATION;
+		exports.SPILL_MAX_LIGHTNESS = SPILL_MAX_LIGHTNESS;
 		exports.SPILL_MIN_BRIGHTNESS = SPILL_MIN_BRIGHTNESS;
 		exports.PANEL_DEFAULTS = PANEL_DEFAULTS;
 		exports.PANEL_KEYS = PANEL_KEYS;
