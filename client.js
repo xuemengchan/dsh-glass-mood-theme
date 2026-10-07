@@ -120,7 +120,8 @@ window.__ModuleLoader__.load({
 			panelRadius: 20,
 			divider: 0.35,
 			refraction: true,
-			rimSpill: true
+			rimSpill: true,
+			interaction: true
 		};
 		/**
 		 * Surface probe bounds. A column's visible surface is not always the column:
@@ -585,6 +586,10 @@ window.__ModuleLoader__.load({
 			/* ---- lift the app frame: a plain stacking context, never a filter ---- */
 			"#root{position:relative;z-index:1}",
 			/* ---- mood design variables (structure, not color) ---- */
+			"body[data-glass-mood]{--gm-light-color:rgba(255,255,255,.16);--gm-light-size:420px}",
+			"body[data-glass-mood=work]{--gm-light-color:rgba(214,236,255,.18)}",
+			"body[data-ds-dark-theme][data-glass-mood]{--gm-light-color:rgba(255,255,255,.10)}",
+			"body[data-ds-dark-theme][data-glass-mood=work]{--gm-light-color:rgba(170,214,255,.12)}",
 			"body[data-glass-mood]{--gm-fade:900ms;--gm-blur:26px;--gm-sat:118%;--gm-frost:rgba(255,255,255,.10);--gm-rim-strong:rgba(255,255,255,.46);--gm-rim-soft:rgba(255,255,255,.16);--gm-halo:rgba(86,96,140,.10);--gm-tint:0.3;--gm-sheen-mood:0.92;--gm-refract:none}",
 			"body[data-glass-mood=work]{--gm-fade:260ms;--gm-blur:13px;--gm-sat:128%;--gm-frost:rgba(214,234,255,.10);--gm-rim-strong:rgba(255,255,255,.55);--gm-rim-soft:rgba(150,200,255,.18);--gm-halo:rgba(24,72,132,.16);--gm-sheen-mood:1.08}",
 			"body[data-ds-dark-theme][data-glass-mood]{--gm-frost:rgba(255,255,255,.07);--gm-rim-strong:rgba(255,255,255,.26);--gm-rim-soft:rgba(255,255,255,.10);--gm-halo:rgba(0,0,0,.30)}",
@@ -688,6 +693,23 @@ window.__ModuleLoader__.load({
 			/* The divider lives on that overlay, so it draws over the sidebar surface. */
 			"body[data-glass-panels][data-glass-gap=off] [data-glass-panel=left]::after{box-shadow:inset -1px 0 0 0 var(--gm-divider),inset 0 1px 0 var(--gm-rim-a),inset 0 -28px 56px -34px var(--gm-rim-ao)}",
 			"body[data-glass-panels][data-glass-gap=off] [data-glass-panel=right]::after{box-shadow:inset 1px 0 0 0 var(--gm-divider),inset 0 1px 0 var(--gm-rim-a),inset 0 -28px 56px -34px var(--gm-rim-ao)}",
+			/* Interaction feedback: a point light that follows the pointer, and a press
+			   that deforms the control. Both come from the immersive-material spec
+			   (`lightEffect` / `interactive`), and both are off with one switch. */
+			"body[data-glass-panels] [data-glass-light]{position:absolute;left:calc(var(--gm-light-size,420px) / -2);top:calc(var(--gm-light-size,420px) / -2);" +
+				"width:var(--gm-light-size,420px);height:var(--gm-light-size,420px);border-radius:50%;pointer-events:none;z-index:2;opacity:0;" +
+				"background:radial-gradient(circle closest-side,var(--gm-light-color,rgba(255,255,255,.16)),transparent 72%);" +
+				"transform:translate3d(var(--gm-light-x,0px),var(--gm-light-y,0px),0);" +
+				"transition:opacity 260ms ease-out,transform 90ms linear;will-change:transform,opacity}",
+			"body[data-glass-panels][data-glass-interaction=on] [data-glass-panel]:hover [data-glass-light]{opacity:1}",
+			"@media (prefers-reduced-motion: reduce){body[data-glass-panels] [data-glass-light]{transition:none}}",
+			"@keyframes gm-press{from{scale:1}to{scale:.972}}",
+			"body[data-glass-interaction=on] button:active,body[data-glass-interaction=on] [role=button]:active," +
+				"body[data-glass-interaction=on] [role=tab]:active,body[data-glass-interaction=on] [role=menuitem]:active{" +
+				"animation:gm-press 160ms cubic-bezier(.2,.8,.2,1) forwards}",
+			"@media (prefers-reduced-motion: reduce){body[data-glass-interaction=on] button:active," +
+				"body[data-glass-interaction=on] [role=button]:active,body[data-glass-interaction=on] [role=tab]:active," +
+				"body[data-glass-interaction=on] [role=menuitem]:active{animation:none}}",
 			/* ---- the wallpaper settings row: consumes official alias tokens only ---- */
 			".gm-row{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:12px;background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.08));box-shadow:inset 0 0 0 1px var(--dsw-alias-settings-card-stroke,rgba(127,127,127,.2));color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}",
 			".gm-row-title{font-size:14px;font-weight:500}",
@@ -912,7 +934,8 @@ window.__ModuleLoader__.load({
 				panelRadius: Math.round(clampNumber(source.panelRadius, 0, 32, PANEL_DEFAULTS.panelRadius)),
 				divider: clampNumber(source.divider, 0, 1, PANEL_DEFAULTS.divider),
 				refraction: source.refraction === undefined ? PANEL_DEFAULTS.refraction : source.refraction === true,
-				rimSpill: source.rimSpill === undefined ? PANEL_DEFAULTS.rimSpill : source.rimSpill === true
+				rimSpill: source.rimSpill === undefined ? PANEL_DEFAULTS.rimSpill : source.rimSpill === true,
+				interaction: source.interaction === undefined ? PANEL_DEFAULTS.interaction : source.interaction === true
 			};
 		}
 
@@ -1185,6 +1208,9 @@ window.__ModuleLoader__.load({
 			 */
 			var mediaSample = { ready: false, brightness: 0.5, hue: null, saturation: 0, dim: 0, sampledAt: 0 };
 			var sampleCanvas = null;
+			var lightFrame = 0;
+			var lightsBound = false;
+			var lightMove = null;
 
 			/** @returns the first clip that actually has a frame to read. */
 			function activeVideo() {
@@ -1294,6 +1320,80 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * Mount one point light per panel. It is a child of the panel, so the
+			 * panel's own `overflow: hidden` and radius clip it, and it is moved with a
+			 * transform rather than by re-painting a gradient.
+			 */
+			function mountLights() {
+				for (var i = 0; i < PANEL_KEYS.length; i++) {
+					var column = panelNodes[PANEL_KEYS[i]];
+					if (column === null || column === undefined) continue;
+					if (typeof column.querySelector === "function" && column.querySelector("[data-glass-light]") !== null) continue;
+					var light = doc.createElement("div");
+					light.setAttribute("data-glass-light", "");
+					light.setAttribute("aria-hidden", "true");
+					column.appendChild(light);
+				}
+			}
+
+			/** @returns the panel a node belongs to, or null. */
+			function panelOf(node) {
+				var walk = node;
+				while (walk !== null && walk !== undefined) {
+					if (typeof walk.getAttribute === "function" && walk.getAttribute("data-glass-panel") !== null && walk.getAttribute("data-glass-panel") !== undefined) return walk;
+					walk = walk.parentElement !== undefined ? walk.parentElement : walk.parent;
+				}
+				return null;
+			}
+
+			/**
+			 * Move a panel's light to the pointer. Position is written once per frame at
+			 * most: a radial gradient repaints on every change, so batching matters.
+			 * @param panel - the panel element.
+			 * @param x - pointer x in viewport coordinates.
+			 * @param y - pointer y in viewport coordinates.
+			 */
+			function aimLight(panel, x, y) {
+				if (panels.interaction !== true) return;
+				if (typeof panel.querySelector !== "function") return;
+				var light = panel.querySelector("[data-glass-light]");
+				if (light === null || light === undefined || typeof light.style === "undefined") return;
+				var box = typeof panel.getBoundingClientRect === "function" ? panel.getBoundingClientRect() : null;
+				if (box === null || box === undefined) return;
+				var localX = Math.round(x - box.left);
+				var localY = Math.round(y - box.top);
+				var write = function () {
+					light.style.setProperty("--gm-light-x", localX + "px");
+					light.style.setProperty("--gm-light-y", localY + "px");
+				};
+				if (lightFrame !== 0) return;
+				if (typeof win.requestAnimationFrame !== "function") {
+					write();
+					return;
+				}
+				lightFrame = win.requestAnimationFrame(function () {
+					lightFrame = 0;
+					write();
+				});
+			}
+
+			/** Start following the pointer across all three panels, with one listener. */
+			function bindLights() {
+				if (lightsBound) return;
+				if (typeof doc.addEventListener !== "function") return;
+				lightsBound = true;
+				lightMove = function (event) {
+					if (disposed) return;
+					if (panels.interaction !== true) return;
+					if (event === null || event === undefined) return;
+					var panel = panelOf(event.target);
+					if (panel === null) return;
+					aimLight(panel, Number(event.clientX), Number(event.clientY));
+				};
+				doc.addEventListener("pointermove", lightMove, { passive: true });
+			}
+
+			/**
 			 * Remove anything a previous instance left in the DOM: a live reload can
 			 * mount this plugin twice, and two stages (or two style sheets) are how the
 			 * interface ended up buried under a stray wallpaper layer.
@@ -1319,7 +1419,7 @@ window.__ModuleLoader__.load({
 				}
 				var stray = [
 					"[data-glass-panel]", "[data-glass-surface]", "[data-glass-frost]",
-					"[data-glass-delegate]", "[data-glass-frame]", "[data-glass-checker]"
+					"[data-glass-delegate]", "[data-glass-frame]", "[data-glass-checker]", "[data-glass-light]"
 				];
 				for (var i = 0; i < stray.length; i++) {
 					var nodes = doc.querySelectorAll(stray[i]);
@@ -2009,6 +2109,7 @@ window.__ModuleLoader__.load({
 				copy.divider = panels.divider;
 				copy.refraction = panels.refraction;
 				copy.rimSpill = panels.rimSpill;
+				copy.interaction = panels.interaction;
 				return copy;
 			}
 
@@ -2099,7 +2200,11 @@ window.__ModuleLoader__.load({
 					panelNodes[key] = node;
 					node.setAttribute("data-glass-panel", key);
 				}
-				if (deep === true || rebuilt) discoverSurfaces();
+				if (deep === true || rebuilt) {
+					discoverSurfaces();
+					mountLights();
+				}
+				bindLights();
 				// A rebuilt shell also needs the wallpaper stage moved back inside it.
 				ensureStageHost();
 				return panelFound;
@@ -2197,6 +2302,7 @@ window.__ModuleLoader__.load({
 				var wallpaperOn = hasWallpaperConfig(wallpaper);
 				doc.body.dataset.glassPanels = "on";
 				doc.body.dataset.glassGap = panels.gap > 0 ? "on" : "off";
+				doc.body.dataset.glassInteraction = panels.interaction ? "on" : "off";
 				style.setProperty("--gm-gap", panels.gap + "px");
 				style.setProperty("--gm-frame-radius", panels.frameRadius + "px");
 				style.setProperty("--gm-radius", panels.panelRadius + "px");
@@ -2265,6 +2371,7 @@ window.__ModuleLoader__.load({
 				if (given.divider !== undefined) merged.divider = given.divider;
 				if (given.refraction !== undefined) merged.refraction = given.refraction;
 				if (given.rimSpill !== undefined) merged.rimSpill = given.rimSpill;
+				if (given.interaction !== undefined) merged.interaction = given.interaction;
 				panels = normalizePanels(merged);
 				writeKey(PANEL_KEY, JSON.stringify(panels));
 				tagPanels(true);
@@ -2396,6 +2503,11 @@ window.__ModuleLoader__.load({
 			 */
 			function shutdown() {
 					disposed = true;
+					if (lightsBound && lightMove !== null) {
+						doc.removeEventListener("pointermove", lightMove);
+						lightMove = null;
+						lightsBound = false;
+					}
 					cancelPending();
 					if (fadeTimer !== 0) {
 						clearTimer(fadeTimer);
@@ -2463,12 +2575,16 @@ window.__ModuleLoader__.load({
 					delete doc.body.dataset.glassBlur;
 					delete doc.body.dataset.glassFading;
 					delete doc.body.dataset.glassWallpaper;
+					delete doc.body.dataset.glassInteraction;
 					doc.body.style.removeProperty("--gm-wall-fit");
 					doc.body.style.removeProperty("--gm-wall-opacity");
 					doc.body.style.removeProperty("--gm-wall-blur");
 					doc.body.style.removeProperty("--gm-wall-scale");
 					doc.body.style.removeProperty("--gm-tint");
 					if (win.__dshGlassMood !== undefined) delete win.__dshGlassMood;
+					// One clean-up path for both "unmount" and "a stray left behind": the
+					// sweep also catches whatever a future layer adds.
+					sweepOrphans();
 					started = false;
 					mood = null;
 				}
@@ -2824,7 +2940,8 @@ window.__ModuleLoader__.load({
 					),
 					h("div", { className: "gm-fields" },
 						toggle("边缘折射", config.refraction, function (value) { setConfig(engine.setPanels({ refraction: value })) }),
-						toggle("内容取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) })
+						toggle("内容取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) }),
+						toggle("交互光效", config.interaction !== false, function (value) { setConfig(engine.setPanels({ interaction: value })) })
 					)
 				);
 			};

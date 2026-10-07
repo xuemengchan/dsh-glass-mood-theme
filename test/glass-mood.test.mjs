@@ -40,7 +40,7 @@ function createDocument(fixture = {}) {
     children: [],
     removed: false,
     /** Geometry and computed paint, which the surface probe reads. */
-    box: { width: 1200, height: 800 },
+    box: { width: 1200, height: 800, left: 0, top: 0 },
     computed: { backgroundColor: 'rgba(0, 0, 0, 0)' },
     getBoundingClientRect() { return this.box },
     /** Media surface: enough for the engine's muted-autoplay path. */
@@ -102,6 +102,7 @@ function createDocument(fixture = {}) {
     return el.tagName === part
   }
   const query = (selector) => all.find((el) => !el.removed && selector.split(',').some((one) => matches(el, one))) ?? null
+  const listeners = {}
   const document = {
     head,
     body,
@@ -124,6 +125,16 @@ function createDocument(fixture = {}) {
       return el
     },
     getElementById(id) { return all.find((el) => el.id === id && !el.removed) ?? null },
+    /** Pointer listeners are real enough to drive, so the light is testable. */
+    addEventListener(type, listener) {
+      listeners[type] = listeners[type] ?? []
+      listeners[type].push(listener)
+    },
+    removeEventListener(type, listener) {
+      if (!listeners[type]) return
+      listeners[type] = listeners[type].filter((entry) => entry !== listener)
+    },
+    emit(type, event) { for (const listener of [...(listeners[type] ?? [])]) listener(event) },
     querySelector: query,
     querySelectorAll(selector) { return all.filter((el) => !el.removed && selector.split(',').some((one) => matches(el, one))) }
   }
@@ -151,23 +162,23 @@ function mountShellColumns(document) {
   frame.setAttribute('class', 'AppFrame_frame_1a2b3')
   const left = document.createElement('div')
   left.setAttribute('class', 'AppFrame_sidebarCol_9z8y7')
-  left.box = { width: 260, height: 780 }
+  left.box = { width: 260, height: 780, left: 0, top: 0 }
   const center = document.createElement('div')
   center.setAttribute('class', 'AppFrame_centerCol_5x4w3')
-  center.box = { width: 620, height: 780 }
+  center.box = { width: 620, height: 780, left: 264, top: 0 }
   const right = document.createElement('div')
   right.setAttribute('class', 'AppFrame_rightbarCol_2v1u0')
   right.setAttribute('data-rightbar-col', '')
-  right.box = { width: 320, height: 780 }
+  right.box = { width: 320, height: 780, left: 888, top: 0 }
   const leftSurface = document.createElement('div')
   leftSurface.setAttribute('class', 'Sidebar_root_7h6g5')
   leftSurface.computed = { backgroundColor: 'rgba(255, 255, 255, 0.52)' }
-  leftSurface.box = { width: 260, height: 780 }
+  leftSurface.box = { width: 260, height: 780, left: 0, top: 0 }
   left.appendChild(leftSurface)
   const rightWrapper = document.createElement('div')
   rightWrapper.setAttribute('class', 'Rightbar_wrapper_4f3e2')
   rightWrapper.computed = { backgroundColor: 'rgba(0, 0, 0, 0)' }
-  rightWrapper.box = { width: 320, height: 780 }
+  rightWrapper.box = { width: 320, height: 780, left: 888, top: 0 }
   right.appendChild(rightWrapper)
   frame.appendChild(left)
   frame.appendChild(center)
@@ -939,6 +950,44 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 }
 //#endregion
 
+{
+  // Interaction feedback, straight from the immersive-material spec: a point light
+  // that follows the pointer (`lightEffect`) and a press that deforms the control
+  // (`interactive`). The light is a child of the panel, moved with a transform so the
+  // follow costs a composited move rather than a gradient repaint.
+  const m = mount()
+  const lights = m.document.querySelectorAll('[data-glass-light]')
+  assert.equal(lights.length, 3, 'each panel carries a point light')
+  assert.equal(lights[0].parent, m.shell.left, 'and it lives inside the panel it lights')
+
+  // Move the pointer inside the left column: it is 260 wide at x=0, so (120, 300)
+  // is 120/300 into the panel, and the light travels there.
+  m.document.emit('pointermove', { target: m.shell.leftSurface, clientX: 120, clientY: 300 })
+  assert.equal(lights[0].style.getPropertyValue('--gm-light-x'), '120px', 'the light follows the pointer in x')
+  assert.equal(lights[0].style.getPropertyValue('--gm-light-y'), '300px', 'and in y')
+  // Three panels: only the one under the pointer moved.
+  assert.equal(lights[1].style.getPropertyValue('--gm-light-x'), '', 'the other panels stay put')
+
+  // A pointer outside every panel is ignored.
+  m.document.emit('pointermove', { target: m.document.body, clientX: 10, clientY: 10 })
+  assert.equal(lights[0].style.getPropertyValue('--gm-light-x'), '120px', 'and nothing follows the pointer over the frame')
+
+  // The switch gates it, live: no movement, and the CSS holds the light hidden.
+  m.engine.setPanels({ interaction: false })
+  assert.equal(m.document.body.dataset.glassInteraction, 'off', 'the switch reaches the body')
+  m.document.emit('pointermove', { target: m.shell.leftSurface, clientX: 200, clientY: 200 })
+  assert.equal(lights[0].style.getPropertyValue('--gm-light-x'), '120px', 'and the light stops following')
+  m.engine.setPanels({ interaction: true })
+  m.document.emit('pointermove', { target: m.shell.leftSurface, clientX: 200, clientY: 200 })
+  assert.equal(lights[0].style.getPropertyValue('--gm-light-x'), '200px', 'and follows again when switched back on')
+
+  // Teardown: the listener goes and the lights leave with the panels.
+  m.engine.off()
+  const afterOff = m.document.querySelectorAll('[data-glass-light]').length
+  assert.equal(afterOff, 0, 'off() clears the lights too')
+  console.log('ok  the point light follows the pointer, and the switch gates it')
+}
+
 //#region panels
 {
   // A backdrop-filter only blurs what is painted behind its backdrop root, and
@@ -1067,8 +1116,10 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   const m = mount()
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   const satOf = (selector) => {
-    const line = css.split('\n').find((rule) => rule.startsWith(selector))
-    assert.ok(line, `missing the ${selector} rule`)
+    // Several rules start with the same mood selector, so find the one that actually
+    // declares the saturation.
+    const line = css.split('\n').find((rule) => rule.startsWith(selector) && rule.includes('--gm-sat:'))
+    assert.ok(line, `missing the ${selector} saturation rule`)
     return Number(/--gm-sat:(\d+)%/.exec(line)[1])
   }
   assert.ok(satOf('body[data-glass-mood]{') <= 120, 'idle keeps backdrop saturation gentle')
@@ -1492,9 +1543,10 @@ function findNodes(node, predicate, found = []) {
   const toggles = findNodes(panelsTree, (node) => node.type === 'input' && node.props.type === 'checkbox')
   const panelText = findNodes(panelsTree, (node) => typeof node === 'string').join(' ')
   assert.equal(panelRanges.length, 13, 'three panels x 不透明度/模糊/高光 plus 4 geometry knobs')
-  assert.equal(toggles.length, 2, '边缘折射 and 镜边取色: two switches, both live')
+  assert.equal(toggles.length, 3, '边缘折射 / 内容取色 / 交互光效: three switches, all live')
   assert.equal(toggles[0].props.checked, true, 'refraction is on by default')
-  assert.equal(toggles[1].props.checked, true, 'and so is the rim spill')
+  assert.equal(toggles[1].props.checked, true, 'and so is the content tint')
+  assert.equal(toggles[2].props.checked, true, 'and so is the interaction feedback')
   assert.match(panelText, /左侧边栏/, 'the left column is labelled')
   assert.match(panelText, /主打|主界面/, 'the centre column is labelled')
   assert.match(panelText, /均已识别|未识别到面板/, 'the row reports which columns were found')
