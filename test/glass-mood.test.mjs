@@ -67,6 +67,10 @@ function createDocument(fixture = {}) {
     },
     get firstChild() { return this.children[0] ?? null },
     querySelector(selector) { return this.children.find((child) => matches(child, selector)) ?? null },
+    querySelectorAll(selector) {
+      if (this.removed) return []
+      return selector === '*' ? [...this.children] : this.children.filter((child) => matches(child, selector))
+    },
     remove() {
       this.removed = true
       const index = this.parent?.children.indexOf(this) ?? -1
@@ -1027,11 +1031,20 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
     'the preference is read at mount'
   )
   assert.equal(m.document.body.dataset.glassTransparency, 'reduced', 'and reaches the body for the CSS')
+  const prefCss = m.document.getElementById('dsh-glass-mood-style').textContent
+  // Both blur arrangements exist, and neither is gated on a preference reading: one
+  // reading must never be able to silently disable the blur knob.
   assert.match(
-    m.document.getElementById('dsh-glass-mood-style').textContent,
-    /\[data-glass-blur=on\] \[data-glass-surface\]::before\{[^}]*backdrop-filter/,
-    'the pane frost stays unconditional: one preference reading must never disable the blur knob'
+    prefCss,
+    /\[data-glass-blur=on\] \[data-glass-blur-host=element\]\{[^}]*backdrop-filter/,
+    'the element-hosted blur is declared'
   )
+  assert.match(
+    prefCss,
+    /\[data-glass-blur=on\] \[data-glass-surface\]:not\(\[data-glass-blur-host=element\]\)::before\{[^}]*backdrop-filter/,
+    'and so is the pseudo fallback'
+  )
+  assert.ok(!/data-glass-transparency=reduced/.test(prefCss), 'with neither of them gated on reduced transparency')
   m.dispose()
 
   // Every text-bearing surface becomes opaque, and the visibility knob can no longer
@@ -1091,24 +1104,49 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.ok(!/isolation:isolate/.test(css), 'no frost host isolates — that would kill backdrop-filter')
   assert.match(css, /\[data-glass-surface\]\{position:relative;z-index:0\}/, 'the delegated surface forms a stacking context the other way')
   assert.match(css, /\[data-glass-panel\]\{position:relative;z-index:0;/, 'and so does a column that paints itself')
+  // Both arrangements are declared: the element-hosted one (measured to be the one
+  // this browser honours) and the pseudo fallback, which stays for panels that hold a
+  // fixed descendant — an element with a backdrop-filter becomes that descendant's
+  // containing block, which is what once hid the sidebar's reopen control.
   assert.match(
     css,
-    /\[data-glass-surface\]::before\{[^}]*backdrop-filter:blur\(calc\(var\(--gm-panel-blur\)/,
-    'the delegated surface frosts on a pseudo'
+    /\[data-glass-blur=on\] \[data-glass-blur-host=element\]\{[^}]*backdrop-filter:blur\(calc\(var\(--gm-panel-blur\)/,
+    'the material element can carry the blur itself'
   )
   assert.match(
     css,
-    /\[data-glass-panel\]:not\(\[data-glass-delegate=on\]\)::before\{[^}]*backdrop-filter:blur\(calc\(var\(--gm-panel-blur\)/,
-    'and a column that paints itself does too'
+    /\[data-glass-surface\]:not\(\[data-glass-blur-host=element\]\)::before\{[^}]*backdrop-filter:blur\(calc\(var\(--gm-panel-blur\)/,
+    'and the pseudo remains the fallback for a delegated surface'
   )
-  // The element itself must never take the filter: that would make it the containing
-  // block of its fixed-position descendants, displacing any floating control inside a
-  // panel (this is what hid the sidebar's reopen control).
-  assert.ok(
-    !/\[data-glass-blur=on\] \[data-glass-surface\],/.test(css),
-    'no panel element carries the backdrop-filter directly'
+  assert.match(
+    css,
+    /\[data-glass-panel\]:not\(\[data-glass-delegate=on\]\):not\(\[data-glass-blur-host=element\]\)::before\{[^}]*backdrop-filter/,
+    'and for a column that paints itself'
   )
   m.dispose()
+
+  // The guard is behavioural, not cosmetic: a panel holding a fixed descendant must
+  // keep the pseudo, and a panel without one must take the blur itself.
+  const guard = mount()
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'a clean panel hosts the blur on the element')
+  const floating = guard.document.createElement('div')
+  floating.computed = { position: 'fixed' }
+  guard.shell.leftSurface.appendChild(floating)
+  guard.engine.retag(true)
+  assert.equal(
+    guard.engine.blurReport().left.blurHost,
+    'pseudo',
+    'while a fixed descendant sends the blur back to the pseudo, so nothing is displaced'
+  )
+  assert.equal(
+    guard.shell.leftSurface.getAttribute('data-glass-blur-host'),
+    undefined,
+    'and the element stops advertising itself as a blur host'
+  )
+  floating.remove()
+  guard.engine.retag(true)
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'and it returns once the floating control is gone')
+  guard.dispose()
   console.log('ok  frost hosts do not form a backdrop root')
 }
 

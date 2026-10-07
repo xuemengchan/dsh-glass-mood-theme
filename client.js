@@ -661,11 +661,16 @@ window.__ModuleLoader__.load({
 			   descendants, which would displace any floating control living inside a
 			   panel. A pseudo has no descendants, so it is safe — and with the wallpaper
 			   stage inside the shell its backdrop now contains the footage. */
-			"body[data-glass-panels][data-glass-blur=on] [data-glass-surface]::before{" +
+			/* The blur the browser demonstrably honours: on the element that carries the
+			   material, so the backdrop it samples is the same one the fill shows through. */
+			"body[data-glass-panels][data-glass-blur=on] [data-glass-blur-host=element]{" +
+				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
+				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
+			"body[data-glass-panels][data-glass-blur=on] [data-glass-surface]:not([data-glass-blur-host=element])::before{" +
 				"content:\"\";position:absolute;inset:0;z-index:-1;pointer-events:none;background:transparent;" +
 				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
 				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
-			"body[data-glass-panels][data-glass-blur=on] [data-glass-panel]:not([data-glass-delegate=on])::before{" +
+			"body[data-glass-panels][data-glass-blur=on] [data-glass-panel]:not([data-glass-delegate=on]):not([data-glass-blur-host=element])::before{" +
 				"content:\"\";position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;background:transparent;" +
 				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
 				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
@@ -1467,7 +1472,7 @@ window.__ModuleLoader__.load({
 				}
 				var stray = [
 					"[data-glass-panel]", "[data-glass-surface]", "[data-glass-frost]",
-					"[data-glass-delegate]", "[data-glass-hollow]", "[data-glass-frame]", "[data-glass-checker]"
+					"[data-glass-delegate]", "[data-glass-hollow]", "[data-glass-blur-host]", "[data-glass-frame]", "[data-glass-checker]"
 				];
 				for (var i = 0; i < stray.length; i++) {
 					var nodes = doc.querySelectorAll(stray[i]);
@@ -1506,6 +1511,30 @@ window.__ModuleLoader__.load({
 			var panelHollow = { left: null, main: null, right: null };
 			/** Why a panel had to keep its material on the column. */
 			var panelDiag = { left: [], main: [], right: [] };
+			/** Where each panel's blur lives: "element" or "pseudo". */
+			var panelBlurHost = { left: null, main: null, right: null };
+			/** Set when a fixed descendant forced the pseudo arrangement. */
+			var panelBlurNote = { left: [], main: [], right: [] };
+
+			/**
+			 * Put the blur on whichever element carries the material, unless that element
+			 * holds a fixed descendant. Called after the material host is decided.
+			 * @param key - the panel key.
+			 */
+			function aimBlur(key) {
+				var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : panelNodes[key];
+				if (host === null || host === undefined || typeof host.setAttribute !== "function") return;
+				var blocked = hasFixedDescendant(host);
+				if (blocked === true) {
+					host.removeAttribute("data-glass-blur-host");
+					panelBlurHost[key] = "pseudo";
+					panelBlurNote[key] = ["\u542b position:fixed \u5b50\u5143\u7d20"];
+				} else {
+					host.setAttribute("data-glass-blur-host", "element");
+					panelBlurHost[key] = "element";
+					panelBlurNote[key] = [];
+				}
+			}
 			var refractionMounted = false;
 			var retagTimer = 0;
 			var disposed = false;
@@ -1882,6 +1911,8 @@ window.__ModuleLoader__.load({
 						probeReason: panelDiag[key],
 						/** Painters hollowed so the column's material is the one that shows. */
 						hollowed: panelHollow[key] === null ? 0 : panelHollow[key].length,
+						/** "element" when the blur rides the material element, "pseudo" otherwise. */
+						blurHost: panelBlurHost[key],
 						blurVariable: style !== null && style !== undefined && typeof style.getPropertyValue === "function" ? String(style.getPropertyValue("--gm-panel-blur") ?? "") : "",
 						backdrop: style === null || style === undefined ? "" : String(style.backdropFilter ?? ""),
 						pseudoBackdrop: pseudo === null || pseudo === undefined ? "" : String(pseudo.backdropFilter ?? ""),
@@ -2326,6 +2357,7 @@ window.__ModuleLoader__.load({
 					// opaque) fill in charge.
 					if (surfaceAttached(sticky)) {
 						if (sticky.getAttribute("data-glass-surface") !== key) sticky.setAttribute("data-glass-surface", key);
+					aimBlur(key);
 						column.setAttribute("data-glass-delegate", "on");
 						continue;
 					}
@@ -2348,6 +2380,7 @@ window.__ModuleLoader__.load({
 						}
 						panelHollow[key] = null;
 						panelDiag[key] = [];
+						aimBlur(key);
 					}
 					if (panelSurfaces[key] !== null && panelSurfaces[key] !== next) {
 						panelSurfaces[key].removeAttribute("data-glass-surface");
@@ -2358,6 +2391,7 @@ window.__ModuleLoader__.load({
 						continue;
 					}
 					if (next.getAttribute("data-glass-surface") !== key) next.setAttribute("data-glass-surface", key);
+					aimBlur(key);
 					column.setAttribute("data-glass-delegate", "on");
 				}
 			}
@@ -2422,6 +2456,30 @@ window.__ModuleLoader__.load({
 				style.setProperty("--gm-rim-ao", rim.ao);
 				style.setProperty("--gm-rim-contact", rim.contact);
 				style.setProperty("--gm-divider", rim.divider(panels.divider));
+			}
+
+			/**
+			 * Whether a subtree holds a `position: fixed` element. An element carrying a
+			 * backdrop-filter becomes the containing block of exactly those descendants, so
+			 * this is the one condition under which the blur has to stay on a pseudo (which
+			 * has no descendants) rather than on the element.
+			 * @param node - the subtree root.
+			 * @returns true when a fixed descendant exists, or when the browser cannot be
+			 *   asked (the conservative answer).
+			 */
+			function hasFixedDescendant(node) {
+				var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle : null;
+				if (read === null || node === null || node === undefined || typeof node.querySelectorAll !== "function") return true;
+				var all = null;
+				try { all = node.querySelectorAll("*"); } catch (error) { all = null; }
+				if (all === null || all === undefined) return true;
+				var limit = all.length < 400 ? all.length : 400;
+				for (var i = 0; i < limit; i++) {
+					var style = null;
+					try { style = read.call(win, all[i]); } catch (error) { style = null; }
+					if (style !== null && style !== undefined && String(style.position ?? "") === "fixed") return true;
+				}
+				return false;
 			}
 
 			/**
@@ -2671,9 +2729,13 @@ window.__ModuleLoader__.load({
 					panelSurfaces = { left: null, main: null, right: null };
 					panelHollow = { left: null, main: null, right: null };
 					panelDiag = { left: [], main: [], right: [] };
+					panelBlurHost = { left: null, main: null, right: null };
+					panelBlurNote = { left: [], main: [], right: [] };
 					for (var df = 0; df < tagged.length; df++) tagged[df].removeAttribute("data-glass-delegate");
 					var hollowed = doc.querySelectorAll("[data-glass-hollow]");
 					for (var hl = 0; hl < hollowed.length; hl++) hollowed[hl].removeAttribute("data-glass-hollow");
+					var blurHosts = doc.querySelectorAll("[data-glass-blur-host]");
+					for (var bh = 0; bh < blurHosts.length; bh++) blurHosts[bh].removeAttribute("data-glass-blur-host");
 					var frosted = doc.querySelectorAll("[data-glass-frost]");
 					for (var fr = 0; fr < frosted.length; fr++) frosted[fr].removeAttribute("data-glass-frost");
 					var frameNode = doc.querySelector("[data-glass-frame]");
@@ -2793,7 +2855,9 @@ window.__ModuleLoader__.load({
 						}
 						var where = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? "\u5185\u5c42\u5143\u7d20" : "\u5217\u81ea\u8eab";
 						var why = panelDiag[key].length === 0 ? "" : "\uff0c\u539f\u56e0\uff1a" + panelDiag[key][0];
-						lines.push(label + "\uff1a\u6750\u8d28\u5728" + where + "\uff0c\u6a21\u7cca " + (asked === "" ? "?" : asked) +
+						var arrangement = panelBlurHost[key] === "element" ? "\u5143\u7d20\u81ea\u8eab" : "\u4f2a\u5143\u7d20";
+						if (panelBlurNote[key].length > 0) arrangement = arrangement + "\uff08" + panelBlurNote[key][0] + "\uff09";
+						lines.push(label + "\uff1a\u6750\u8d28\u5728" + where + "\uff0c\u6a21\u7cca\u6302\u5728" + arrangement + "\uff0c\u503c " + (asked === "" ? "?" : asked) +
 							"\uff08\u5143\u7d20\u8ba1\u7b97\u503c " + computed + "\uff0c::before " + pseudo + "\uff09\uff0c\u9762\u677f alpha " + alpha + why);
 					}
 					return lines;
