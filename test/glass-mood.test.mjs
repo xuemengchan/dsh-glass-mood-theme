@@ -105,7 +105,24 @@ function createDocument(fixture = {}) {
   const document = {
     head,
     body,
-    createElement(tag) { const el = make(tag); all.push(el); return el },
+    createElement(tag) {
+      const el = make(tag)
+      // A canvas the engine can draw a frame into. `throws` models a cross-origin
+      // clip tainting it, which a theme must survive without guessing.
+      if (tag === 'canvas' && fixture.canvas) {
+        el.width = 0
+        el.height = 0
+        el.getContext = () => ({
+          drawImage() { fixture.canvas.drawCalls += 1 },
+          getImageData() {
+            if (fixture.canvas.throws) throw new Error('tainted canvas')
+            return { data: Uint8ClampedArray.from(fixture.canvas.pixels) }
+          }
+        })
+      }
+      all.push(el)
+      return el
+    },
     getElementById(id) { return all.find((el) => el.id === id && !el.removed) ?? null },
     querySelector: query,
     querySelectorAll(selector) { return all.filter((el) => !el.removed && selector.split(',').some((one) => matches(el, one))) }
@@ -808,6 +825,116 @@ const alphaOf = (color) => {
 }
 //#endregion
 
+//#region media sampling
+/** A frame of one flat colour, the way the sampler would average it. */
+function flatFrame(canvas, r, g, b) {
+  const pixels = []
+  for (let i = 0; i < 24 * 14; i++) pixels.push(r, g, b, 255)
+  canvas.pixels = pixels
+  return canvas
+}
+const newCanvas = () => ({ pixels: [], throws: false, drawCalls: 0 })
+const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Number)
+
+{
+  // Bright saturated footage: the glass picks up its hue at the rim, and the media
+  // earns a legibility scrim — capped at 35%, the published guidance for glass over
+  // bright media.
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  const plainRim = bodyVar(m, '--gm-rim-b')
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
+  const media = m.engine.media()
+  assert.equal(media.ready, true, 'a frame was read')
+  assert.ok(media.brightness > 0.55, `bright footage reads as bright (${media.brightness})`)
+  assert.ok(Math.abs(media.hue - 28) < 14, `and keeps its own hue (${media.hue})`)
+  assert.ok(media.dim > 0 && media.dim <= 0.35, `and earns a scrim within the cap (${media.dim})`)
+  assert.equal(Number(bodyVar(m, '--gm-media-dim')), media.dim, 'the scrim is published for the layer')
+
+  // The rim moved toward the warm content by a real amount, without travelling
+  // through magenta: rotating the hue wheel the short way from 220° to 29° passes
+  // through violet, which is the purple cast this theme had to remove.
+  const before = rgbOf(plainRim)
+  const after = rgbOf(bodyVar(m, '--gm-rim-b'))
+  assert.ok(after[0] - after[2] > before[0] - before[2], `the rim warms toward the footage (${plainRim} -> ${bodyVar(m, '--gm-rim-b')})`)
+  assert.ok(
+    (after[2] - after[0]) <= (before[2] - before[0]) - 5,
+    `and warms for real, not by drifting into violet (${before[2] - before[0]} -> ${after[2] - after[0]})`
+  )
+  // The pane fill itself is untouched: the readability floors were measured against it.
+  assert.match(bodyVar(m, '--gm-panel-main-fill'), /^rgba\(255, 255, 255, /, 'the pane keeps the palette fill untouched')
+
+  // Both switches turn their own effect off, live, without touching the reading.
+  m.engine.setWallpaper({ autoDim: false })
+  assert.equal(Number(bodyVar(m, '--gm-media-dim')), 0, 'the scrim switch zeroes the scrim')
+  assert.equal(m.engine.media().ready, true, 'while the sampler keeps reading')
+  m.engine.setWallpaper({ autoDim: true })
+  assert.ok(Number(bodyVar(m, '--gm-media-dim')) > 0, 'and back on again')
+  m.engine.setPanels({ rimSpill: false })
+  assert.equal(bodyVar(m, '--gm-rim-b'), plainRim, 'the spill switch restores the authored rim')
+  m.engine.setPanels({ rimSpill: true })
+  assert.notEqual(bodyVar(m, '--gm-rim-b'), plainRim, 'and back on again')
+
+  // Sampling is throttled well below the poll.
+  const draws = canvas.drawCalls
+  m.clock.advance(1500)
+  assert.equal(canvas.drawCalls, draws, 'a second read inside the window does not touch the canvas')
+  m.clock.advance(4000)
+  assert.ok(canvas.drawCalls > draws, 'and it resumes after the interval')
+  m.dispose()
+  console.log('ok  the footage drives the rim hue and the dim layer')
+}
+
+{
+  // Dark footage is left alone, grey footage has no hue to spill, and an unreadable
+  // clip (a cross-origin URL taints the canvas) falls back instead of guessing.
+  const dark = flatFrame(newCanvas(), 10, 12, 16)
+  const m = mount({ canvas: dark })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
+  assert.equal(m.engine.media().dim, 0, 'dark footage earns no scrim')
+  assert.equal(m.engine.media().hue, null, 'and a near-black frame has no hue')
+  m.dispose()
+
+  const grey = flatFrame(newCanvas(), 128, 128, 128)
+  const m2 = mount({ canvas: grey })
+  const coolRim = bodyVar(m2, '--gm-rim-b')
+  m2.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
+  assert.equal(m2.engine.media().hue, null, 'grey footage has no hue to spill')
+  assert.equal(bodyVar(m2, '--gm-rim-b'), coolRim, 'so the rim keeps its authored colour')
+  m2.dispose()
+
+  const tainted = newCanvas()
+  tainted.throws = true
+  const m3 = mount({ canvas: tainted })
+  m3.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
+  const media = m3.engine.media()
+  assert.equal(media.ready, false, 'a tainted canvas reads as unreadable')
+  assert.equal(media.dim, 0, 'and earns no scrim')
+  assert.equal(media.hue, null, 'and no hue')
+  m3.dispose()
+
+  // No clip at all: nothing to read, and no scrim.
+  const m4 = mount({ canvas: newCanvas() })
+  assert.equal(m4.engine.media().ready, false, 'without a clip nothing is sampled')
+  assert.equal(Number(bodyVar(m4, '--gm-media-dim')), 0, 'and the scrim stays off')
+  m4.dispose()
+  console.log('ok  dark, grey, tainted and clipless media all fall back')
+}
+
+{
+  // The dim layer lives in the stage, above the clips and the mood wash, and it stays
+  // inside the negative layer with the rest of the stage.
+  const m = mount()
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
+  assert.match(css, /\[data-glass-layer=dim\]\{inset:0;background:rgba\(0,0,0,var\(--gm-media-dim,0\)\)/, 'a neutral black scrim is the layer')
+  const stage = m.document.getElementById('dsh-glass-mood-bg')
+  const names = stage.children.map((child) => child.getAttribute('data-glass-layer')).filter(Boolean)
+  assert.deepEqual(names, ['idle', 'work', 'pulse', 'dim'], 'and it is the last layer, so it dims the whole stack')
+  m.dispose()
+  console.log('ok  the dim layer is a scrim over the media stack')
+}
+//#endregion
+
 //#region panels
 {
   // A backdrop-filter only blurs what is painted behind its backdrop root, and
@@ -1361,8 +1488,9 @@ function findNodes(node, predicate, found = []) {
   const toggles = findNodes(panelsTree, (node) => node.type === 'input' && node.props.type === 'checkbox')
   const panelText = findNodes(panelsTree, (node) => typeof node === 'string').join(' ')
   assert.equal(panelRanges.length, 13, 'three panels x 不透明度/模糊/高光 plus 4 geometry knobs')
-  assert.equal(toggles.length, 1, 'only 边缘折射 remains: the invented sweep is gone')
+  assert.equal(toggles.length, 2, '边缘折射 and 镜边取色: two switches, both live')
   assert.equal(toggles[0].props.checked, true, 'refraction is on by default')
+  assert.equal(toggles[1].props.checked, true, 'and so is the rim spill')
   assert.match(panelText, /左侧边栏/, 'the left column is labelled')
   assert.match(panelText, /主打|主界面/, 'the centre column is labelled')
   assert.match(panelText, /均已识别|未识别到面板/, 'the row reports which columns were found')

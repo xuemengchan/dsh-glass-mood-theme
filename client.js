@@ -79,7 +79,7 @@ window.__ModuleLoader__.load({
 		 * Wallpaper defaults. `tint` is the mood wash over the clip; `clarity` is how
 		 * far the theme gets out of the clip's way (higher = thinner panes).
 		 */
-		var VIDEO_DEFAULTS = { fit: "cover", opacity: 0.6, blur: 0, tint: 0.35, clarity: 0.45 };
+		var VIDEO_DEFAULTS = { fit: "cover", opacity: 0.6, blur: 0, tint: 0.35, clarity: 0.45, autoDim: true };
 		/** Above this the IndexedDB write is worth warning about. */
 		var VIDEO_WARN_BYTES = 400 * 1024 * 1024;
 		var PANEL_KEY = "dsh-glass-mood:panels";
@@ -119,7 +119,8 @@ window.__ModuleLoader__.load({
 			frameRadius: 0,
 			panelRadius: 20,
 			divider: 0.35,
-			refraction: true
+			refraction: true,
+			rimSpill: true
 		};
 		/**
 		 * Surface probe bounds. A column's visible surface is not always the column:
@@ -147,6 +148,25 @@ window.__ModuleLoader__.load({
 		 * sidebar's reopen control disappear, so they keep the app's own styling.
 		 */
 		var COLLAPSED_MAX_WIDTH = 56;
+		/** The frame sampler is tiny on purpose: an average is all the theme needs. */
+		var SAMPLE_WIDTH = 24;
+		var SAMPLE_HEIGHT = 14;
+		/** Sampling a frame is cheap but not free, so it is throttled well below the poll. */
+		var SAMPLE_INTERVAL_MS = 4000;
+		/** Above this average brightness the media earns a dimming layer. */
+		var DIM_KNEE = 0.55;
+		/** That layer never exceeds Apple's 35%, and never darkens dark footage. */
+		var DIM_MAX = 0.35;
+		/** How far the content's own hue pulls the glass toward it (0 = never). */
+		var SPILL_MIX = 0.16;
+		/** Below this saturation the footage is effectively grey: no hue to spill. */
+		var SPILL_MIN_SATURATION = 0.08;
+		/**
+		 * Below this brightness the footage casts no colourful light worth picking up,
+		 * however saturated its pixels nominally are: a near-black frame's "hue" is an
+		 * artefact of the maths, not something a person could see.
+		 */
+		var SPILL_MIN_BRIGHTNESS = 0.08;
 		/**
 		 * Wallpaper visibility is ONE perceptual axis, so one knob drives both halves:
 		 * the clip's own strength and how far the theme gets out of its way. Two
@@ -538,6 +558,7 @@ window.__ModuleLoader__.load({
 			"body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-layer=idle]{opacity:0}",
 			"body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-layer=work]{opacity:1}",
 			/* A slow cool breath while a turn is in flight: the only motion in the theme. */
+			"#" + STAGE_ID + ">[data-glass-layer=dim]{inset:0;background:rgba(0,0,0,var(--gm-media-dim,0));transition:background-color var(--gm-fade) cubic-bezier(.4,0,.2,1)}",
 			"#" + STAGE_ID + ">[data-glass-layer=pulse]{opacity:0;background:radial-gradient(70% 55% at 50% -10%, rgba(152,178,202,.16) 0%, rgba(152,178,202,0) 70%)}",
 			"body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-layer=pulse]{opacity:.55;animation:gm-breathe 5.5s ease-in-out infinite}",
 			/* Over footage the wash is at its most visible, so the pulse steps back. */
@@ -741,6 +762,7 @@ window.__ModuleLoader__.load({
 		 */
 		function normalizeVideo(raw) {
 			var source = raw === undefined || raw === null ? {} : raw;
+			var autoDim = source.autoDim === undefined ? VIDEO_DEFAULTS.autoDim : source.autoDim === true;
 			var clips = source.clips;
 			if (clips === undefined) {
 				clips = {
@@ -762,7 +784,8 @@ window.__ModuleLoader__.load({
 				opacity: Number.isFinite(opacity) ? Math.min(1, Math.max(0.05, opacity)) : VIDEO_DEFAULTS.opacity,
 				blur: Number.isFinite(blur) ? Math.min(32, Math.max(0, Math.round(blur))) : VIDEO_DEFAULTS.blur,
 				tint: Number.isFinite(tint) ? Math.min(0.9, Math.max(0, tint)) : VIDEO_DEFAULTS.tint,
-				clarity: Number.isFinite(clarity) ? Math.min(1, Math.max(0, clarity)) : VIDEO_DEFAULTS.clarity
+				clarity: Number.isFinite(clarity) ? Math.min(1, Math.max(0, clarity)) : VIDEO_DEFAULTS.clarity,
+				autoDim: autoDim
 			};
 		}
 
@@ -884,7 +907,8 @@ window.__ModuleLoader__.load({
 				frameRadius: Math.round(clampNumber(source.frameRadius, 0, 40, PANEL_DEFAULTS.frameRadius)),
 				panelRadius: Math.round(clampNumber(source.panelRadius, 0, 32, PANEL_DEFAULTS.panelRadius)),
 				divider: clampNumber(source.divider, 0, 1, PANEL_DEFAULTS.divider),
-				refraction: source.refraction === undefined ? PANEL_DEFAULTS.refraction : source.refraction === true
+				refraction: source.refraction === undefined ? PANEL_DEFAULTS.refraction : source.refraction === true,
+				rimSpill: source.rimSpill === undefined ? PANEL_DEFAULTS.rimSpill : source.rimSpill === true
 			};
 		}
 
@@ -930,23 +954,129 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * @param hue - 0..360.
+		 * @param saturation - 0..1.
+		 * @param lightness - 0..1.
+		 * @returns [r, g, b] in 0..255.
+		 */
+		function hslToRgb(hue, saturation, lightness) {
+			var c = (1 - Math.abs(2 * lightness - 1)) * saturation;
+			var x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+			var m = lightness - c / 2;
+			var rgb;
+			if (hue < 60) rgb = [c, x, 0];
+			else if (hue < 120) rgb = [x, c, 0];
+			else if (hue < 180) rgb = [0, c, x];
+			else if (hue < 240) rgb = [0, x, c];
+			else if (hue < 300) rgb = [x, 0, c];
+			else rgb = [c, 0, x];
+			return [
+				Math.round((rgb[0] + m) * 255),
+				Math.round((rgb[1] + m) * 255),
+				Math.round((rgb[2] + m) * 255)
+			];
+		}
+
+		/**
+		 * Pull a colour toward the content's hue. The blend is a straight RGB lerp
+		 * between the authored colour and "that hue at this colour's own lightness and
+		 * saturation", so the path runs through neutral grey.
+		 *
+		 * Rotating the hue on the wheel instead would be a mistake here: the short way
+		 * from a cool rim (220°) to warm content (29°) runs through magenta, which is
+		 * exactly the purple cast this theme had to remove.
+		 * @param r - 0..255.
+		 * @param g - 0..255.
+		 * @param b - 0..255.
+		 * @param hue - target hue in degrees, or null to leave the colour alone.
+		 * @param mix - 0..1 share of the way to travel.
+		 * @returns [r, g, b].
+		 */
+		function biasTowardHue(r, g, b, hue, mix) {
+			if (hue === null || hue === undefined || !(mix > 0)) return [r, g, b];
+			var max = Math.max(r, g, b);
+			var min = Math.min(r, g, b);
+			var lightness = (max + min) / 510;
+			var delta = max - min;
+			var saturation = delta === 0
+				? 0
+				: delta / 255 / (lightness <= 0.5 ? Math.max(lightness, 1e-6) * 2 : (2 - lightness * 2));
+			// A neutral stop carries no hue to move, and a tint would only dirty it.
+			if (saturation < 0.02) return [r, g, b];
+			var target = hslToRgb(((hue % 360) + 360) % 360, saturation, lightness);
+			var k = Math.min(1, mix);
+			return [
+				Math.round(r + (target[0] - r) * k),
+				Math.round(g + (target[1] - g) * k),
+				Math.round(b + (target[2] - b) * k)
+			];
+		}
+
+		/**
+		 * Rotate an `rgba()` string's hue toward the content, leaving its alpha alone.
+		 * @param value - a CSS rgba() color.
+		 * @param hue - target hue in degrees, or null to leave it alone.
+		 * @param mix - 0..1 share of the way to travel.
+		 * @returns the biased color, or the original when it is not a liftable rgba.
+		 */
+		function biasColorString(value, hue, mix) {
+			var match = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$/.exec(value);
+			if (match === null) return value;
+			var biased = biasTowardHue(Number(match[1]), Number(match[2]), Number(match[3]), hue, mix);
+			return "rgba(" + biased[0] + ", " + biased[1] + ", " + biased[2] + ", " + match[4] + ")";
+		}
+
+		/**
+		 * @param r - average red, 0..255.
+		 * @param g - average green.
+		 * @param b - average blue.
+		 * @returns the perceived brightness, 0..1 (Rec. 709 weights).
+		 */
+		function brightnessOf(r, g, b) {
+			return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+		}
+
+		/**
+		 * @param r - average red, 0..255.
+		 * @param g - average green.
+		 * @param b - average blue.
+		 * @returns the hue in degrees, or null when the average is effectively grey.
+		 */
+		function hueOf(r, g, b) {
+			var max = Math.max(r, g, b);
+			var min = Math.min(r, g, b);
+			var delta = max - min;
+			if (max === 0 || delta / max < SPILL_MIN_SATURATION) return null;
+			var hue = 0;
+			if (max === r) hue = 60 * (((g - b) / delta) % 6);
+			else if (max === g) hue = 60 * ((b - r) / delta + 2);
+			else hue = 60 * ((r - g) / delta + 4);
+			if (hue < 0) hue += 360;
+			return hue;
+		}
+
+		/**
 		 * The rim colours for the liquid-glass edge, per mood, per scheme. Light
 		 * falls from the top-left; the bottom-right keeps a faint counter-rim so the
 		 * contour never disappears against a bright wallpaper.
 		 * @param mood - palette id.
 		 * @param scheme - 'light' or 'dark'.
+		 * @param sample - the last media reading, when its hue should spill onto the rim.
 		 * @returns rim colours, the ambient-occlusion tone, and a divider builder.
 		 */
-		function panelRim(mood, scheme) {
+		function panelRim(mood, scheme, sample) {
 			var work = mood === "work";
 			var dark = scheme === "dark";
+			// The content's own hue reaches the glass through its edge, never through the
+			// footage: the clip keeps its colours and the rim picks up a hint of them.
+			var spillHue = sample !== undefined && sample !== null && sample.ready ? sample.hue : null;
 			// A white highlight on a white panel is invisible, so a light-scheme edge
 			// carries a cool grey hairline plus a contact shadow instead; the bright
 			// component only leads in the dark scheme, where it can actually read.
 			return {
 				a: dark ? "rgba(255,255,255," + (work ? 0.42 : 0.34) + ")" : "rgba(255,255,255," + (work ? 0.6 : 0.52) + ")",
-				b: dark ? "rgba(" + (work ? "198,224,255" : "255,255,255") + ",0.16)" : "rgba(" + (work ? "150,190,235" : "176,186,206") + ",0.34)",
-				c: dark ? "rgba(" + (work ? "150,200,255" : "255,246,238") + ",0.24)" : "rgba(" + (work ? "120,170,220" : "150,160,182") + ",0.42)",
+				b: biasColorString(dark ? "rgba(" + (work ? "198,224,255" : "255,255,255") + ",0.16)" : "rgba(" + (work ? "150,190,235" : "176,186,206") + ",0.34)", spillHue, SPILL_MIX),
+				c: biasColorString(dark ? "rgba(" + (work ? "150,200,255" : "255,246,238") + ",0.24)" : "rgba(" + (work ? "120,170,220" : "150,160,182") + ",0.42)", spillHue, SPILL_MIX),
 				ao: dark ? "rgba(0,0,0,0.5)" : "rgba(90,100,140,0.16)",
 				edge: dark ? "rgba(0,0,0,0.34)" : "rgba(120,132,156,0.34)",
 				contact: dark ? "rgba(0,0,0,0.42)" : "rgba(84,94,124,0.20)",
@@ -1001,6 +1131,121 @@ window.__ModuleLoader__.load({
 			var panelListeners = [];
 			/** The alpha each panel currently paints, for the row's readout. */
 			var panelAlphaCache = { left: 0, main: 0, right: 0 };
+			/**
+			 * What the footage currently looks like. `ready` stays false until a frame
+			 * has actually been read, so nothing is ever guessed: an unreadable clip
+			 * (a cross-origin URL taints the canvas) falls back to the neutral wash.
+			 */
+			var mediaSample = { ready: false, brightness: 0.5, hue: null, saturation: 0, dim: 0, sampledAt: 0 };
+			var sampleCanvas = null;
+
+			/** @returns the first clip that actually has a frame to read. */
+			function activeVideo() {
+				for (var i = 0; i < SLOTS.length; i++) {
+					var video = videos[SLOTS[i]];
+					if (video === undefined || video === null) continue;
+					if (video.getAttribute("data-glass-clip") === "none") continue;
+					if (typeof video.readyState === "number" && video.readyState < 2) continue;
+					return video;
+				}
+				return null;
+			}
+
+			/** @returns the offscreen sampler canvas, created once. */
+			function ensureSampleCanvas() {
+				if (sampleCanvas !== null) return sampleCanvas;
+				if (typeof doc.createElement !== "function") return null;
+				var canvas = doc.createElement("canvas");
+				if (canvas === null || canvas === undefined) return null;
+				canvas.width = SAMPLE_WIDTH;
+				canvas.height = SAMPLE_HEIGHT;
+				if (typeof canvas.setAttribute === "function") {
+					canvas.setAttribute("width", String(SAMPLE_WIDTH));
+					canvas.setAttribute("height", String(SAMPLE_HEIGHT));
+				}
+				sampleCanvas = canvas;
+				return canvas;
+			}
+
+			/** Publish what the footage implies: a dim layer and a hue to spill. */
+			function publishMedia() {
+				var dim = 0;
+				if (wallpaper.autoDim === true && mediaSample.ready && mediaSample.brightness > DIM_KNEE) {
+					dim = Math.min(DIM_MAX, ((mediaSample.brightness - DIM_KNEE) / (1 - DIM_KNEE)) * DIM_MAX);
+				}
+				mediaSample.dim = Math.round(dim * 1000) / 1000;
+				doc.body.style.setProperty("--gm-media-dim", String(mediaSample.dim));
+			}
+
+			/**
+			 * Read one downscaled frame and derive its brightness and hue. Throttled,
+			 * and a no-op when the canvas is unavailable or the clip is unreadable.
+			 * @param force - ignore the throttle (a new clip deserves a fresh reading).
+			 * @returns whether a frame was read.
+			 */
+			function sampleMedia(force) {
+				if (disposed) return false;
+				var video = activeVideo();
+				if (video === null) {
+					if (mediaSample.ready) {
+						mediaSample = { ready: false, brightness: 0.5, hue: null, saturation: 0, dim: 0, sampledAt: mediaSample.sampledAt };
+						publishMedia();
+						syncPanels();
+					}
+					return false;
+				}
+				var now = deps.now();
+				if (force !== true && now - mediaSample.sampledAt < SAMPLE_INTERVAL_MS) return false;
+				mediaSample.sampledAt = now;
+				var canvas = ensureSampleCanvas();
+				if (canvas === null || typeof canvas.getContext !== "function") return false;
+				var context = null;
+				try { context = canvas.getContext("2d"); } catch (error) { context = null; }
+				if (context === null || context === undefined || typeof context.drawImage !== "function") return false;
+				var pixels = null;
+				try {
+					context.drawImage(video, 0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
+					var image = context.getImageData(0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
+					pixels = image === undefined || image === null ? null : image.data;
+				} catch (error) {
+					// Tainted canvas (a cross-origin clip): stop guessing, use the wash.
+					mediaSample.ready = false;
+					mediaSample.hue = null;
+					publishMedia();
+					syncPanels();
+					return false;
+				}
+				if (pixels === null || pixels.length < 4) return false;
+				var total = 0;
+				var sumR = 0;
+				var sumG = 0;
+				var sumB = 0;
+				for (var i = 0; i + 3 < pixels.length; i += 4) {
+					sumR += pixels[i];
+					sumG += pixels[i + 1];
+					sumB += pixels[i + 2];
+					total += 1;
+				}
+				if (total === 0) return false;
+				var r = sumR / total;
+				var g = sumG / total;
+				var b = sumB / total;
+				var max = Math.max(r, g, b);
+				var min = Math.min(r, g, b);
+				var brightness = brightnessOf(r, g, b);
+				mediaSample = {
+					ready: true,
+					brightness: brightness,
+					hue: brightness < SPILL_MIN_BRIGHTNESS ? null : hueOf(r, g, b),
+					saturation: max === 0 ? 0 : (max - min) / max,
+					dim: mediaSample.dim,
+					sampledAt: now
+				};
+				publishMedia();
+				syncPanels();
+				return true;
+			}
+
 			/**
 			 * Remove anything a previous instance left in the DOM: a live reload can
 			 * mount this plugin twice, and two stages (or two style sheets) are how the
@@ -1289,7 +1534,10 @@ window.__ModuleLoader__.load({
 				if (list !== undefined && list !== null && typeof list.subscribe === "function") {
 					unsubscribes.push(list.subscribe(evaluate));
 				}
-				poll = deps.setInterval(evaluate, POLL_MS);
+				poll = deps.setInterval(function () {
+					evaluate();
+					sampleMedia(false);
+				}, POLL_MS);
 				// A colour-scheme flip re-resolves which palette each panel paints, so
 				// the published fills follow the presenter rather than boot time.
 				if (ctx !== undefined && ctx !== null && typeof ctx.on === "function") {
@@ -1320,7 +1568,8 @@ window.__ModuleLoader__.load({
 					opacity: wallpaper.opacity,
 					blur: wallpaper.blur,
 					tint: wallpaper.tint,
-					clarity: wallpaper.clarity
+					clarity: wallpaper.clarity,
+					autoDim: wallpaper.autoDim
 				};
 			}
 
@@ -1494,6 +1743,7 @@ window.__ModuleLoader__.load({
 					startPlayback(video);
 				}
 				announceWallpaper();
+				sampleMedia(true);
 			}
 
 			/**
@@ -1564,7 +1814,8 @@ window.__ModuleLoader__.load({
 					opacity: nextOpacity,
 					blur: patch.blur !== undefined ? patch.blur : wallpaper.blur,
 					tint: patch.tint !== undefined ? patch.tint : wallpaper.tint,
-					clarity: nextClarity
+					clarity: nextClarity,
+					autoDim: patch.autoDim !== undefined ? patch.autoDim : wallpaper.autoDim
 				});
 				if (patch.url !== undefined && clips[slot].source === "") releaseClipUrl(slot);
 				writeKey(VIDEO_KEY, JSON.stringify(videoConfig()));
@@ -1710,6 +1961,7 @@ window.__ModuleLoader__.load({
 				copy.panelRadius = panels.panelRadius;
 				copy.divider = panels.divider;
 				copy.refraction = panels.refraction;
+				copy.rimSpill = panels.rimSpill;
 				return copy;
 			}
 
@@ -1925,7 +2177,7 @@ window.__ModuleLoader__.load({
 						"0 10px 28px -14px rgba(" + (scheme === "dark" ? "0,0,0" : "84,94,124") + "," + contact + ")"
 					);
 				}
-				var rim = panelRim(moodNow, scheme);
+				var rim = panelRim(moodNow, scheme, panels.rimSpill === true ? mediaSample : null);
 				style.setProperty("--gm-rim-a", rim.a);
 				style.setProperty("--gm-rim-b", rim.b);
 				style.setProperty("--gm-rim-c", rim.c);
@@ -1963,6 +2215,7 @@ window.__ModuleLoader__.load({
 				if (given.panelRadius !== undefined) merged.panelRadius = given.panelRadius;
 				if (given.divider !== undefined) merged.divider = given.divider;
 				if (given.refraction !== undefined) merged.refraction = given.refraction;
+				if (given.rimSpill !== undefined) merged.rimSpill = given.rimSpill;
 				panels = normalizePanels(merged);
 				writeKey(PANEL_KEY, JSON.stringify(panels));
 				tagPanels(true);
@@ -2022,7 +2275,9 @@ window.__ModuleLoader__.load({
 					stage.appendChild(video);
 					videos[SLOTS[v]] = video;
 				}
-				var layers = ["idle", "work", "pulse"];
+				// `dim` is appended last on purpose: it is a legibility scrim over the
+				// whole media stack, exactly as Apple prescribes for glass over bright media.
+				var layers = ["idle", "work", "pulse", "dim"];
 				for (var i = 0; i < layers.length; i++) {
 					var layer = doc.createElement("div");
 					layer.setAttribute("data-glass-layer", layers[i]);
@@ -2148,6 +2403,7 @@ window.__ModuleLoader__.load({
 					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-divider"].forEach(function (name) {
 						doc.body.style.removeProperty(name);
 					});
+					doc.body.style.removeProperty("--gm-media-dim");
 					delete doc.body.dataset.glassPanels;
 					delete doc.body.dataset.glassGap;
 					var mounted = doc.getElementById(STAGE_ID);
@@ -2198,6 +2454,20 @@ window.__ModuleLoader__.load({
 				blurReport: blurReport,
 				/** Show or hide the checkerboard that makes blur visible. */
 				checker: checker,
+				/**
+				 * What the footage last read as, and the dim layer it earned. `ready`
+				 * false means nothing was read (no clip, or a cross-origin clip).
+				 * @returns the sampler state.
+				 */
+				media: function () {
+					return {
+						ready: mediaSample.ready,
+						brightness: Math.round(mediaSample.brightness * 1000) / 1000,
+						hue: mediaSample.hue === null ? null : Math.round(mediaSample.hue),
+						saturation: Math.round(mediaSample.saturation * 1000) / 1000,
+						dim: mediaSample.dim
+					};
+				},
 				/** Panic switch: drop every hook and the stylesheet for this session. */
 				off: shutdown,
 				/** Clear anything a stray mount left in the DOM, without unmounting. */
@@ -2380,7 +2650,15 @@ window.__ModuleLoader__.load({
 						),
 						knob("壁纸可见度", config.clarity, 0, 1, 0.05, "", function (value) { setConfig(engine.setWallpaper({ visibility: value })) }),
 						knob("模糊", config.blur, 0, 32, 1, "px", function (value) { setConfig(engine.setWallpaper({ blur: value })) }),
-						knob("情绪染色", config.tint, 0, 0.9, 0.05, "", function (value) { setConfig(engine.setWallpaper({ tint: value })) })
+						knob("情绪染色", config.tint, 0, 0.9, 0.05, "", function (value) { setConfig(engine.setWallpaper({ tint: value })) }),
+						// Footage this bright earns a legibility scrim (capped at 35%); the
+						// switch is here so it can be judged, and switched off, live.
+						h("label", { className: "gm-field" }, "背景亮度暗化",
+							h("input", {
+								type: "checkbox", checked: config.autoDim !== false,
+								onChange: function (event) { setConfig(engine.setWallpaper({ autoDim: event.target.checked })) }
+							})
+						)
 					)
 				);
 			};
@@ -2496,7 +2774,8 @@ window.__ModuleLoader__.load({
 						knob("分隔线", config.divider, 0, 1, 0.05, "", function (value) { setConfig(engine.setPanels({ divider: value })) })
 					),
 					h("div", { className: "gm-fields" },
-						toggle("边缘折射", config.refraction, function (value) { setConfig(engine.setPanels({ refraction: value })) })
+						toggle("边缘折射", config.refraction, function (value) { setConfig(engine.setPanels({ refraction: value })) }),
+						toggle("镜边取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) })
 					)
 				);
 			};
@@ -2582,7 +2861,17 @@ window.__ModuleLoader__.load({
 		exports.VIDEO_DEFAULTS = VIDEO_DEFAULTS;
 		exports.WALL_THIN = WALL_THIN;
 exports.WALL_PROTECT = WALL_PROTECT;
-exports.raiseAlpha = raiseAlpha;
+		exports.raiseAlpha = raiseAlpha;
+		exports.biasTowardHue = biasTowardHue;
+		exports.hslToRgb = hslToRgb;
+		exports.biasColorString = biasColorString;
+		exports.brightnessOf = brightnessOf;
+		exports.hueOf = hueOf;
+		exports.SAMPLE_INTERVAL_MS = SAMPLE_INTERVAL_MS;
+		exports.DIM_KNEE = DIM_KNEE;
+		exports.DIM_MAX = DIM_MAX;
+		exports.SPILL_MIX = SPILL_MIX;
+		exports.SPILL_MIN_BRIGHTNESS = SPILL_MIN_BRIGHTNESS;
 		exports.PANEL_DEFAULTS = PANEL_DEFAULTS;
 		exports.PANEL_KEYS = PANEL_KEYS;
 		exports.PANEL_SELECTOR = PANEL_SELECTOR;
