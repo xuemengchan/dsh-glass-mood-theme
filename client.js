@@ -2776,18 +2776,25 @@ window.__ModuleLoader__.load({
 					for (var i = 0; i < PANEL_KEYS.length; i++) {
 						var key = PANEL_KEYS[i];
 						var label = key === "left" ? "\u5de6\u4fa7\u680f" : (key === "main" ? "\u4e3b\u9762\u677f" : "\u53f3\u4fa7\u680f");
-						var node = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : panelNodes[key];
-						if (node === null || node === undefined) {
+						var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : panelNodes[key];
+						if (host === null || host === undefined) {
 							lines.push(label + "\uff1a\u672a\u8bc6\u522b");
 							continue;
 						}
+						var asked = doc.body.style.getPropertyValue("--gm-panel-" + key + "-blur");
 						var fill = doc.body.style.getPropertyValue("--gm-panel-" + key + "-fill");
 						var alpha = fill === "" ? "?" : String(effectiveAlpha(fill));
-						var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? "\u5185\u5c42\u5143\u7d20" : "\u5217\u81ea\u8eab";
-						var reason = panelDiag[key].length === 0
-							? "\u80cc\u666f\u53ef\u89c1"
-							: "\u5185\u5c42\u662f\u80cc\u666f\u6839\uff08" + panelDiag[key][0] + "\uff09\u2192 \u5df2\u6539\u6302\u5230\u5217\u4e0a\u5e76\u6316\u7a7a\u5185\u5c42";
-						lines.push(label + "\uff1a\u6750\u8d28\u5728" + host + "\uff0c\u9762\u677f alpha " + alpha + "\uff0c" + reason);
+						var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle : null;
+						var computed = "?";
+						var pseudo = "?";
+						if (read !== null) {
+							try { computed = String(read.call(win, host).backdropFilter ?? "none"); } catch (error) { computed = "?"; }
+							try { pseudo = String(read.call(win, host, "::before").backdropFilter ?? "none"); } catch (error) { pseudo = "?"; }
+						}
+						var where = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? "\u5185\u5c42\u5143\u7d20" : "\u5217\u81ea\u8eab";
+						var why = panelDiag[key].length === 0 ? "" : "\uff0c\u539f\u56e0\uff1a" + panelDiag[key][0];
+						lines.push(label + "\uff1a\u6750\u8d28\u5728" + where + "\uff0c\u6a21\u7cca " + (asked === "" ? "?" : asked) +
+							"\uff08\u5143\u7d20\u8ba1\u7b97\u503c " + computed + "\uff0c::before " + pseudo + "\uff09\uff0c\u9762\u677f alpha " + alpha + why);
 					}
 					return lines;
 				},
@@ -3031,6 +3038,9 @@ window.__ModuleLoader__.load({
 				var state = useState(engine.getPanels());
 				var config = state[0];
 				var setConfig = state[1];
+				var checkerState = useState(false);
+				var checkerOn = checkerState[0];
+				var setCheckerOn = checkerState[1];
 				var status = useState(engine.panelStatus().found);
 				var found = status[0];
 				var setFound = status[1];
@@ -3105,7 +3115,13 @@ window.__ModuleLoader__.load({
 					h("div", { className: "gm-fields" },
 						toggle("边缘折射", config.refraction, function (value) { setConfig(engine.setPanels({ refraction: value })) }),
 						toggle("内容取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) }),
-						toggle("按压形变", config.press !== false, function (value) { setConfig(engine.setPanels({ press: value })) })
+						toggle("按压形变", config.press !== false, function (value) { setConfig(engine.setPanels({ press: value })) }),
+						// A self-test anyone can read by looking: with a checkerboard behind
+						// the panels, a panel whose blur works turns the squares smooth.
+						toggle("棋盘格自检", checkerOn, function (value) {
+							setCheckerOn(value === true);
+							engine.checker(value === true);
+						})
 					)
 				);
 			};
