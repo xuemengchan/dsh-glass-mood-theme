@@ -1,0 +1,7 @@
+﻿# Scratch and local artefacts — never part of a checkpoint.
+_p*.py
+node_modules/
+*.log
+*.zip
+.DS_Store
+Thumbs.db

@@ -1,0 +1,47 @@
+{
+  "name": "dsh-glass-mood-theme",
+  "version": "1.12.0",
+  "description": "Glassmorphism theme for the DeepSeek Harness web GUI whose material follows agent activity (pearl white idle, steel blue working): per-state MP4/WebM wallpapers behind one visibility knob, glass panels with per-panel opacity/blur/highlight and sticky surface detection, high-contrast label tiers, opaque content surfaces, and frosting reserved for page-like dialogs.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "theme",
+    "skin",
+    "glassmorphism"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    },
+    "compatibility": {
+      "dsh": ">=0.2.0-rc.1 <0.3.0"
+    }
+  }
+}

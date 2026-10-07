@@ -1,0 +1,7 @@
+# Layer applied when a profile lists this bundle. The row goes into the web
+# surface's client plugin list, right beside the stock theme: this skin layers
+# over ui-theme's --dsw-* tokens instead of replacing them, so the built-in
+# light / dark / system preference keeps working and stays the user's choice.
+- insert:
+    - id: glass-mood-theme
+      name: dsh-glass-mood-theme
