@@ -654,11 +654,11 @@ window.__ModuleLoader__.load({
 			   descendants, which would displace any floating control living inside a
 			   panel. A pseudo has no descendants, so it is safe — and with the wallpaper
 			   stage inside the shell its backdrop now contains the footage. */
-			"body[data-glass-panels][data-glass-blur=on] [data-glass-surface]::before{" +
+			"body[data-glass-panels][data-glass-blur=on]:not([data-glass-transparency=reduced]) [data-glass-surface]::before{" +
 				"content:\"\";position:absolute;inset:0;z-index:-1;pointer-events:none;background:transparent;" +
 				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
 				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
-			"body[data-glass-panels][data-glass-blur=on] [data-glass-panel]:not([data-glass-delegate=on])::before{" +
+			"body[data-glass-panels][data-glass-blur=on]:not([data-glass-transparency=reduced]) [data-glass-panel]:not([data-glass-delegate=on])::before{" +
 				"content:\"\";position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;background:transparent;" +
 				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
 				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
@@ -949,14 +949,18 @@ window.__ModuleLoader__.load({
 		 * content-tinting switch is on. Nothing is tinted without it.
 		 * @returns a CSS color.
 		 */
-		function panelFill(key, scheme, panels, clarity, wallpaperOn, mood, sample) {
+		function panelFill(key, scheme, panels, clarity, wallpaperOn, mood, sample, reducedTransparency) {
 			var token = PANEL_BASE_TOKEN[key];
 			var value = pairFor(mood === "work" ? "work" : "idle")[token][scheme];
 			var match = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$/.exec(value);
 			if (match === null) return value;
 			var explicit = panels[key].opacity;
 			var alpha;
-			if (explicit >= 0) {
+			if (reducedTransparency === true) {
+				// "Reduce transparency" outranks the visibility knob: a pane you have to
+				// read through is exactly what the preference asks to remove.
+				alpha = 1;
+			} else if (explicit >= 0) {
 				alpha = explicit;
 			} else {
 				alpha = Number(match[4]);
@@ -1040,6 +1044,67 @@ window.__ModuleLoader__.load({
 				Math.round(g + (target[1] - g) * k),
 				Math.round(b + (target[2] - b) * k)
 			];
+		}
+
+		/**
+		 * The label tiers, weakest first. Under "increase contrast" every tier takes
+		 * the primary colour: the hierarchy is carried by size and weight instead of by
+		 * fading text toward the background.
+		 */
+		var LABEL_TIERS = [
+			"--dsw-alias-label-secondary",
+			"--dsw-alias-label-tertiary",
+			"--dsw-alias-label-caption",
+			"--dsw-alias-label-dimmed",
+			"--dsw-alias-label-document-preview"
+		];
+
+		/**
+		 * Answer "increase contrast": every label tier becomes the primary colour, and
+		 * no content surface is allowed to stay translucent.
+		 * @param pair - the light/dark token pairs.
+		 * @returns a new pair set; the input is not modified.
+		 */
+		function boostContrast(pair) {
+			var next = {};
+			for (var name in pair) {
+				if (!Object.prototype.hasOwnProperty.call(pair, name)) continue;
+				next[name] = { light: pair[name].light, dark: pair[name].dark };
+			}
+			var primary = next["--dsw-alias-label-primary"];
+			if (primary === undefined) return next;
+			for (var i = 0; i < LABEL_TIERS.length; i++) {
+				var tier = next[LABEL_TIERS[i]];
+				if (tier === undefined) continue;
+				next[LABEL_TIERS[i]] = { light: primary.light, dark: primary.dark };
+			}
+			for (var p = 0; p < WALL_PROTECT.length; p++) {
+				var token = next[WALL_PROTECT[p][0]];
+				if (token === undefined) continue;
+				next[WALL_PROTECT[p][0]] = { light: raiseAlpha(token.light, 1), dark: raiseAlpha(token.dark, 1) };
+			}
+			return next;
+		}
+
+		/**
+		 * Answer "reduce transparency": no text-bearing surface may depend on what is
+		 * behind it. The canvas is deliberately left alone — the wallpaper is the
+		 * person's own choice and it is only visible where nothing has to be read.
+		 * @param pair - the light/dark token pairs.
+		 * @returns a new pair set.
+		 */
+		function solidifySurfaces(pair) {
+			var next = {};
+			for (var name in pair) {
+				if (!Object.prototype.hasOwnProperty.call(pair, name)) continue;
+				next[name] = { light: pair[name].light, dark: pair[name].dark };
+			}
+			for (var p = 0; p < WALL_PROTECT.length; p++) {
+				var token = next[WALL_PROTECT[p][0]];
+				if (token === undefined) continue;
+				next[WALL_PROTECT[p][0]] = { light: raiseAlpha(token.light, 1), dark: raiseAlpha(token.dark, 1) };
+			}
+			return next;
 		}
 
 		/**
@@ -1198,6 +1263,8 @@ window.__ModuleLoader__.load({
 			 */
 			var mediaSample = { ready: false, brightness: 0.5, hue: null, saturation: 0, dim: 0, sampledAt: 0 };
 			var sampleCanvas = null;
+			var prefers = { reducedTransparency: false, moreContrast: false };
+			var preferenceLists = [];
 
 			/** @returns the first clip that actually has a frame to read. */
 			function activeVideo() {
@@ -1304,6 +1371,56 @@ window.__ModuleLoader__.load({
 				publishMedia();
 				syncPanels();
 				return true;
+			}
+
+			/**
+			 * Watch the two accessibility preferences Liquid Glass has to answer. A
+			 * browser without `matchMedia` simply reports "no preference".
+			 * @returns the current state.
+			 */
+			function readPreferences() {
+				prefers.reducedTransparency = queryPreference("(prefers-reduced-transparency: reduce)");
+				prefers.moreContrast = queryPreference("(prefers-contrast: more)");
+				// The attributes drive the CSS and the diagnostic, so they follow the
+				// reading whether or not a full repaint is asked for.
+				if (prefers.reducedTransparency) doc.body.dataset.glassTransparency = "reduced";
+				else delete doc.body.dataset.glassTransparency;
+				if (prefers.moreContrast) doc.body.dataset.glassContrast = "more";
+				else delete doc.body.dataset.glassContrast;
+				return prefers;
+			}
+
+			/** @param query - a media query. @returns whether it is supported and matches. */
+			function queryPreference(query) {
+				if (deps.matchMedia === undefined || deps.matchMedia === null) return false;
+				var list = null;
+				try { list = deps.matchMedia(query); } catch (error) { return false; }
+				if (list === null || list === undefined) return false;
+				return list.matches === true;
+			}
+
+			/**
+			 * Re-read the preferences and repaint what they touch. At boot only
+			 * `readPreferences` runs: the mood commit that follows publishes the token
+			 * layer, and publishing twice would stack two layers for nothing.
+			 */
+			function applyPreferences() {
+				readPreferences();
+				applyTokens();
+				syncPanels();
+			}
+
+			/** Follow a system change to either preference. */
+			function watchPreferences() {
+				if (deps.matchMedia === undefined || deps.matchMedia === null) return;
+				var queries = ["(prefers-reduced-transparency: reduce)", "(prefers-contrast: more)"];
+				for (var i = 0; i < queries.length; i++) {
+					var list = null;
+					try { list = deps.matchMedia(queries[i]); } catch (error) { list = null; }
+					if (list === null || list === undefined || typeof list.addEventListener !== "function") continue;
+					preferenceLists.push(list);
+					list.addEventListener("change", applyPreferences);
+				}
 			}
 
 			/**
@@ -1528,6 +1645,8 @@ window.__ModuleLoader__.load({
 			function applyTokens() {
 				var pair = pairFor(mood === null ? "idle" : mood);
 				if (hasWallpaperConfig(wallpaper)) pair = dimPair(pair, wallpaper.clarity);
+				if (prefers.reducedTransparency) pair = solidifySurfaces(pair);
+				if (prefers.moreContrast) pair = boostContrast(pair);
 				layerDispose = theme.overrideTokens(SOURCE, pair);
 			}
 
@@ -2227,7 +2346,7 @@ window.__ModuleLoader__.load({
 					var panel = panels[key];
 					style.setProperty("--gm-panel-" + key + "-blur", panel.blur + "px");
 					style.setProperty("--gm-panel-" + key + "-sheen", String(panel.sheen));
-					var fill = panelFill(key, scheme, panels, wallpaper.clarity, wallpaperOn, moodNow, spillSample);
+					var fill = panelFill(key, scheme, panels, wallpaper.clarity, wallpaperOn, moodNow, spillSample, prefers.reducedTransparency);
 					style.setProperty("--gm-panel-" + key + "-fill", fill);
 					// The effective alpha is what the row prints, so the slider always
 					// shows the truth even while it is following the palette.
@@ -2319,6 +2438,8 @@ window.__ModuleLoader__.load({
 				if (started) return function () {};
 				started = true;
 
+				readPreferences();
+				watchPreferences();
 				// Never build on top of a previous instance.
 				sweepOrphans();
 				var style = doc.createElement("style");
@@ -2412,6 +2533,10 @@ window.__ModuleLoader__.load({
 			 */
 			function shutdown() {
 					disposed = true;
+					for (var pl = 0; pl < preferenceLists.length; pl++) {
+						if (typeof preferenceLists[pl].removeEventListener === "function") preferenceLists[pl].removeEventListener("change", applyPreferences);
+					}
+					preferenceLists = [];
 					cancelPending();
 					if (fadeTimer !== 0) {
 						clearTimer(fadeTimer);
@@ -2480,6 +2605,8 @@ window.__ModuleLoader__.load({
 					delete doc.body.dataset.glassFading;
 					delete doc.body.dataset.glassWallpaper;
 					delete doc.body.dataset.glassPress;
+					delete doc.body.dataset.glassTransparency;
+					delete doc.body.dataset.glassContrast;
 					doc.body.style.removeProperty("--gm-wall-fit");
 					doc.body.style.removeProperty("--gm-wall-opacity");
 					doc.body.style.removeProperty("--gm-wall-blur");
@@ -2541,6 +2668,12 @@ window.__ModuleLoader__.load({
 				off: shutdown,
 				/** Clear anything a stray mount left in the DOM, without unmounting. */
 				sweep: sweepOrphans,
+				/** The two accessibility preferences this theme answers. */
+				preferences: function () {
+					return { reducedTransparency: prefers.reducedTransparency, moreContrast: prefers.moreContrast };
+				},
+				/** Re-read them now (a system change can be picked up on demand). */
+				refreshPreferences: applyPreferences,
 				/** Register a listener for wallpaper changes; returns an unsubscribe. */
 				subscribeWallpaper: function (listener) {
 					wallpaperListeners.push(listener);
@@ -2932,6 +3065,9 @@ window.__ModuleLoader__.load({
 		exports.WALL_THIN = WALL_THIN;
 exports.WALL_PROTECT = WALL_PROTECT;
 		exports.raiseAlpha = raiseAlpha;
+		exports.boostContrast = boostContrast;
+		exports.solidifySurfaces = solidifySurfaces;
+		exports.LABEL_TIERS = LABEL_TIERS;
 		exports.biasTowardHue = biasTowardHue;
 		exports.tintTowardHue = tintTowardHue;
 		exports.hslToRgb = hslToRgb;

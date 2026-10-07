@@ -352,6 +352,43 @@ function mount(options = {}) {
   }
   const idb = options.idb === false ? null : (options.idb ?? createIndexedDB())
   const clock = createClock()
+  // The accessibility preferences, off unless a test seeds them.
+  const preferenceState = {
+    '(prefers-reduced-transparency: reduce)': options.prefers?.reducedTransparency === true,
+    '(prefers-contrast: more)': options.prefers?.moreContrast === true
+  }
+  const preferenceLists = Object.keys(preferenceState).map((query) => {
+    const listeners = []
+    return {
+      query,
+      list: {
+        get matches() { return preferenceState[query] },
+        addEventListener(type, listener) { if (type === 'change') listeners.push(listener) },
+        removeEventListener(type, listener) {
+          if (type !== 'change') return
+          const at = listeners.indexOf(listener)
+          if (at >= 0) listeners.splice(at, 1)
+        }
+      },
+      emit() { for (const listener of [...listeners]) listener({ matches: preferenceState[query] }) },
+      listenerCount: () => listeners.length
+    }
+  })
+  /**
+   * The media-query stand-in the engine reads. A test can turn the whole API off with
+   * `matchMedia: false`, which models a browser that does not have it.
+   */
+  const matchMediaStub = (query) => {
+    const entry = preferenceLists.find((candidate) => candidate.query === query)
+    if (entry === undefined) return { matches: false, addEventListener() {}, removeEventListener() {} }
+    return entry.list
+  }
+  /** Flip a system preference and deliver the change, as the OS would. */
+  const setPreference = (name, value) => {
+    const query = name === 'reducedTransparency' ? '(prefers-reduced-transparency: reduce)' : '(prefers-contrast: more)'
+    preferenceState[query] = value === true
+    for (const entry of preferenceLists) if (entry.query === query) entry.emit()
+  }
   // The shell columns exist before the engine mounts, the way the real frame does.
   const shell = options.shell === false ? null : mountShellColumns(document)
   const engine = loaded.createEngine({
@@ -366,12 +403,13 @@ function mount(options = {}) {
     clearInterval: clock.clearInterval,
     localStorage: storage,
     indexedDB: idb,
-    URL: urlApi
+    URL: urlApi,
+    matchMedia: options.matchMedia === false ? undefined : matchMediaStub
   })
   const dispose = engine.start()
   return {
     document, window, loaded, storage, layers, sessionStatus, sessionList, engine, dispose, clock, disposers,
-    objectUrls, idb, theme, services, shell,
+    objectUrls, idb, theme, services, shell, setPreference, preferenceLists,
     /** Deliver a theme/change the way the real service does. */
     emitThemeChange: () => { for (const listener of themeListeners) listener({}) }
   }
@@ -976,6 +1014,68 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(m.document.body.dataset.glassPress, undefined, 'off() clears the attribute')
   console.log('ok  press deformation, with no pointer light left behind')
 }
+
+//#region accessibility
+{
+  // Accessibility, which Apple's HIG names explicitly for Liquid Glass: Reduced
+  // Transparency and Increased Contrast. Both are read from media queries, both
+  // change the tokens, and both are answered again when the system flips.
+  const m = mount({ prefers: { reducedTransparency: true } })
+  assert.deepEqual(
+    m.engine.preferences(),
+    { reducedTransparency: true, moreContrast: false },
+    'the preference is read at mount'
+  )
+  assert.equal(m.document.body.dataset.glassTransparency, 'reduced', 'and reaches the body for the CSS')
+  assert.match(
+    m.document.getElementById('dsh-glass-mood-style').textContent,
+    /:not\(\[data-glass-transparency=reduced\]\) \[data-glass-surface\]::before/,
+    'so the pane frost is skipped: there is nothing to see through a solid pane'
+  )
+  m.dispose()
+
+  // Every text-bearing surface becomes opaque, and the visibility knob can no longer
+  // thin a pane you have to read through.
+  const solid = mount({ prefers: { reducedTransparency: true } })
+  solid.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4', visibility: 1 })
+  assert.equal(panelAlpha(bodyVar(solid, '--gm-panel-main-fill')), 1, 'the pane is solid whatever the visibility knob says')
+  assert.equal(panelAlpha(bodyVar(solid, '--gm-panel-left-fill')), 1, 'and so is the sidebar')
+  const tokens = solid.layers[solid.layers.length - 1].tokens
+  assert.equal(alphaOf(tokens['--dsw-specific-bubble'].light), 1, 'message bubbles are solid')
+  assert.equal(alphaOf(tokens['--dsw-alias-bg-document-preview'].light), 1, 'and so is the diff preview')
+  // The canvas is deliberately left alone: the wallpaper is the person's own choice
+  // and it only shows where nothing has to be read.
+  assert.ok(alphaOf(tokens['--dsw-alias-bg-base'].light) < 1, 'the wallpaper still shows between the panels')
+  solid.dispose()
+
+  // Increased contrast unifies the label tiers, so hierarchy comes from size and
+  // weight rather than from fading text toward the background.
+  const contrast = mount({ prefers: { moreContrast: true } })
+  assert.equal(contrast.document.body.dataset.glassContrast, 'more', 'the preference reaches the body')
+  const boosted = contrast.layers[contrast.layers.length - 1].tokens
+  const primary = boosted['--dsw-alias-label-primary']
+  for (const tier of contrast.loaded.LABEL_TIERS) {
+    assert.deepEqual(boosted[tier], primary, `${tier} takes the primary colour`)
+  }
+  assert.equal(alphaOf(boosted['--dsw-alias-bg-overlay'].light), 1, 'and popovers become solid')
+  contrast.dispose()
+
+  // A system change lands without a reload, and the listeners are released.
+  const live = mount()
+  assert.equal(live.document.body.dataset.glassContrast, undefined, 'nothing is assumed at first')
+  assert.ok(live.preferenceLists.every((entry) => entry.listenerCount() === 1), 'both preferences are watched')
+  live.setPreference('moreContrast', true)
+  assert.equal(live.document.body.dataset.glassContrast, 'more', 'flipping the system setting repaints')
+  assert.equal(live.document.body.dataset.glassTransparency, undefined, 'and only what changed')
+  live.setPreference('reducedTransparency', true)
+  assert.equal(live.document.body.dataset.glassTransparency, 'reduced', 'the other one too')
+  live.setPreference('moreContrast', false)
+  assert.equal(live.document.body.dataset.glassContrast, undefined, 'and turning one off is answered as well')
+  live.dispose()
+  assert.ok(live.preferenceLists.every((entry) => entry.listenerCount() === 0), 'teardown releases the listeners')
+  console.log('ok  reduced transparency and increased contrast are answered, live')
+}
+//#endregion
 
 //#region panels
 {

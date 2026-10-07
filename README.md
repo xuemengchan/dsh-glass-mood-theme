@@ -181,7 +181,7 @@
 | 自带阴影（优先于通用阴影） | 鸿蒙 `applyShadow` | 面板自有接触投影，不依赖应用的 shadow |
 | 交互时发光 / 触点流光跟随 | 鸿蒙 `lightEffect`、Apple | **试过后移除**（v1.16 实现，v1.17 按反馈删掉）：它确实是规范里的行为，但实际看起来没有意义 |
 | 按压弹性形变 | 鸿蒙 `interactive` | **已实现且保留**：按下时控件缩到 0.972，松手自动恢复 |
-| Reduced Motion / Transparency / Contrast | Apple HIG | 仅 Reduced Motion；另两项**待补** |
+| Reduced Motion / Transparency / Contrast | Apple HIG | **三项都已响应**：运动降级、降低透明度、增强对比度（见下） |
 
 参考：[Apple — Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/liquid-glass)、[Apple HIG — Materials](https://developer.apple.com/design/human-interface-guidelines/materials)、[WWDC25 — Meet Liquid Glass](https://developer.apple.com/videos/play/wwdc2025/219/)、[鸿蒙 — 沉浸光感开发指导](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkts-immersive-light-sense-development)。
 
@@ -193,6 +193,31 @@
 - **不猜**：无剪辑、帧还没好、帧偏暗（< 0.08）、帧近似灰色（饱和度 < 0.08）、或 **跨域视频污染了 canvas** 时，采样器宁可报“未读到”也不猜一个颜色。
 - **节流**：每 4 秒采一帧（`SAMPLE_INTERVAL_MS`），远低于 1.5 秒的状态轮询；抽帧是一个 24×14 的离屏 canvas，跟整屏采样不是一个量级。
 - 诊断：`__dshGlassMood.media()` 返回 `{ ready, brightness, hue, saturation, dim }`。
+
+### 无障碍：降低透明度与增强对比度
+
+苹果 HIG 把 Reduced Transparency / Increased Contrast / Reduced Motion 并列为玻璃材质必须响应的三项，
+前两项现在由媒体查询读取（`prefers-reduced-transparency` / `prefers-contrast`），并且**系统切换时立即重绘**，不需要刷新。
+
+**降低透明度**：所有“读”的表面变成**完全不透明**（气泡 / 输入框 / 弹窗 / 卡片层级 / 代码块 / 文档预览 / 设置卡），
+面板也一律不透明，并且**可见度滑杆不再能把它削薄** —— “不要透明”正是要求取消“你得透着它看”的表面。
+面板既然是实底，模糊层也就没了意义，所以 `backdrop-filter` 也一并跳过（少一份 GPU 开销）。
+
+一个刻意的例外：**画布（壁纸）不动**。壁纸是你自己选的，而且它只在“没有任何东西需要被阅读”的面板之间露出。
+如果你希望它彻底消失，直接把壁纸清掉即可。
+
+**增强对比度**：六档文字全部取用**主文色**（层级改由字号与字重承担，而不是把字淡向背景），字段层级与弹窗也一并变为不透明。实测：
+
+| 令牌 | 平时 | 增强对比度 |
+|---|---|---|
+| `label-secondary` | `#50556A` | `#17181C` |
+| `label-tertiary` | `#666C7A` | `#17181C` |
+| `label-caption` | `#565C6B` | `#17181C` |
+| `label-dimmed` | `#7A808F` | `#17181C` |
+| `label-document-preview` | `#3A3F4C` | `#17181C` |
+
+诊断：`__dshGlassMood.preferences()` 返回两项当前状态；`__dshGlassMood.refreshPreferences()` 可手动重读。
+没有 `matchMedia` 的环境不会报错，只是如实地报“无偏好”。
 
 ### 交互反馈：只保留按压形变
 
