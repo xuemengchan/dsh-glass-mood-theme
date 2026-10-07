@@ -354,7 +354,7 @@ window.__dshGlassMood.probe()                       // 重新探测内层表面�
 window.__dshGlassMood.tagBigSurfaces()              // 重新判定哪些弹窗算页面级（可磨砂）
 window.__dshGlassMood.checker(true)                 // 在壁纸上叠一层黑白格：面板后面变糊 = 模糊真的生效
 window.__dshGlassMood.checker(false)                // 移除棋盘格
-window.__dshGlassMood.blurReport()                  // 每个面板实际生效的 backdrop-filter 与舞台宿主
+window.__dshGlassMood.blurReport()                  // 每个面板的 backdrop-filter、是否委托、面板 alpha、舞台宿主，以及**哪个祖先形成了背景根**
 window.__dshGlassMood.off()                         // 应急开关：本次会话内完全卸下主题（样式表/钩子/舞台）
 window.__dshGlassMood.retag(true)                   // 重新识别三根列并深度探测
 window.__dshGlassMood.setWallpaper({ visibility: 0.7 })   // 等效于拖动「壁纸可见度」

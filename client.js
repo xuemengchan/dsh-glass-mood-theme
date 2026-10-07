@@ -649,16 +649,20 @@ window.__ModuleLoader__.load({
 			"body[data-glass-panels] [data-glass-surface=left]{--gm-panel-blur:var(--gm-panel-left-blur);background-color:var(--gm-panel-left-fill)}",
 			"body[data-glass-panels] [data-glass-surface=main]{--gm-panel-blur:var(--gm-panel-main-blur);background-color:var(--gm-panel-main-fill)}",
 			"body[data-glass-panels] [data-glass-surface=right]{--gm-panel-blur:var(--gm-panel-right-blur);background-color:var(--gm-panel-right-fill)}",
+			/* The frost is deliberately NOT gated on the transparency preference. Skipping
+			   it looked like a free saving (a solid pane has nothing to see through), but
+			   it also means one preference reading can silently disable the blur knob —
+			   and a blur over a solid pane is invisible anyway. */
 			/* The blur rides a pseudo, never the panel element itself: an element with a
 			   backdrop-filter becomes the containing block of its fixed-position
 			   descendants, which would displace any floating control living inside a
 			   panel. A pseudo has no descendants, so it is safe — and with the wallpaper
 			   stage inside the shell its backdrop now contains the footage. */
-			"body[data-glass-panels][data-glass-blur=on]:not([data-glass-transparency=reduced]) [data-glass-surface]::before{" +
+			"body[data-glass-panels][data-glass-blur=on] [data-glass-surface]::before{" +
 				"content:\"\";position:absolute;inset:0;z-index:-1;pointer-events:none;background:transparent;" +
 				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
 				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
-			"body[data-glass-panels][data-glass-blur=on]:not([data-glass-transparency=reduced]) [data-glass-panel]:not([data-glass-delegate=on])::before{" +
+			"body[data-glass-panels][data-glass-blur=on] [data-glass-panel]:not([data-glass-delegate=on])::before{" +
 				"content:\"\";position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;background:transparent;" +
 				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
 				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
@@ -1845,8 +1849,17 @@ window.__ModuleLoader__.load({
 					var pseudo = null;
 					try { style = read.call(win, node); } catch (error) { style = null; }
 					try { pseudo = read.call(win, node, "::before"); } catch (error) { pseudo = null; }
+					var fill = doc.body.style.getPropertyValue("--gm-panel-" + key + "-fill");
 					report[key] = {
 						element: (typeof node.tagName === "string" ? node.tagName.toLowerCase() : "") + "." + String(node.getAttribute === undefined ? "" : (node.getAttribute("class") ?? "")),
+						/** A delegated panel frosts an inner element; otherwise the column. */
+						delegated: panelSurfaces[key] !== null && panelSurfaces[key] !== undefined,
+						/** The alpha the pane paints with: 1 means no blur can show through. */
+						fillAlpha: fill === "" ? null : effectiveAlpha(fill),
+						/** Whether the frost rule is even eligible (the no-blur escape hatch). */
+						blurGate: doc.body.dataset.glassBlur ?? "off",
+						/** An ancestor here is why the blur has nothing to blur. */
+						backdropRoots: backdropRoots(node),
 						blurVariable: style !== null && style !== undefined && typeof style.getPropertyValue === "function" ? String(style.getPropertyValue("--gm-panel-blur") ?? "") : "",
 						backdrop: style === null || style === undefined ? "" : String(style.backdropFilter ?? ""),
 						pseudoBackdrop: pseudo === null || pseudo === undefined ? "" : String(pseudo.backdropFilter ?? ""),
@@ -2368,6 +2381,46 @@ window.__ModuleLoader__.load({
 				style.setProperty("--gm-rim-ao", rim.ao);
 				style.setProperty("--gm-rim-contact", rim.contact);
 				style.setProperty("--gm-divider", rim.divider(panels.divider));
+			}
+
+			/**
+			 * List every ancestor of a node that forms a BACKDROP ROOT. A backdrop-filter
+			 * can only see what is painted inside its own root, so an ancestor carrying
+			 * `contain: paint`, a filter, opacity, isolation, a mask or a blend mode
+			 * leaves the frost with nothing to blur — the one failure a computed
+			 * `backdrop-filter` value cannot reveal on its own.
+			 * @param node - the element the frost is hosted on.
+			 * @returns a list of `tag.class: property=value` entries, nearest first.
+			 */
+			function backdropRoots(node) {
+				var found = [];
+				var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle : null;
+				if (read === null) return found;
+				var walk = node;
+				var guard = 0;
+				while (walk !== null && walk !== undefined && guard < 24) {
+					guard += 1;
+					var style = null;
+					try { style = read.call(win, walk); } catch (error) { style = null; }
+					if (style !== null && style !== undefined) {
+						var contain = String(style.contain ?? "");
+						var opacity = Number(style.opacity);
+						var traits = [];
+						if (/paint|strict|content/.test(contain)) traits.push("contain=" + contain);
+						if (String(style.filter ?? "none") !== "none") traits.push("filter=" + style.filter);
+						if (Number.isFinite(opacity) && opacity < 1) traits.push("opacity=" + opacity);
+						if (String(style.isolation ?? "") === "isolate") traits.push("isolation=isolate");
+						if (String(style.maskImage ?? "none") !== "none") traits.push("mask=" + style.maskImage);
+						if (String(style.clipPath ?? "none") !== "none") traits.push("clip-path=" + style.clipPath);
+						if (String(style.mixBlendMode ?? "normal") !== "normal") traits.push("mix-blend-mode=" + style.mixBlendMode);
+						if (traits.length > 0) {
+							var label = (typeof walk.tagName === "string" ? walk.tagName.toLowerCase() : "?") + "." + String(walk.getAttribute === undefined ? "" : (walk.getAttribute("class") ?? ""));
+							found.push(label + ": " + traits.join(", "));
+						}
+					}
+					walk = walk.parentElement !== undefined ? walk.parentElement : walk.parent;
+				}
+				return found;
 			}
 
 			/** @returns the alpha of a computed rgba() colour, for the row's readout. */

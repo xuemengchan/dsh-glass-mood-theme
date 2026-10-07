@@ -1029,8 +1029,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(m.document.body.dataset.glassTransparency, 'reduced', 'and reaches the body for the CSS')
   assert.match(
     m.document.getElementById('dsh-glass-mood-style').textContent,
-    /:not\(\[data-glass-transparency=reduced\]\) \[data-glass-surface\]::before/,
-    'so the pane frost is skipped: there is nothing to see through a solid pane'
+    /\[data-glass-blur=on\] \[data-glass-surface\]::before\{[^}]*backdrop-filter/,
+    'the pane frost stays unconditional: one preference reading must never disable the blur knob'
   )
   m.dispose()
 
@@ -1178,6 +1178,20 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   const report = m.engine.blurReport()
   assert.equal(typeof report.left, 'object', 'the report covers each panel')
   assert.ok('backdrop' in report.left && 'stageHost' in report.left, 'with the computed filter and the stage host')
+  assert.equal(report.left.delegated, true, 'and whether the material was delegated to an inner element')
+  assert.equal(report.main.delegated, false, 'which differs per panel')
+  assert.equal(typeof report.left.fillAlpha, 'number', 'the pane alpha is reported, since an opaque pane hides any blur')
+
+  // The one failure a computed value cannot show: an ancestor that forms a backdrop
+  // root leaves the frost with nothing to blur. The report has to name it.
+  m.shell.leftSurface.computed = { contain: 'paint', opacity: '0.98' }
+  const rooted = m.engine.blurReport().left.backdropRoots
+  assert.ok(Array.isArray(rooted), 'the report lists backdrop-root ancestors')
+  assert.ok(
+    rooted.some((entry) => entry.includes('contain=paint')) && rooted.some((entry) => entry.includes('opacity=0.98')),
+    `and names the property responsible (${JSON.stringify(rooted)})`
+  )
+  assert.equal(m.engine.blurReport().main.backdropRoots.length, 0, 'while a clean panel reports none')
   m.dispose()
   console.log('ok  stage sits inside the shell + blur diagnostics')
 }
