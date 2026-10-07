@@ -1125,27 +1125,33 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   )
   m.dispose()
 
-  // The guard is behavioural, not cosmetic: a panel holding a fixed descendant must
-  // keep the pseudo, and a panel without one must take the blur itself.
+  // The arrangement is chosen by where the material sits, not by a guess:
+  //  - a delegated inner surface takes the blur on itself, because a pseudo there
+  //    reports a valid blur and samples nothing;
+  //  - a column keeps the pseudo, which is what was stable.
+  // The fixed-descendant condition is still measured, so it can be reported instead
+  // of silently deciding for us; the collapsed column is protected by `columnUsable`.
   const guard = mount()
-  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'a clean panel hosts the blur on the element')
+  assert.equal(guard.engine.blurReport().left.delegated, true, 'the left panel is delegated')
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'so its blur rides the surface itself')
+  assert.equal(guard.engine.blurReport().main.blurHost, 'pseudo', 'while a column keeps the pseudo')
   const floating = guard.document.createElement('div')
   floating.computed = { position: 'fixed' }
   guard.shell.leftSurface.appendChild(floating)
   guard.engine.retag(true)
   assert.equal(
     guard.engine.blurReport().left.blurHost,
-    'pseudo',
-    'while a fixed descendant sends the blur back to the pseudo, so nothing is displaced'
+    'element',
+    'a fixed descendant no longer moves the blur somewhere it cannot work'
   )
-  assert.equal(
-    guard.shell.leftSurface.getAttribute('data-glass-blur-host'),
-    undefined,
-    'and the element stops advertising itself as a blur host'
+  assert.match(
+    guard.engine.blurSummary().join(' '),
+    /含 fixed 子元素/,
+    'it is reported instead, so a displaced floating control can be traced to this panel'
   )
   floating.remove()
   guard.engine.retag(true)
-  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'and it returns once the floating control is gone')
+  assert.ok(!/含 fixed 子元素/.test(guard.engine.blurSummary().join(' ')), 'and the note clears with the control')
   guard.dispose()
   console.log('ok  frost hosts do not form a backdrop root')
 }

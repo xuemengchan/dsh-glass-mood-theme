@@ -663,6 +663,12 @@ window.__ModuleLoader__.load({
 			   stage inside the shell its backdrop now contains the footage. */
 			/* The blur the browser demonstrably honours: on the element that carries the
 			   material, so the backdrop it samples is the same one the fill shows through. */
+			/* The self-test must be able to prove itself: it forces a blur big enough to
+			   destroy a 6px checkerboard, on whichever arrangement the panel uses. */
+			"body[data-glass-selftest=on] [data-glass-blur-host=element]," +
+				"body[data-glass-selftest=on] [data-glass-surface]::before," +
+				"body[data-glass-selftest=on] [data-glass-panel]:not([data-glass-delegate=on])::before{" +
+				"-webkit-backdrop-filter:blur(40px) !important;backdrop-filter:blur(40px) !important}",
 			"body[data-glass-panels][data-glass-blur=on] [data-glass-blur-host=element]{" +
 				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
 				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
@@ -1472,7 +1478,7 @@ window.__ModuleLoader__.load({
 				}
 				var stray = [
 					"[data-glass-panel]", "[data-glass-surface]", "[data-glass-frost]",
-					"[data-glass-delegate]", "[data-glass-hollow]", "[data-glass-blur-host]", "[data-glass-frame]", "[data-glass-checker]"
+					"[data-glass-delegate]", "[data-glass-hollow]", "[data-glass-blur-host]", "[data-glass-selftest]", "[data-glass-frame]", "[data-glass-checker]"
 				];
 				for (var i = 0; i < stray.length; i++) {
 					var nodes = doc.querySelectorAll(stray[i]);
@@ -1517,23 +1523,29 @@ window.__ModuleLoader__.load({
 			var panelBlurNote = { left: [], main: [], right: [] };
 
 			/**
-			 * Put the blur on whichever element carries the material, unless that element
-			 * holds a fixed descendant. Called after the material host is decided.
+			 * Put the blur where it demonstrably works for this panel. A column keeps the
+			 * pseudo arrangement (the one that was stable); a delegated inner surface
+			 * takes the blur on itself, because a pseudo there reports a valid blur and
+			 * samples nothing. The fixed-descendant condition is still measured — it is
+			 * reported rather than allowed to silently move the blur somewhere useless,
+			 * since a collapsed column is already left untouched by `columnUsable`.
 			 * @param key - the panel key.
 			 */
 			function aimBlur(key) {
-				var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : panelNodes[key];
+				var delegated = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined;
+				var host = delegated ? panelSurfaces[key] : panelNodes[key];
 				if (host === null || host === undefined || typeof host.setAttribute !== "function") return;
-				var blocked = hasFixedDescendant(host);
-				if (blocked === true) {
+				if (delegated !== true) {
 					host.removeAttribute("data-glass-blur-host");
 					panelBlurHost[key] = "pseudo";
-					panelBlurNote[key] = ["\u542b position:fixed \u5b50\u5143\u7d20"];
-				} else {
-					host.setAttribute("data-glass-blur-host", "element");
-					panelBlurHost[key] = "element";
 					panelBlurNote[key] = [];
+					return;
 				}
+				host.setAttribute("data-glass-blur-host", "element");
+				panelBlurHost[key] = "element";
+				panelBlurNote[key] = hasFixedDescendant(host) === true
+					? ["\u542b fixed \u5b50\u5143\u7d20\uff0c\u82e5\u60ac\u6d6e\u63a7\u4ef6\u9519\u4f4d\u8bf7\u53cd\u9988"]
+					: [];
 			}
 			var refractionMounted = false;
 			var retagTimer = 0;
@@ -1934,6 +1946,7 @@ window.__ModuleLoader__.load({
 				var mounted = doc.querySelector("[data-glass-checker]");
 				if (on === false) {
 					if (mounted !== null && mounted !== undefined && typeof mounted.remove === "function") mounted.remove();
+					delete doc.body.dataset.glassSelftest;
 					return { checker: false };
 				}
 				var stage = doc.getElementById(STAGE_ID);
@@ -1941,10 +1954,13 @@ window.__ModuleLoader__.load({
 				if (mounted === null || mounted === undefined) {
 					mounted = doc.createElement("div");
 					mounted.setAttribute("data-glass-checker", "");
-					mounted.setAttribute("style", "position:absolute;inset:0;pointer-events:none;opacity:.85;background:repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/22px 22px");
+					mounted.setAttribute("style", "position:absolute;inset:0;pointer-events:none;opacity:1;background:repeating-conic-gradient(#000 0 25%,#fff 0 50%) 0 0/6px 6px");
 					stage.appendChild(mounted);
 				}
-				return { checker: true };
+				// Force a large blur while the self-test is on: the question is whether the
+				// mechanism works on this panel, not what value someone happened to set.
+				doc.body.dataset.glassSelftest = "on";
+				return { checker: true, selfTest: true, forcedBlur: "40px" };
 			}
 
 			function renderWallpaper() {
@@ -2767,6 +2783,7 @@ window.__ModuleLoader__.load({
 					delete doc.body.dataset.glassPress;
 					delete doc.body.dataset.glassTransparency;
 					delete doc.body.dataset.glassContrast;
+					delete doc.body.dataset.glassSelftest;
 					doc.body.style.removeProperty("--gm-wall-fit");
 					doc.body.style.removeProperty("--gm-wall-opacity");
 					doc.body.style.removeProperty("--gm-wall-blur");
