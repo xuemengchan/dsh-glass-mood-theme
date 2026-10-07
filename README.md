@@ -500,6 +500,25 @@ node test/glass-mood.test.mjs
 
 面向 DSH `0.2.0-rc.1` – `0.2.x`（`package.json` 的 `dsh.compatibility.dsh`）。选择器依赖官方已有的 `data-*` 挂点（`[data-composer-card]`、`[data-time-hover-root]`、`[data-conversation-scroll]`、`[data-queue-dock]`、`[data-slot="conversation.session.header"]`）与 CSS Modules 的 `_local` 命名；官方改版后若某个挂点消失，最坏情况是那一处不再有磨砂，其余配色照常。
 
+## 面板行现在有什么
+
+| 位置 | 项目 |
+|---|---|
+| 三条面板线 | 不透明度 / 模糊 / 高光（各自独立） |
+| 几何 | 面板间隙 / 外框圆角 / 面板圆角 / 分隔线 |
+| 开关 | 边缘折射 / 内容取色 / 按压形变 |
+
+调试用的两个项（「棋盘格自检」与「模糊降级为伪元素」）已从界面移除：
+它们在追模糊那几轮里很管用，但那是诊断，不是设置。两者作为引擎 API 保留：
+
+```js
+window.__dshGlassMood.checker(true)        // 棋盘格自检（同时强制 40px 模糊）
+window.__dshGlassMood.setPanels({ blurFallback: true })   // 模糊改回伪元素
+```
+
+「模糊挂载」那行诊断也不再常驻：**只有出现需要注意的情况时才显示**
+（面板未识别，或某个面板含 `position:fixed` 子元素）。
+
 ## 调参速查
 
 - **颜色**：`PALETTES.idle` / `PALETTES.work` 的 `light` / `dark` 数组（顺序与 `TOKEN_KEYS` 一一对应）。改完跑测试。

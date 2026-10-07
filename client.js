@@ -591,6 +591,9 @@ window.__ModuleLoader__.load({
 			"body[data-glass-mood=work]{--gm-fade:260ms;--gm-blur:13px;--gm-sat:128%;--gm-frost:rgba(214,234,255,.10);--gm-rim-strong:rgba(255,255,255,.55);--gm-rim-soft:rgba(150,200,255,.18);--gm-halo:rgba(24,72,132,.16);--gm-sheen-mood:1.08}",
 			"body[data-ds-dark-theme][data-glass-mood]{--gm-frost:rgba(255,255,255,.07);--gm-rim-strong:rgba(255,255,255,.26);--gm-rim-soft:rgba(255,255,255,.10);--gm-halo:rgba(0,0,0,.30)}",
 			"body[data-ds-dark-theme][data-glass-mood=work]{--gm-frost:rgba(150,200,255,.08);--gm-rim-strong:rgba(196,226,255,.30);--gm-rim-soft:rgba(150,200,255,.14);--gm-halo:rgba(0,0,0,.34)}",
+			/* Reduced motion has to cut the mood crossfade too, and it must come after the
+			   rules it overrides: equal specificity means the last declaration wins. */
+			"@media (prefers-reduced-motion: reduce){body[data-glass-mood]{--gm-fade:1ms}}",
 			/* ---- frosted glass on three verified-safe targets ----
 			   backdrop-filter would turn a column container into the containing block of
 			   its fixed-position descendants, so it rides a ::before pseudo whose parent
@@ -3139,9 +3142,6 @@ window.__ModuleLoader__.load({
 				var state = useState(engine.getPanels());
 				var config = state[0];
 				var setConfig = state[1];
-				var checkerState = useState(false);
-				var checkerOn = checkerState[0];
-				var setCheckerOn = checkerState[1];
 				var status = useState(engine.panelStatus().found);
 				var found = status[0];
 				var setFound = status[1];
@@ -3194,15 +3194,22 @@ window.__ModuleLoader__.load({
 				var hint = missing.length === 0
 					? "透明度越低面板越薄、磨砂薄雾越明显；高光控制镜边与投影；分隔线只在「面板间隙 = 0」时可见"
 					: "未识别到面板：" + missing.map(function (key) { return FOUND_LABELS[key]; }).join(" / ") + "（若界面结构变化，可在插件页反馈）";
+				// Diagnostics on demand: normally silent, and only speaks when a panel was
+				// not identified or a blur had to be placed around a floating control.
+				var diagnosis = engine.blurSummary().filter(function (line) {
+					return /\u672a\u8bc6\u522b|fixed|\u964d\u7ea7/.test(line);
+				});
 
 				return h("div", { className: "gm-row" },
 					h("div", null,
 						h("div", { className: "gm-row-title" }, "玻璃主题 · 面板与光感"),
 						h("div", { className: "gm-row-hint" }, hint),
-						// The blur can fail in a way no computed value reveals (an element
-						// under `contain: paint` cannot see the wallpaper), so the row says
-						// out loud where the material ended up and why. No console needed.
-						h("div", { className: "gm-row-hint" }, "模糊挂载：" + engine.blurSummary().join("；"))
+						// The blur can fail in a way no computed value reveals, so the row
+						// used to print where each panel's material and blur ended up. That
+						// is diagnostics, not a setting: it now appears only when there is
+						// something to say — a panel it could not identify, or a panel whose
+						// blur had to be placed around a floating control.
+						diagnosis.length > 0 ? h("div", { className: "gm-row-hint" }, "模糊挂载：" + diagnosis.join("；")) : null
 					),
 					panelLine("left"),
 					panelLine("main"),
@@ -3216,16 +3223,7 @@ window.__ModuleLoader__.load({
 					h("div", { className: "gm-fields" },
 						toggle("边缘折射", config.refraction, function (value) { setConfig(engine.setPanels({ refraction: value })) }),
 						toggle("内容取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) }),
-						toggle("按压形变", config.press !== false, function (value) { setConfig(engine.setPanels({ press: value })) }),
-						// The one known cost of blurring on the element: it becomes the containing
-						// block of a fixed descendant. This is the way back, without a restart.
-						toggle("模糊降级为伪元素", config.blurFallback === true, function (value) { setConfig(engine.setPanels({ blurFallback: value })) }),
-						// A self-test anyone can read by looking: with a checkerboard behind
-						// the panels, a panel whose blur works turns the squares smooth.
-						toggle("棋盘格自检", checkerOn, function (value) {
-							setCheckerOn(value === true);
-							engine.checker(value === true);
-						})
+						toggle("按压形变", config.press !== false, function (value) { setConfig(engine.setPanels({ press: value })) })
 					)
 				);
 			};

@@ -1007,6 +1007,13 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   // It scales rather than transforms, so an app transform is never clobbered.
   assert.ok(!/button:active\{[^}]*transform:/.test(css), 'the press does not touch transform')
   assert.match(css, /prefers-reduced-motion[^}]*button:active[^}]*animation:none/, 'and reduced motion cancels it')
+  // Reduced motion must cut the mood crossfade as well, and the override has to come
+  // after the rules it overrides: equal specificity means the last one wins, so an
+  // override placed first would be silently cancelled.
+  const fadeAt = css.indexOf('prefers-reduced-motion: reduce){body[data-glass-mood]{--gm-fade:1ms}')
+  const baseAt = css.indexOf('body[data-glass-mood]{--gm-fade:900ms;')
+  assert.ok(fadeAt > 0, 'reduced motion shortens the mood crossfade')
+  assert.ok(baseAt > 0 && fadeAt > baseAt, 'and the override is declared after the rule it overrides')
 
   // The switch is live and reaches the body.
   assert.equal(m.document.body.dataset.glassPress, 'on', 'press deformation is on by default')
@@ -1135,6 +1142,12 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'so its blur rides the surface itself')
   assert.equal(guard.engine.blurReport().main.blurHost, 'element', 'and a self-painting column does the same')
   assert.equal(guard.engine.blurReport().right.blurHost, 'element', 'on every panel')
+  // With every panel recognised and no fixed descendant in the way, the row says
+  // nothing about blur hosting: diagnostics are for when something needs attention.
+  assert.ok(
+    guard.engine.blurSummary().every((line) => !/未识别|fixed|降级/.test(line)),
+    'a healthy mount has no diagnostic to report'
+  )
   const floating = guard.document.createElement('div')
   floating.setAttribute('class', 'ScrollToBottom_fab')
   floating.computed = { position: 'fixed' }
@@ -1707,12 +1720,17 @@ function findNodes(node, predicate, found = []) {
   const toggles = findNodes(panelsTree, (node) => node.type === 'input' && node.props.type === 'checkbox')
   const panelText = findNodes(panelsTree, (node) => typeof node === 'string').join(' ')
   assert.equal(panelRanges.length, 13, 'three panels x 不透明度/模糊/高光 plus 4 geometry knobs')
-  assert.equal(toggles.length, 5, '边缘折射 / 内容取色 / 按压形变 / 棋盘格自检 / 模糊降级: five switches, all live')
+  assert.equal(toggles.length, 3, '边缘折射 / 内容取色 / 按压形变: three switches, all live — the debugging ones are gone')
   assert.equal(toggles[0].props.checked, true, 'refraction is on by default')
   assert.equal(toggles[1].props.checked, true, 'and so is the content tint')
   assert.equal(toggles[2].props.checked, true, 'and so is the press deformation')
-  assert.equal(toggles[3].props.checked, false, 'while the self-test stays off until it is asked for')
-  assert.equal(toggles[4].props.checked, false, 'and the blur fallback is opt-in, since it costs the blur itself')
+  // The self-test and the blur fallback were diagnostics: they may not reappear as
+  // row settings, however useful they were while the blur was being chased.
+  assert.ok(!/棋盘格自检|模糊降级/.test(panelText), 'no debugging switches are left in the row')
+  // This instance never found a panel, so the diagnostic line has something to say —
+  // and that is exactly when it is allowed to appear. A recognised mount stays quiet,
+  // which the accessibility/surface blocks cover.
+  assert.match(panelText, /模糊挂载：左侧栏：未识别/, 'the diagnostic speaks when a panel is missing')
   assert.match(panelText, /左侧边栏/, 'the left column is labelled')
   assert.match(panelText, /主打|主界面/, 'the centre column is labelled')
   assert.match(panelText, /均已识别|未识别到面板/, 'the row reports which columns were found')
