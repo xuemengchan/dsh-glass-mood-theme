@@ -527,9 +527,7 @@ window.__ModuleLoader__.load({
 
 		var CSS = [
 			/* ---- stage: fixed, clips + gradients, behind the lifted app frame ---- */
-			"#" + STAGE_ID + "{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;contain:layout paint style}",
-			/* Mounted inside the app shell: a negative layer, so panels paint above it. */
-			"#" + STAGE_ID + "[data-glass-in-shell]{z-index:-1}",
+			"#" + STAGE_ID + "{position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden;contain:layout paint style}",
 			"#" + STAGE_ID + ">[data-glass-layer]{position:absolute;inset:-4%;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1);will-change:opacity}",
 			"#" + STAGE_ID + ">[data-glass-layer=idle]{background-image:" + IDLE_STAGE_LIGHT + "}",
 			"body[data-ds-dark-theme] #" + STAGE_ID + ">[data-glass-layer=idle]{background-image:" + IDLE_STAGE_DARK + "}",
@@ -1003,6 +1001,61 @@ window.__ModuleLoader__.load({
 			var panelListeners = [];
 			/** The alpha each panel currently paints, for the row's readout. */
 			var panelAlphaCache = { left: 0, main: 0, right: 0 };
+			/**
+			 * Remove anything a previous instance left in the DOM: a live reload can
+			 * mount this plugin twice, and two stages (or two style sheets) are how the
+			 * interface ended up buried under a stray wallpaper layer.
+			 * @returns how many orphan stages were removed.
+			 */
+			function sweepOrphans() {
+				var removed = 0;
+				var stage = doc.getElementById(STAGE_ID);
+				while (stage !== null && stage !== undefined) {
+					if (typeof stage.remove === "function") stage.remove();
+					removed += 1;
+					stage = doc.getElementById(STAGE_ID);
+				}
+				var sheet = doc.getElementById(STYLE_ID);
+				while (sheet !== null && sheet !== undefined) {
+					if (typeof sheet.remove === "function") sheet.remove();
+					sheet = doc.getElementById(STYLE_ID);
+				}
+				var refraction = doc.getElementById(REFRACTION_ID);
+				while (refraction !== null && refraction !== undefined) {
+					if (typeof refraction.remove === "function") refraction.remove();
+					refraction = doc.getElementById(REFRACTION_ID);
+				}
+				var stray = [
+					"[data-glass-panel]", "[data-glass-surface]", "[data-glass-frost]",
+					"[data-glass-delegate]", "[data-glass-frame]", "[data-glass-checker]"
+				];
+				for (var i = 0; i < stray.length; i++) {
+					var nodes = doc.querySelectorAll(stray[i]);
+					for (var n = 0; n < nodes.length; n++) {
+						if (typeof nodes[n].removeAttribute === "function") nodes[n].removeAttribute(stray[i].slice(1, -1));
+					}
+				}
+				var vars = ["--gm-media-dim", "--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract",
+					"--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao",
+					"--gm-rim-contact", "--gm-divider", "--gm-wall-fit", "--gm-wall-opacity", "--gm-wall-blur",
+					"--gm-wall-scale", "--gm-tint"];
+				for (var v = 0; v < vars.length; v++) doc.body.style.removeProperty(vars[v]);
+				for (var k = 0; k < PANEL_KEYS.length; k++) {
+					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-blur");
+					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-sheen");
+					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-fill");
+					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-alpha");
+					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-shadow");
+				}
+				delete doc.body.dataset.glassPanels;
+				delete doc.body.dataset.glassGap;
+				delete doc.body.dataset.glassMood;
+				delete doc.body.dataset.glassBlur;
+				delete doc.body.dataset.glassFading;
+				delete doc.body.dataset.glassWallpaper;
+				return removed;
+			}
+
 			/** Which shell columns were actually found in the DOM. */
 			var panelFound = { left: false, main: false, right: false };
 			/** The column element per key, to notice a shell rebuild. */
@@ -1948,6 +2001,8 @@ window.__ModuleLoader__.load({
 				if (started) return function () {};
 				started = true;
 
+				// Never build on top of a previous instance.
+				sweepOrphans();
 				var style = doc.createElement("style");
 				style.id = STYLE_ID;
 				style.setAttribute("data-plugin", PLUGIN_ID);
@@ -2145,6 +2200,8 @@ window.__ModuleLoader__.load({
 				checker: checker,
 				/** Panic switch: drop every hook and the stylesheet for this session. */
 				off: shutdown,
+				/** Clear anything a stray mount left in the DOM, without unmounting. */
+				sweep: sweepOrphans,
 				/** Register a listener for wallpaper changes; returns an unsubscribe. */
 				subscribeWallpaper: function (listener) {
 					wallpaperListeners.push(listener);
@@ -2473,6 +2530,14 @@ window.__ModuleLoader__.load({
 			var theme = getService(ctx, "theme");
 			if (theme === undefined || theme === null || typeof theme.overrideTokens !== "function") return;
 
+			// A live reload can call apply() again without disposing the previous effect.
+			// Shut that instance down first, or its stage and stylesheet linger and the
+			// interface ends up under two wallpapers.
+			if (typeof window.__dshGlassMoodTeardown === "function") {
+				try { window.__dshGlassMoodTeardown(); } catch (error) { /* an already-dead instance */ }
+				delete window.__dshGlassMoodTeardown;
+			}
+
 			var engine = createEngine({
 				document: document,
 				window: window,
@@ -2487,7 +2552,14 @@ window.__ModuleLoader__.load({
 				indexedDB: typeof indexedDB === "undefined" ? null : indexedDB,
 				URL: typeof URL === "undefined" ? null : URL
 			});
-			ctx.effect(function () { return engine.start(); }, "glass-mood: mood engine");
+			ctx.effect(function () {
+				var dispose = engine.start();
+				window.__dshGlassMoodTeardown = dispose;
+				return function () {
+					dispose();
+					if (window.__dshGlassMoodTeardown === dispose) delete window.__dshGlassMoodTeardown;
+				};
+			}, "glass-mood: mood engine");
 			registerWallpaperRow(ctx, engine);
 			registerPanelsRow(ctx, engine);
 		}

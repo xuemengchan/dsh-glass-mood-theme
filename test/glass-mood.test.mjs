@@ -21,7 +21,7 @@ const source = readFileSync(join(here, '..', 'client.js'), 'utf8')
 
 //#region harness
 /** Minimal DOM good enough for the plugin's mount / dispose path. */
-function createDocument() {
+function createDocument(fixture = {}) {
   const makeStyle = () => {
     const values = new Map()
     return {
@@ -90,9 +90,15 @@ function createDocument() {
     const star = /^\[class\*="?([^"\]]+)"?\]$/.exec(part)
     if (star !== null) return String(el.attributes.class ?? '').includes(star[1])
     const equals = /^\[([^=\]]+)=("?)([^"\]]+)\2\]$/.exec(part)
-    if (equals !== null) return el.attributes[equals[1]] === equals[3]
+    if (equals !== null) {
+      if (equals[1] === 'id') return el.id === equals[3]
+      return el.attributes[equals[1]] === equals[3]
+    }
     const present = /^\[([^\]]+)\]$/.exec(part)
-    if (present !== null) return el.attributes[present[1]] !== undefined
+    if (present !== null) {
+      if (present[1] === 'id') return el.id !== '' && el.id !== undefined
+      return el.attributes[present[1]] !== undefined
+    }
     return el.tagName === part
   }
   const query = (selector) => all.find((el) => !el.removed && selector.split(',').some((one) => matches(el, one))) ?? null
@@ -103,6 +109,16 @@ function createDocument() {
     getElementById(id) { return all.find((el) => el.id === id && !el.removed) ?? null },
     querySelector: query,
     querySelectorAll(selector) { return all.filter((el) => !el.removed && selector.split(',').some((one) => matches(el, one))) }
+  }
+  // A page that already carries a previous instance's stage and style sheet: this is
+  // what a live reload leaves behind, and what the next mount has to sweep.
+  if (fixture.strayStage) {
+    const strayStage = document.createElement('div')
+    strayStage.id = 'dsh-glass-mood-bg'
+    body.appendChild(strayStage)
+    const straySheet = document.createElement('style')
+    straySheet.id = 'dsh-glass-mood-style'
+    head.appendChild(straySheet)
   }
   return document
 }
@@ -260,7 +276,7 @@ function createIndexedDB() {
 
 /** One mount with a controllable activity source. */
 function mount(options = {}) {
-  const document = createDocument()
+  const document = createDocument(options)
   const storage = options.storage ?? {
     data: new Map(),
     getItem(key) { return this.data.has(key) ? this.data.get(key) : null },
@@ -870,8 +886,11 @@ const alphaOf = (color) => {
   const stage = m.document.getElementById('dsh-glass-mood-bg')
   assert.equal(stage.parent, m.shell.frame, 'the wallpaper stage lives inside the app shell')
   assert.equal(stage.getAttribute('data-glass-in-shell'), '', 'and is marked so it can take the negative layer')
-  assert.match(m.document.getElementById('dsh-glass-mood-style').textContent, /\[data-glass-in-shell\]\{z-index:-1\}/, 'the negative layer rule exists')
-
+  assert.match(
+    m.document.getElementById('dsh-glass-mood-style').textContent,
+    /#dsh-glass-mood-bg\{position:fixed;inset:0;z-index:-1/,
+    'the stage sits in a negative layer whatever its host: a stray stage can never cover the app'
+  )
   // If the shell is replaced, the poll moves the stage into the new one.
   const newFrame = m.document.createElement('div')
   newFrame.setAttribute('class', 'AppFrame_frame_2')
@@ -892,6 +911,21 @@ const alphaOf = (color) => {
   assert.ok('backdrop' in report.left && 'stageHost' in report.left, 'with the computed filter and the stage host')
   m.dispose()
   console.log('ok  stage sits inside the shell + blur diagnostics')
+}
+
+{
+  // A live reload can mount this plugin on a page where the previous instance is
+  // still present. The new mount must sweep that one rather than stack a second
+  // wallpaper over the interface — two stages is exactly how the UI got buried
+  // under "the wallpaper plus a hazy veil" with no text in sight.
+  const m = mount({ strayStage: true })
+  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-bg"]').length, 1, 'one stage, never two')
+  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-style"]').length, 1, 'one style sheet, never two')
+  // The panic clean-up is available on its own, for a UI that is already buried.
+  assert.ok(m.engine.sweep() >= 1, 'sweep() reports what it removed')
+  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-bg"]').length, 0, 'and leaves no stage behind')
+  m.dispose()
+  console.log('ok  a remount sweeps the previous instance')
 }
 
 {
