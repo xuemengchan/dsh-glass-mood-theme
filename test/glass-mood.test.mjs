@@ -1125,33 +1125,36 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   )
   m.dispose()
 
-  // The arrangement is chosen by where the material sits, not by a guess:
-  //  - a delegated inner surface takes the blur on itself, because a pseudo there
-  //    reports a valid blur and samples nothing;
-  //  - a column keeps the pseudo, which is what was stable.
-  // The fixed-descendant condition is still measured, so it can be reported instead
-  // of silently deciding for us; the collapsed column is protected by `columnUsable`.
+  // The arrangement is now the one that measurably works in this browser: the blur
+  // rides the element that carries the material, on every panel. A negative-z pseudo
+  // reports a valid blur and samples nothing — measured on a delegated surface and on
+  // a column alike — so it survives only as the escape hatch for the one cost of the
+  // element arrangement (it becomes the containing block of a fixed descendant).
   const guard = mount()
   assert.equal(guard.engine.blurReport().left.delegated, true, 'the left panel is delegated')
   assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'so its blur rides the surface itself')
-  assert.equal(guard.engine.blurReport().main.blurHost, 'pseudo', 'while a column keeps the pseudo')
+  assert.equal(guard.engine.blurReport().main.blurHost, 'element', 'and a self-painting column does the same')
+  assert.equal(guard.engine.blurReport().right.blurHost, 'element', 'on every panel')
   const floating = guard.document.createElement('div')
+  floating.setAttribute('class', 'ScrollToBottom_fab')
   floating.computed = { position: 'fixed' }
   guard.shell.leftSurface.appendChild(floating)
   guard.engine.retag(true)
-  assert.equal(
-    guard.engine.blurReport().left.blurHost,
-    'element',
-    'a fixed descendant no longer moves the blur somewhere it cannot work'
-  )
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'a fixed descendant does not move the blur')
   assert.match(
     guard.engine.blurSummary().join(' '),
-    /含 fixed 子元素/,
-    'it is reported instead, so a displaced floating control can be traced to this panel'
+    /含 fixed 子元素：div\.ScrollToBottom_fab/,
+    'it is named, so a displaced floating control can be traced to its panel'
   )
+  // The escape hatch, live: it puts the pseudo arrangement back on demand.
+  guard.engine.setPanels({ blurFallback: true })
+  assert.equal(guard.engine.blurReport().left.blurHost, 'pseudo', 'the fallback switch puts the pseudo back')
+  assert.equal(guard.shell.leftSurface.getAttribute('data-glass-blur-host'), undefined, 'and the element stops claiming it')
+  guard.engine.setPanels({ blurFallback: false })
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'and back to the arrangement that works')
   floating.remove()
   guard.engine.retag(true)
-  assert.ok(!/含 fixed 子元素/.test(guard.engine.blurSummary().join(' ')), 'and the note clears with the control')
+  assert.ok(!/含 fixed 子元素/.test(guard.engine.blurSummary().join(' ')), 'the note clears with the control')
   guard.dispose()
   console.log('ok  frost hosts do not form a backdrop root')
 }
@@ -1704,11 +1707,12 @@ function findNodes(node, predicate, found = []) {
   const toggles = findNodes(panelsTree, (node) => node.type === 'input' && node.props.type === 'checkbox')
   const panelText = findNodes(panelsTree, (node) => typeof node === 'string').join(' ')
   assert.equal(panelRanges.length, 13, 'three panels x 不透明度/模糊/高光 plus 4 geometry knobs')
-  assert.equal(toggles.length, 4, '边缘折射 / 内容取色 / 按压形变 / 棋盘格自检: four switches, all live')
+  assert.equal(toggles.length, 5, '边缘折射 / 内容取色 / 按压形变 / 棋盘格自检 / 模糊降级: five switches, all live')
   assert.equal(toggles[0].props.checked, true, 'refraction is on by default')
   assert.equal(toggles[1].props.checked, true, 'and so is the content tint')
   assert.equal(toggles[2].props.checked, true, 'and so is the press deformation')
   assert.equal(toggles[3].props.checked, false, 'while the self-test stays off until it is asked for')
+  assert.equal(toggles[4].props.checked, false, 'and the blur fallback is opt-in, since it costs the blur itself')
   assert.match(panelText, /左侧边栏/, 'the left column is labelled')
   assert.match(panelText, /主打|主界面/, 'the centre column is labelled')
   assert.match(panelText, /均已识别|未识别到面板/, 'the row reports which columns were found')

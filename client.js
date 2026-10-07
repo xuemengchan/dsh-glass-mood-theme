@@ -121,7 +121,8 @@ window.__ModuleLoader__.load({
 			divider: 0.35,
 			refraction: true,
 			rimSpill: true,
-			press: true
+			press: true,
+			blurFallback: false
 		};
 		/**
 		 * Surface probe bounds. A column's visible surface is not always the column:
@@ -954,7 +955,8 @@ window.__ModuleLoader__.load({
 				divider: clampNumber(source.divider, 0, 1, PANEL_DEFAULTS.divider),
 				refraction: source.refraction === undefined ? PANEL_DEFAULTS.refraction : source.refraction === true,
 				rimSpill: source.rimSpill === undefined ? PANEL_DEFAULTS.rimSpill : source.rimSpill === true,
-				press: source.press === undefined ? PANEL_DEFAULTS.press : source.press === true
+				press: source.press === undefined ? PANEL_DEFAULTS.press : source.press === true,
+				blurFallback: source.blurFallback === undefined ? PANEL_DEFAULTS.blurFallback : source.blurFallback === true
 			};
 		}
 
@@ -1532,20 +1534,22 @@ window.__ModuleLoader__.load({
 			 * @param key - the panel key.
 			 */
 			function aimBlur(key) {
-				var delegated = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined;
-				var host = delegated ? panelSurfaces[key] : panelNodes[key];
+				var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : panelNodes[key];
 				if (host === null || host === undefined || typeof host.setAttribute !== "function") return;
-				if (delegated !== true) {
+				// Measured in this browser: a negative-z pseudo reports a valid blur and
+				// samples nothing, on a delegated surface and on a column alike; the element
+				// itself blurs. So the element carries it, and the one cost of that - it
+				// becomes the containing block of its fixed descendants - is named here.
+				if (panels.blurFallback === true) {
 					host.removeAttribute("data-glass-blur-host");
 					panelBlurHost[key] = "pseudo";
-					panelBlurNote[key] = [];
+					panelBlurNote[key] = ["\u5df2\u6309\u8981\u6c42\u964d\u7ea7"];
 					return;
 				}
 				host.setAttribute("data-glass-blur-host", "element");
 				panelBlurHost[key] = "element";
-				panelBlurNote[key] = hasFixedDescendant(host) === true
-					? ["\u542b fixed \u5b50\u5143\u7d20\uff0c\u82e5\u60ac\u6d6e\u63a7\u4ef6\u9519\u4f4d\u8bf7\u53cd\u9988"]
-					: [];
+				var fixed = fixedDescendants(host);
+				panelBlurNote[key] = fixed.length === 0 ? [] : ["\u542b fixed \u5b50\u5143\u7d20\uff1a" + fixed.join("\u3001")];
 			}
 			var refractionMounted = false;
 			var retagTimer = 0;
@@ -2224,6 +2228,7 @@ window.__ModuleLoader__.load({
 				copy.refraction = panels.refraction;
 				copy.rimSpill = panels.rimSpill;
 				copy.press = panels.press;
+				copy.blurFallback = panels.blurFallback;
 				return copy;
 			}
 
@@ -2435,6 +2440,7 @@ window.__ModuleLoader__.load({
 				doc.body.dataset.glassPanels = "on";
 				doc.body.dataset.glassGap = panels.gap > 0 ? "on" : "off";
 				doc.body.dataset.glassPress = panels.press ? "on" : "off";
+				for (var bk = 0; bk < PANEL_KEYS.length; bk++) aimBlur(PANEL_KEYS[bk]);
 				style.setProperty("--gm-gap", panels.gap + "px");
 				style.setProperty("--gm-frame-radius", panels.frameRadius + "px");
 				style.setProperty("--gm-radius", panels.panelRadius + "px");
@@ -2484,18 +2490,31 @@ window.__ModuleLoader__.load({
 			 *   asked (the conservative answer).
 			 */
 			function hasFixedDescendant(node) {
+				return fixedDescendants(node).length > 0;
+			}
+
+			/**
+			 * Name the fixed descendants, not just count them: putting the blur on an
+			 * element re-anchors exactly these, so if one is ever displaced the report has
+			 * to say which one it was.
+			 * @param node - the subtree root.
+			 * @returns up to two `tag.class` labels, or ["(unknown)"] when unanswerable.
+			 */
+			function fixedDescendants(node) {
 				var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle : null;
-				if (read === null || node === null || node === undefined || typeof node.querySelectorAll !== "function") return true;
+				if (read === null || node === null || node === undefined || typeof node.querySelectorAll !== "function") return ["(unknown)"];
 				var all = null;
 				try { all = node.querySelectorAll("*"); } catch (error) { all = null; }
-				if (all === null || all === undefined) return true;
+				if (all === null || all === undefined) return ["(unknown)"];
+				var found = [];
 				var limit = all.length < 400 ? all.length : 400;
-				for (var i = 0; i < limit; i++) {
+				for (var i = 0; i < limit && found.length < 2; i++) {
 					var style = null;
 					try { style = read.call(win, all[i]); } catch (error) { style = null; }
-					if (style !== null && style !== undefined && String(style.position ?? "") === "fixed") return true;
+					if (style === null || style === undefined || String(style.position ?? "") !== "fixed") continue;
+					found.push((typeof all[i].tagName === "string" ? all[i].tagName.toLowerCase() : "?") + "." + String(all[i].getAttribute === undefined ? "" : (all[i].getAttribute("class") ?? "")));
 				}
-				return false;
+				return found;
 			}
 
 			/**
@@ -2568,6 +2587,7 @@ window.__ModuleLoader__.load({
 				if (given.refraction !== undefined) merged.refraction = given.refraction;
 				if (given.rimSpill !== undefined) merged.rimSpill = given.rimSpill;
 				if (given.press !== undefined) merged.press = given.press;
+				if (given.blurFallback !== undefined) merged.blurFallback = given.blurFallback;
 				panels = normalizePanels(merged);
 				writeKey(PANEL_KEY, JSON.stringify(panels));
 				tagPanels(true);
@@ -3197,6 +3217,9 @@ window.__ModuleLoader__.load({
 						toggle("边缘折射", config.refraction, function (value) { setConfig(engine.setPanels({ refraction: value })) }),
 						toggle("内容取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) }),
 						toggle("按压形变", config.press !== false, function (value) { setConfig(engine.setPanels({ press: value })) }),
+						// The one known cost of blurring on the element: it becomes the containing
+						// block of a fixed descendant. This is the way back, without a restart.
+						toggle("模糊降级为伪元素", config.blurFallback === true, function (value) { setConfig(engine.setPanels({ blurFallback: value })) }),
 						// A self-test anyone can read by looking: with a checkerboard behind
 						// the panels, a panel whose blur works turns the squares smooth.
 						toggle("棋盘格自检", checkerOn, function (value) {
