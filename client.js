@@ -69,6 +69,8 @@ window.__ModuleLoader__.load({
 		var MIN_DWELL_MS = 600;
 		/** Safety net: snapshot reads are cheap, and this covers an unreactive source. */
 		var POLL_MS = 1500;
+		/** How often the shell columns and the big surfaces are re-found. */
+		var RETAG_MS = 2500;
 		/** How long the one-shot surface cross-fade window stays open (slowest fade + slack). */
 		var FADE_WINDOW_MS = 1100;
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
@@ -122,7 +124,29 @@ window.__ModuleLoader__.load({
 			refraction: true,
 			rimSpill: true,
 			press: true,
-			blurFallback: false
+			blurFallback: false,
+			/**
+			 * A panel whose material element holds a `position: fixed` control must
+			 * not carry the frost itself: a backdrop-filter makes that element the
+			 * containing block of every fixed descendant, which re-anchors the app's
+			 * own floating controls (the sidebar's collapse control is one — it left
+			 * the top bar and landed on top of the sidebar logo). The material is
+			 * skipped for such a panel instead, and the reason is reported. Turn this
+			 * off only to confirm the diagnosis: the control moves again.
+			 */
+			fixedGuard: true
+		};
+		/**
+		 * The mood's own cast on the glass. Both palettes sit within a couple of per
+		 * cent of neutral, so a mood swap used to be nearly invisible on the panes —
+		 * what a person reads as "warm" or "cool" came almost entirely from the clip.
+		 * This is the floor the material itself carries, so the glass follows the
+		 * mood even with no wallpaper at all; the content's own hue (`rimSpill`) still
+		 * rides on top of it.
+		 */
+		var MOOD_CAST = {
+			idle: { hue: 38, mix: 0.1 },
+			work: { hue: 206, mix: 0.2 }
 		};
 		/**
 		 * Surface probe bounds. A column's visible surface is not always the column:
@@ -188,15 +212,23 @@ window.__ModuleLoader__.load({
 		var REFRACTION_ID = "dsh-glass-mood-refraction";
 		/**
 		 * A crisp lens, not a smear: a single octave of low-amplitude turbulence
-		 * displaces the backdrop only where its alpha transitions (the rounded edge),
-		 * with no pre-blur. Adding feGaussianBlur here is what made the toggle read as
-		 * "more blur" instead of "refraction".
+		 * displaces the backdrop, with no pre-blur. Adding feGaussianBlur here is what
+		 * made the toggle read as "more blur" instead of "refraction".
+		 *
+		 * What it can and cannot do, said plainly: a displacement map shifts the whole
+		 * backdrop by one field, so over a smooth blurred wallpaper it is nearly
+		 * invisible — Fresnel is a per-pixel field that grows toward the edge, and
+		 * turbulence is not that. The visible edge work is therefore done in CSS (the
+		 * four Fresnel bands on `::after`); this filter only adds the uneven, hand-made
+		 * quality to the surfaces that carry it, and it rides the composer, the
+		 * bubbles and the settings surface — never a panel column, where a `url()`
+		 * the browser refuses would take the whole frost with it.
 		 */
 		var REFRACTION_SVG =
 			'<svg id="' + REFRACTION_ID + '" width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">' +
 			'<filter id="' + REFRACTION_ID + '-filter" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">' +
 			'<feTurbulence type="fractalNoise" baseFrequency="0.016 0.02" numOctaves="1" seed="7" result="noise"/>' +
-			'<feDisplacementMap in="SourceGraphic" in2="noise" scale="3.2" xChannelSelector="R" yChannelSelector="G"/>' +
+			'<feDisplacementMap in="SourceGraphic" in2="noise" scale="5" xChannelSelector="R" yChannelSelector="G"/>' +
 			"</filter></svg>";
 		/**
 		 * How far `clarity` may thin each token's alpha, and the alpha it may never
@@ -702,12 +734,25 @@ window.__ModuleLoader__.load({
 			   inset shadow could not — the sidebar surface covered it, which is exactly
 			   why the knob looked dead. Masking clips box-shadow to the ring, so the
 			   outer contact shadow lives on the panel instead (see box-shadow above). */
-			"body[data-glass-panels] [data-glass-panel]::after{content:\"\";position:absolute;inset:0;border-radius:inherit;pointer-events:none;padding:1px;" +
-				"background:linear-gradient(135deg,var(--gm-rim-a) 0%,var(--gm-rim-b) 38%,var(--gm-rim-edge) 62%,var(--gm-rim-c) 100%);background-size:220% 220%;" +
-				"-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);" +
-				"-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;" +
-				"opacity:calc(var(--gm-sheen) * var(--gm-sheen-mood,1));" +
-				"box-shadow:inset 0 1px 0 var(--gm-rim-a),inset 0 0 0 1px var(--gm-rim-edge),inset 0 -28px 56px -34px var(--gm-rim-ao)}",
+		/* Fresnel, not a hairline. Grazing light is brightest exactly at the boundary
+		   and falls off inward on a curve, so the rim is FOUR edge bands (one per
+		   side) rather than one flat gradient across the panel: each band starts at
+		   the perimeter and dies inside, and the corners — where two bands overlap —
+		   catch the most light, which is what a real rounded edge does. Two corner
+		   gradients carry the key light and its opposite, and two 1px fringes give
+		   the edge its dispersion. The band is a few px wide on purpose: a 1px ring
+		   reads as a border, not as glass. */
+		"body[data-glass-panels] [data-glass-panel]::after{content:\"\";position:absolute;inset:0;border-radius:inherit;pointer-events:none;" +
+			"background:" +
+			"linear-gradient(to bottom,var(--gm-rim-a) 0,var(--gm-rim-b) 24%,transparent 76%) top center/100% var(--gm-rim-band,18px) no-repeat," +
+			"linear-gradient(to top,var(--gm-rim-c) 0,transparent 78%) bottom center/100% calc(var(--gm-rim-band,18px) * .7) no-repeat," +
+			"linear-gradient(to right,var(--gm-rim-b) 0,transparent 78%) center left/var(--gm-rim-band,18px) 100% no-repeat," +
+			"linear-gradient(to left,var(--gm-rim-c) 0,transparent 78%) center right/calc(var(--gm-rim-band,18px) * .7) 100% no-repeat," +
+			"radial-gradient(140px 100px at 0% 0%,var(--gm-rim-catch,rgba(255,255,255,.18)) 0,transparent 72%)," +
+			"radial-gradient(180px 140px at 100% 100%,var(--gm-rim-shade,rgba(84,104,150,.1)) 0,transparent 70%);" +
+			"opacity:calc(var(--gm-sheen) * var(--gm-sheen-mood,1));" +
+			"box-shadow:inset 0 1px 0 var(--gm-rim-disp,var(--gm-rim-a)),inset 0 -1px 0 var(--gm-rim-warm,transparent)," +
+			"inset 0 0 0 1px var(--gm-rim-edge),inset 0 -28px 56px -34px var(--gm-rim-ao)}",
 			/* The divider lives on that overlay, so it draws over the sidebar surface. */
 			"body[data-glass-panels][data-glass-gap=off] [data-glass-panel=left]::after{box-shadow:inset -1px 0 0 0 var(--gm-divider),inset 0 1px 0 var(--gm-rim-a),inset 0 -28px 56px -34px var(--gm-rim-ao)}",
 			"body[data-glass-panels][data-glass-gap=off] [data-glass-panel=right]::after{box-shadow:inset 1px 0 0 0 var(--gm-divider),inset 0 1px 0 var(--gm-rim-a),inset 0 -28px 56px -34px var(--gm-rim-ao)}",
@@ -958,9 +1003,10 @@ window.__ModuleLoader__.load({
 				divider: clampNumber(source.divider, 0, 1, PANEL_DEFAULTS.divider),
 				refraction: source.refraction === undefined ? PANEL_DEFAULTS.refraction : source.refraction === true,
 				rimSpill: source.rimSpill === undefined ? PANEL_DEFAULTS.rimSpill : source.rimSpill === true,
-				press: source.press === undefined ? PANEL_DEFAULTS.press : source.press === true,
-				blurFallback: source.blurFallback === undefined ? PANEL_DEFAULTS.blurFallback : source.blurFallback === true
-			};
+			press: source.press === undefined ? PANEL_DEFAULTS.press : source.press === true,
+			blurFallback: source.blurFallback === undefined ? PANEL_DEFAULTS.blurFallback : source.blurFallback === true,
+			fixedGuard: source.fixedGuard === undefined ? PANEL_DEFAULTS.fixedGuard : source.fixedGuard === true
+		};
 		}
 
 		/**
@@ -1011,10 +1057,14 @@ window.__ModuleLoader__.load({
 			// its colours and the glass takes on a hint of them. Nothing is tinted when
 			// the switch is off, because `sample` is then null.
 			var reading = sample === undefined || sample === null ? null : sample;
+			// The mood's cast first, so the pane reads warm or cool on its own; the
+			// content's hue then rides on top of it.
+			var cast = mood === "work" ? MOOD_CAST.work : MOOD_CAST.idle;
+			var casted = tintTowardHue(Number(match[1]), Number(match[2]), Number(match[3]), cast.hue, cast.mix);
 			var tinted = tintTowardHue(
-				Number(match[1]),
-				Number(match[2]),
-				Number(match[3]),
+				casted[0],
+				casted[1],
+				casted[2],
 				reading !== null && reading.ready ? reading.hue : null,
 				SPILL_MIX
 			);
@@ -1186,6 +1236,23 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * Pull a colour toward the mood's own cast, leaving its alpha alone. The
+		 * palette rows are close enough to neutral that a mood swap had almost no
+		 * visible effect on the material: this is what makes the glass itself follow
+		 * the wallpaper's warmth instead of waiting for the sampler.
+		 * @param value - a CSS rgba() color.
+		 * @param mood - 'idle' or 'work'.
+		 * @returns the cast color, or the original when it is not a liftable rgba.
+		 */
+		function moodColorString(value, mood) {
+			var match = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$/.exec(value);
+			if (match === null) return value;
+			var cast = mood === "work" ? MOOD_CAST.work : MOOD_CAST.idle;
+			var casted = tintTowardHue(Number(match[1]), Number(match[2]), Number(match[3]), cast.hue, cast.mix);
+			return "rgba(" + casted[0] + ", " + casted[1] + ", " + casted[2] + ", " + match[4] + ")";
+		}
+
+		/**
 		 * @param r - average red, 0..255.
 		 * @param g - average green.
 		 * @param b - average blue.
@@ -1232,13 +1299,29 @@ window.__ModuleLoader__.load({
 			// A white highlight on a white panel is invisible, so a light-scheme edge
 			// carries a cool grey hairline plus a contact shadow instead; the bright
 			// component only leads in the dark scheme, where it can actually read.
-			return {
-				a: dark ? "rgba(255,255,255," + (work ? 0.42 : 0.34) + ")" : "rgba(255,255,255," + (work ? 0.6 : 0.52) + ")",
-				b: biasColorString(dark ? "rgba(" + (work ? "198,224,255" : "255,255,255") + ",0.16)" : "rgba(" + (work ? "150,190,235" : "176,186,206") + ",0.34)", spillHue, SPILL_MIX),
-				c: biasColorString(dark ? "rgba(" + (work ? "150,200,255" : "255,246,238") + ",0.24)" : "rgba(" + (work ? "120,170,220" : "150,160,182") + ",0.42)", spillHue, SPILL_MIX),
-				ao: dark ? "rgba(0,0,0,0.5)" : "rgba(90,100,140,0.16)",
-				edge: dark ? "rgba(0,0,0,0.34)" : "rgba(120,132,156,0.34)",
-				contact: dark ? "rgba(0,0,0,0.42)" : "rgba(84,94,124,0.20)",
+		return {
+			a: dark ? "rgba(255,255,255," + (work ? 0.42 : 0.34) + ")" : "rgba(255,255,255," + (work ? 0.6 : 0.52) + ")",
+			b: biasColorString(moodColorString(dark ? "rgba(" + (work ? "198,224,255" : "255,255,255") + ",0.16)" : "rgba(" + (work ? "150,190,235" : "176,186,206") + ",0.34)", mood), spillHue, SPILL_MIX),
+			c: biasColorString(moodColorString(dark ? "rgba(" + (work ? "150,200,255" : "255,246,238") + ",0.24)" : "rgba(" + (work ? "120,170,220" : "150,160,182") + ",0.42)", mood), spillHue, SPILL_MIX),
+			ao: dark ? "rgba(0,0,0,0.5)" : "rgba(90,100,140,0.16)",
+			edge: dark ? "rgba(0,0,0,0.34)" : "rgba(120,132,156,0.34)",
+			contact: dark ? "rgba(0,0,0,0.42)" : "rgba(84,94,124,0.20)",
+			/**
+			 * Dispersion: the two 1px fringes a real edge splits light into — the cool
+			 * one where the light enters (top), the warm one where it leaves (bottom).
+			 * Kept to a few per cent: this is a hint of prism, not a rainbow.
+			 */
+			disp: dark ? (work ? "rgba(150,205,255,0.40)" : "rgba(255,240,222,0.34)") : (work ? "rgba(120,175,235,0.52)" : "rgba(255,247,235,0.46)"),
+			warm: dark ? (work ? "rgba(120,170,225,0.26)" : "rgba(255,214,170,0.26)") : (work ? "rgba(150,195,240,0.30)" : "rgba(255,206,150,0.30)"),
+			/** The corner nearest the key light, and the one furthest from it. */
+			catch: dark ? (work ? "rgba(190,225,255,0.12)" : "rgba(255,252,246,0.10)") : (work ? "rgba(210,235,255,0.20)" : "rgba(255,255,255,0.18)"),
+			shade: dark ? "rgba(0,0,0,0.18)" : "rgba(84,104,150,0.10)",
+			/**
+			 * How far the Fresnel band reaches inward. Grazing light is a rim, not a
+			 * wash, so the calm mood breathes a little wider and the decisive one is a
+			 * crisp lens edge.
+			 */
+			band: work ? "13px" : "18px",
 				/**
 				 * The flush-layout hairline, scaled by the user's divider strength. The
 				 * base is deliberately strong enough to see: a 5% hairline is not a
@@ -1278,6 +1361,9 @@ window.__ModuleLoader__.load({
 			var timer = 0;
 			var poll = 0;
 			var fadeTimer = 0;
+			/** The one-shot timer that parks the clip the crossfade has finished with. */
+			var parkTimer = 0;
+			var visibilityWatched = false;
 			var layerDispose = null;
 			var unsubscribes = [];
 			/** One video element per mood slot: both exist so a switch never waits. */
@@ -1300,17 +1386,26 @@ window.__ModuleLoader__.load({
 			var prefers = { reducedTransparency: false, moreContrast: false };
 			var preferenceLists = [];
 
-			/** @returns the first clip that actually has a frame to read. */
-			function activeVideo() {
-				for (var i = 0; i < SLOTS.length; i++) {
-					var video = videos[SLOTS[i]];
-					if (video === undefined || video === null) continue;
-					if (video.getAttribute("data-glass-clip") === "none") continue;
-					if (typeof video.readyState === "number" && video.readyState < 2) continue;
-					return video;
-				}
-				return null;
+		/**
+		 * @returns the clip on screen right now — the one the CURRENT mood shows,
+		 * falling back to the other slot only when that one has no frame to read.
+		 *
+		 * Reading whichever slot happens to be first is why the material stopped
+		 * following the wallpaper: with both clips configured the sampler always took
+		 * the idle one, so in the work mood the panes and the rim kept the idle
+		 * footage's hue (and its dimming) while a cold clip was playing behind them.
+		 */
+		function activeVideo() {
+			var order = mood === "work" ? ["work", "idle"] : ["idle", "work"];
+			for (var i = 0; i < order.length; i++) {
+				var video = videos[order[i]];
+				if (video === undefined || video === null) continue;
+				if (video.getAttribute("data-glass-clip") === "none") continue;
+				if (typeof video.readyState === "number" && video.readyState < 2) continue;
+				return video;
 			}
+			return null;
+		}
 
 			/** @returns the offscreen sampler canvas, created once. */
 			function ensureSampleCanvas() {
@@ -1491,10 +1586,11 @@ window.__ModuleLoader__.load({
 						if (typeof nodes[n].removeAttribute === "function") nodes[n].removeAttribute(stray[i].slice(1, -1));
 					}
 				}
-				var vars = ["--gm-media-dim", "--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract",
-					"--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao",
-					"--gm-rim-contact", "--gm-divider", "--gm-wall-fit", "--gm-wall-opacity", "--gm-wall-blur",
-					"--gm-wall-scale", "--gm-tint"];
+			var vars = ["--gm-media-dim", "--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract",
+				"--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao",
+				"--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band",
+				"--gm-divider", "--gm-wall-fit", "--gm-wall-opacity", "--gm-wall-blur",
+				"--gm-wall-scale", "--gm-tint"];
 				for (var v = 0; v < vars.length; v++) doc.body.style.removeProperty(vars[v]);
 				for (var k = 0; k < PANEL_KEYS.length; k++) {
 					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-blur");
@@ -1543,16 +1639,29 @@ window.__ModuleLoader__.load({
 				// samples nothing, on a delegated surface and on a column alike; the element
 				// itself blurs. So the element carries it, and the one cost of that - it
 				// becomes the containing block of its fixed descendants - is named here.
-				if (panels.blurFallback === true) {
-					host.removeAttribute("data-glass-blur-host");
-					panelBlurHost[key] = "pseudo";
-					panelBlurNote[key] = ["\u5df2\u6309\u8981\u6c42\u964d\u7ea7"];
-					return;
-				}
-				host.setAttribute("data-glass-blur-host", "element");
-				panelBlurHost[key] = "element";
-				var fixed = fixedDescendants(host);
-				panelBlurNote[key] = fixed.length === 0 ? [] : ["\u542b fixed \u5b50\u5143\u7d20\uff1a" + fixed.join("\u3001")];
+			if (panels.blurFallback === true) {
+				host.removeAttribute("data-glass-blur-host");
+				panelBlurHost[key] = "pseudo";
+				panelBlurNote[key] = ["\u5df2\u6309\u8981\u6c42\u964d\u7ea7"];
+				return;
+			}
+			// The scan is a getComputedStyle per descendant, so it only runs when the
+			// frost is actually on: with the blur switched off nothing can re-anchor.
+			var fixed = doc.body.dataset.glassBlur === "off" ? [] : fixedDescendants(host);
+			// A backdrop-filter on the material element re-anchors every fixed
+			// descendant to it. The app's own floating controls live inside these
+			// columns (the sidebar collapse control is one), and re-anchoring moved it
+			// out of the top bar onto the sidebar logo. Position beats frost: such a
+			// panel keeps its fill and its rim, and goes without the blur.
+			if (panels.fixedGuard === true && fixed.length > 0) {
+				host.removeAttribute("data-glass-blur-host");
+				panelBlurHost[key] = "none";
+				panelBlurNote[key] = ["\u542b fixed \u5b50\u5143\u7d20\uff1a" + fixed.join("\u3001") + "\uff08\u5df2\u8df3\u8fc7\u78e8\u7802\uff0c\u4fdd\u4f4f\u5176\u5b9a\u4f4d\uff09"];
+				return;
+			}
+			host.setAttribute("data-glass-blur-host", "element");
+			panelBlurHost[key] = "element";
+			panelBlurNote[key] = fixed.length === 0 ? [] : ["\u542b fixed \u5b50\u5143\u7d20\uff1a" + fixed.join("\u3001")];
 			}
 			var refractionMounted = false;
 			var retagTimer = 0;
@@ -1729,10 +1838,13 @@ window.__ModuleLoader__.load({
 				// decisive immediately). Every later commit is a switching decision.
 				if (mood !== null) lastSwitch = now();
 				mood = next;
-				doc.body.dataset.glassMood = next;
-				applyTokens();
-				syncPanels();
-				if (fading) {
+			doc.body.dataset.glassMood = next;
+			applyTokens();
+			syncPanels();
+			// Both clips play through the switch, and the one that stops being shown
+			// is parked once the fade is over.
+			schedulePace();
+			if (fading) {
 					doc.body.dataset.glassFading = next;
 					if (fadeTimer !== 0) clearTimer(fadeTimer);
 					fadeTimer = setTimer(function () {
@@ -1771,8 +1883,132 @@ window.__ModuleLoader__.load({
 				schedule(target, Math.max(enter, dwellLeft));
 			}
 
-			/** Subscribe to every observable source that can report activity. */
-			function subscribe() {
+		/**
+		 * The two clocks this plugin runs, each startable and stoppable on its own:
+		 * a hidden tab needs neither a poll nor a surface scan.
+		 */
+		function startPolling() {
+			if (poll !== 0) return;
+			poll = deps.setInterval(function () {
+				evaluate();
+				sampleMedia(false);
+			}, POLL_MS);
+		}
+
+		function stopPolling() {
+			if (poll === 0) return;
+			deps.clearInterval(poll);
+			poll = 0;
+		}
+
+		function startRetag() {
+			if (retagTimer !== 0) return;
+			retagTimer = deps.setInterval(function () {
+				tagPanels();
+				tagBigSurfaces();
+				ensureStageHost();
+			}, RETAG_MS);
+		}
+
+		function stopRetag() {
+			if (retagTimer === 0) return;
+			deps.clearInterval(retagTimer);
+			retagTimer = 0;
+		}
+
+		/**
+		 * Both slots play across a switch, so the crossfade has a frame to land on
+		 * without waiting for a decoder.
+		 */
+		function primeSlots() {
+			for (var i = 0; i < SLOTS.length; i++) {
+				var video = videos[SLOTS[i]];
+				if (video === undefined || video === null) continue;
+				if (video.getAttribute("data-glass-clip") === "none") continue;
+				startPlayback(video);
+			}
+		}
+
+		/**
+		 * Park every clip that is not on screen. Two wallpapers decoding all day are
+		 * felt on a laptop; one is not — and the crossfade survives it, because the
+		 * incoming slot is primed first and the outgoing one only stops after the
+		 * fade-out has run.
+		 */
+		function paceSlots() {
+			if (disposed) return;
+			var target = mood === "work" ? "work" : "idle";
+			var plan = planClips();
+			for (var i = 0; i < SLOTS.length; i++) {
+				var slot = SLOTS[i];
+				if (slot === target) continue;
+				var entry = plan === undefined || plan === null ? null : plan[slot];
+				if (entry === null || entry === undefined || entry.clip === null) continue;
+				// One clip serving both moods is never parked.
+				if (entry.slot === "both") continue;
+				parkSlot(slot);
+			}
+		}
+
+		/** @param slot - the mood slot whose decoder may be released. */
+		function parkSlot(slot) {
+			var video = videos[slot];
+			if (video === undefined || video === null) return;
+			try { video.pause(); } catch (error) { /* never started */ }
+		}
+
+		/** Prime both slots, then release the one the fade has finished with. */
+		function schedulePace() {
+			primeSlots();
+			if (parkTimer !== 0) clearTimer(parkTimer);
+			parkTimer = setTimer(function () {
+				parkTimer = 0;
+				paceSlots();
+			}, FADE_WINDOW_MS + 80);
+		}
+
+		/** A hidden tab needs no decoder at all. */
+		function pauseSlots() {
+			for (var i = 0; i < SLOTS.length; i++) parkSlot(SLOTS[i]);
+		}
+
+		/**
+		 * Stop every clock and decoder while the tab is hidden, and bring them back
+		 * on the next visible frame. A wallpaper is the last thing that should be
+		 * spending battery on a window nobody is looking at.
+		 */
+		function applyVisibility() {
+			if (doc !== undefined && doc !== null && doc.hidden === true) {
+				stopPolling();
+				stopRetag();
+				pauseSlots();
+				return;
+			}
+			startPolling();
+			startRetag();
+			schedulePace();
+			evaluate();
+			sampleMedia(true);
+		}
+
+		function watchVisibility() {
+			if (doc === undefined || doc === null || typeof doc.addEventListener !== "function") return;
+			try {
+				doc.addEventListener("visibilitychange", applyVisibility, false);
+				visibilityWatched = true;
+			} catch (error) { /* a document without events still gets the theme */ }
+		}
+
+		function unwatchVisibility() {
+			if (visibilityWatched !== true || typeof doc.removeEventListener !== "function") return;
+			try {
+				doc.removeEventListener("visibilitychange", applyVisibility, false);
+			} catch (error) { /* already gone */ }
+			visibilityWatched = false;
+		}
+
+		/** Subscribe to every observable source that can report activity. */
+		function subscribe() {
 				var uiSession = getService(ctx, "uiSession");
 				var status = uiSession === undefined || uiSession === null ? undefined : uiSession.sessionStatus;
 				if (status !== undefined && status !== null && typeof status.subscribe === "function") {
@@ -1783,10 +2019,7 @@ window.__ModuleLoader__.load({
 				if (list !== undefined && list !== null && typeof list.subscribe === "function") {
 					unsubscribes.push(list.subscribe(evaluate));
 				}
-				poll = deps.setInterval(function () {
-					evaluate();
-					sampleMedia(false);
-				}, POLL_MS);
+			startPolling();
 				// A colour-scheme flip re-resolves which palette each panel paints, so
 				// the published fills follow the presenter rather than boot time.
 				if (ctx !== undefined && ctx !== null && typeof ctx.on === "function") {
@@ -2010,9 +2243,10 @@ window.__ModuleLoader__.load({
 					// crossfade instead of a decoder stall.
 					startPlayback(video);
 				}
-				announceWallpaper();
-				sampleMedia(true);
-			}
+			announceWallpaper();
+			schedulePace();
+			sampleMedia(true);
+		}
 
 			/**
 			 * Load one slot's clip. A file is stored and played from an object URL; a
@@ -2230,9 +2464,10 @@ window.__ModuleLoader__.load({
 				copy.divider = panels.divider;
 				copy.refraction = panels.refraction;
 				copy.rimSpill = panels.rimSpill;
-				copy.press = panels.press;
-				copy.blurFallback = panels.blurFallback;
-				return copy;
+			copy.press = panels.press;
+			copy.blurFallback = panels.blurFallback;
+			copy.fixedGuard = panels.fixedGuard;
+			return copy;
 			}
 
 			/** @returns which shell columns were found, for the row and for debugging. */
@@ -2478,9 +2713,14 @@ window.__ModuleLoader__.load({
 				style.setProperty("--gm-rim-b", rim.b);
 				style.setProperty("--gm-rim-c", rim.c);
 				style.setProperty("--gm-rim-edge", rim.edge);
-				style.setProperty("--gm-rim-ao", rim.ao);
-				style.setProperty("--gm-rim-contact", rim.contact);
-				style.setProperty("--gm-divider", rim.divider(panels.divider));
+			style.setProperty("--gm-rim-ao", rim.ao);
+			style.setProperty("--gm-rim-contact", rim.contact);
+			style.setProperty("--gm-rim-disp", rim.disp);
+			style.setProperty("--gm-rim-warm", rim.warm);
+			style.setProperty("--gm-rim-catch", rim.catch);
+			style.setProperty("--gm-rim-shade", rim.shade);
+			style.setProperty("--gm-rim-band", rim.band);
+			style.setProperty("--gm-divider", rim.divider(panels.divider));
 			}
 
 			/**
@@ -2590,8 +2830,9 @@ window.__ModuleLoader__.load({
 				if (given.refraction !== undefined) merged.refraction = given.refraction;
 				if (given.rimSpill !== undefined) merged.rimSpill = given.rimSpill;
 				if (given.press !== undefined) merged.press = given.press;
-				if (given.blurFallback !== undefined) merged.blurFallback = given.blurFallback;
-				panels = normalizePanels(merged);
+			if (given.blurFallback !== undefined) merged.blurFallback = given.blurFallback;
+			if (given.fixedGuard !== undefined) merged.fixedGuard = given.fixedGuard;
+			panels = normalizePanels(merged);
 				writeKey(PANEL_KEY, JSON.stringify(panels));
 				tagPanels(true);
 				syncPanels();
@@ -2664,19 +2905,17 @@ window.__ModuleLoader__.load({
 			ensureStageHost();
 				doc.body.dataset.glassBlur = readKey(NOBLUR_KEY) === "1" ? "off" : "on";
 
-				commit(desiredMood());
-				subscribe();
+			commit(desiredMood());
+			subscribe();
+			// A background tab keeps neither clock nor decoder running.
+			watchVisibility();
 				// The panel material is part of the theme, not a mode: mount it with the
 				// engine and re-find the columns whenever the shell rebuilds them.
 				mountRefraction();
 				restorePanels();
 				tagBigSurfaces();
-				ensureStageHost();
-				retagTimer = deps.setInterval(function () {
-					tagPanels();
-					tagBigSurfaces();
-					ensureStageHost();
-				}, 2500);
+			ensureStageHost();
+			startRetag();
 				// Publish the wallpaper variables once even with nothing configured, so
 				// the stage, the CSS defaults and the settings row always agree.
 				renderWallpaper();
@@ -2733,14 +2972,13 @@ window.__ModuleLoader__.load({
 						clearTimer(fadeTimer);
 						fadeTimer = 0;
 					}
-					if (retagTimer !== 0) {
-						deps.clearInterval(retagTimer);
-						retagTimer = 0;
+					unwatchVisibility();
+					stopRetag();
+					if (parkTimer !== 0) {
+						clearTimer(parkTimer);
+						parkTimer = 0;
 					}
-					if (poll !== 0) {
-						deps.clearInterval(poll);
-						poll = 0;
-					}
+					stopPolling();
 					for (var u = 0; u < unsubscribes.length; u++) {
 						try { unsubscribes[u](); } catch (error) { /* a dead source is already released */ }
 					}
@@ -2749,14 +2987,20 @@ window.__ModuleLoader__.load({
 						try { layerDispose(); } catch (error) { /* the registry may already be gone */ }
 						layerDispose = null;
 					}
-					for (var s = 0; s < SLOTS.length; s++) {
-						var video = videos[SLOTS[s]];
-						if (video !== undefined && video !== null) {
-							try { video.pause(); } catch (error) { /* never started */ }
-							video.removeAttribute("src");
-						}
-						releaseClipUrl(SLOTS[s]);
+			for (var s = 0; s < SLOTS.length; s++) {
+				var video = videos[SLOTS[s]];
+				if (video !== undefined && video !== null) {
+					try { video.pause(); } catch (error) { /* never started */ }
+					video.removeAttribute("src");
+					// Dropping the attribute alone leaves the decoder and the buffer
+					// alive; `load()` is the call that actually releases them. The object
+					// URL goes after it, or the reset has nothing to read.
+					if (typeof video.load === "function") {
+						try { video.load(); } catch (error) { /* no source to reset */ }
 					}
+				}
+				releaseClipUrl(SLOTS[s]);
+			}
 					videos = {};
 					wallpaperListeners.length = 0;
 					panelListeners.length = 0;
@@ -2789,7 +3033,7 @@ window.__ModuleLoader__.load({
 						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-alpha");
 						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-shadow");
 					}
-					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-divider"].forEach(function (name) {
+					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-divider"].forEach(function (name) {
 						doc.body.style.removeProperty(name);
 					});
 					doc.body.style.removeProperty("--gm-media-dim");

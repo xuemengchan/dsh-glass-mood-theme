@@ -118,7 +118,10 @@ function createDocument(fixture = {}) {
         el.width = 0
         el.height = 0
         el.getContext = () => ({
-          drawImage() { fixture.canvas.drawCalls += 1 },
+          // Which element was sampled is part of the contract: the reading has to
+          // come from the clip the current mood is showing, not from whichever slot
+          // happens to be first.
+          drawImage(video) { fixture.canvas.drawCalls += 1; fixture.canvas.lastVideo = video },
           getImageData() {
             if (fixture.canvas.throws) throw new Error('tainted canvas')
             return { data: Uint8ClampedArray.from(fixture.canvas.pixels) }
@@ -890,6 +893,43 @@ const newCanvas = () => ({ pixels: [], throws: false, drawCalls: 0 })
 const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Number)
 
 {
+  // What the sampler reads has to be the clip on screen. Taking the first slot
+  // instead meant that with both clips configured the work mood kept the idle
+  // footage's hue (and its dimming) while a cold clip played behind the glass.
+  const canvas = flatFrame(newCanvas(), 90, 140, 220)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/calm.mp4', slot: 'idle' })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/focus.mp4', slot: 'work' })
+  m.clock.advance(4500)
+  assert.equal(canvas.lastVideo.getAttribute('data-glass-slot'), 'idle', 'in the calm mood the calm clip is the one being read')
+
+  m.sessionStatus.set(new Map([['s1', { running: true }]]))
+  m.clock.advance(120)
+  assert.equal(m.document.body.dataset.glassMood, 'work', 'the mood switched')
+  m.clock.advance(4500)
+  assert.equal(canvas.lastVideo.getAttribute('data-glass-slot'), 'work', 'and the clip now on screen is the one being read')
+
+  // One decoder, not two: the slot the crossfade has finished with is parked, and
+  // it comes back the moment it is needed again.
+  assert.equal(videoEl(m, 'work').paused, false, 'the clip on screen is playing')
+  assert.equal(videoEl(m, 'idle').paused, true, 'the clip that is not showing is parked')
+  assert.equal(
+    videoEl(m, 'idle').getAttribute('src'),
+    'https://cdn.example.com/calm.mp4',
+    'parked, not released: the switch is still a crossfade'
+  )
+
+  m.sessionStatus.set(new Map())
+  m.clock.advance(1700)
+  assert.equal(m.document.body.dataset.glassMood, 'idle', 'the mood came back')
+  assert.equal(videoEl(m, 'idle').paused, false, 'and the calm clip is playing again')
+  m.clock.advance(1200)
+  assert.equal(videoEl(m, 'work').paused, true, 'with the cold one parked in turn')
+  m.dispose()
+  console.log('ok  the reading follows the clip on screen, one decoder at a time')
+}
+
+{
   // Bright saturated footage: the glass picks up its hue at the rim, and the media
   // earns a legibility scrim — capped at 35%, the published guidance for glass over
   // bright media.
@@ -928,7 +968,15 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.ok(Number(bodyVar(m, '--gm-media-dim')) > 0, 'and back on again')
   m.engine.setPanels({ rimSpill: false })
   assert.equal(bodyVar(m, '--gm-rim-b'), plainRim, 'the content-tint switch restores the authored rim')
-  assert.match(bodyVar(m, '--gm-panel-main-fill'), /^rgba\(255, 255, 255, /, 'and the authored pane')
+  // The pane goes back to the mood's own cast, not to the footage's hue: the cast
+  // is a few units off neutral by design (it is what makes the pane read warm or
+  // cool with no wallpaper at all), while the content's hue moves it much further.
+  const panePlain = rgbOf(bodyVar(m, '--gm-panel-main-fill'))
+  assert.ok(
+    panePlain[0] - panePlain[2] < paneWarm[0] - paneWarm[2],
+    `and the pane gives the content's hue back (${bodyVar(m, '--gm-panel-main-fill')})`
+  )
+  assert.ok(panePlain[0] - panePlain[2] <= 6, `leaving only the mood's own cast (${bodyVar(m, '--gm-panel-main-fill')})`)
   m.engine.setPanels({ rimSpill: true })
   assert.notEqual(bodyVar(m, '--gm-rim-b'), plainRim, 'and back on again')
 
@@ -1136,7 +1184,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   // rides the element that carries the material, on every panel. A negative-z pseudo
   // reports a valid blur and samples nothing — measured on a delegated surface and on
   // a column alike — so it survives only as the escape hatch for the one cost of the
-  // element arrangement (it becomes the containing block of a fixed descendant).
+  // element arrangement (it becomes the containing block of a fixed descendant),
+  // which is why a panel holding such a control gives the blur up instead.
   const guard = mount()
   assert.equal(guard.engine.blurReport().left.delegated, true, 'the left panel is delegated')
   assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'so its blur rides the surface itself')
@@ -1153,20 +1202,32 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   floating.computed = { position: 'fixed' }
   guard.shell.leftSurface.appendChild(floating)
   guard.engine.retag(true)
-  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'a fixed descendant does not move the blur')
+  // A fixed descendant must not be re-anchored: a backdrop-filter on the material
+  // element makes it the containing block of that control, which is what pulled the
+  // shell's own floating control (the sidebar collapse control) out of the top bar
+  // and onto the sidebar logo. The panel keeps its fill and its rim and drops the
+  // frost; only that panel pays, and the reason is reported.
+  assert.equal(guard.engine.blurReport().left.blurHost, 'none', 'a fixed descendant takes the frost off that panel')
   assert.match(
     guard.engine.blurSummary().join(' '),
     /含 fixed 子元素：div\.ScrollToBottom_fab/,
-    'it is named, so a displaced floating control can be traced to its panel'
+    'it is named, so a panel without blur can be traced to the control that cost it'
   )
+  assert.equal(guard.engine.blurReport().main.blurHost, 'element', 'and only that panel pays for it')
+  // The guard can be stood down, which is how the diagnosis is confirmed in the
+  // running app: the frost comes back and the control moves again.
+  guard.engine.setPanels({ fixedGuard: false })
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'standing the guard down puts the frost back')
+  guard.engine.setPanels({ fixedGuard: true })
+  assert.equal(guard.engine.blurReport().left.blurHost, 'none', 'and it comes off again')
   // The escape hatch, live: it puts the pseudo arrangement back on demand.
   guard.engine.setPanels({ blurFallback: true })
   assert.equal(guard.engine.blurReport().left.blurHost, 'pseudo', 'the fallback switch puts the pseudo back')
   assert.equal(guard.shell.leftSurface.getAttribute('data-glass-blur-host'), undefined, 'and the element stops claiming it')
   guard.engine.setPanels({ blurFallback: false })
-  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'and back to the arrangement that works')
   floating.remove()
   guard.engine.retag(true)
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'a panel with no floating control keeps the frost')
   assert.ok(!/含 fixed 子元素/.test(guard.engine.blurSummary().join(' ')), 'the note clears with the control')
   guard.dispose()
   console.log('ok  frost hosts do not form a backdrop root')
