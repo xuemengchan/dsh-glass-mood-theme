@@ -366,9 +366,19 @@
 
 ## 安装
 
+本机（开发目录就地安装）：
+
 ```powershell
 dsh plugin --profile desktop add "C:\Users\yorke\Documents\deepseek-harness\default-workspace\dsh-glass-mood-theme"
 ```
+
+**换一台电脑**（解压压缩包之后）看 [`安装说明.md`](安装说明.md)，那里写了完整步骤、以及**哪些设置不会跟着走**（面板调参存 localStorage、本地视频壁纸存 IndexedDB，都按机器隔离）。要点：
+
+```powershell
+dsh plugin --profile desktop add "D:\dsh-plugins\dsh-glass-mood-theme"
+```
+
+装完必须**完全退出并重启 DSH**（客户端 bundle 在宿主启动时装配）。
 
 该包声明了 `dsh.bundle`，`dsh plugin` 会把它同时写进 profile 的 `dsh.profile.bundles`。**客户端 bundle 在宿主启动时进入 `window.__DSH_BOOT__` 图；市场已安装页热挂载的话刷新页面即可。** 卸载：
 

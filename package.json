@@ -22,7 +22,8 @@
     "index.js",
     "client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "安装说明.md"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
