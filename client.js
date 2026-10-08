@@ -655,8 +655,8 @@ window.__ModuleLoader__.load({
 				"body[data-glass-blur=on] [data-time-hover-root] [class*=_bubble]::before," +
 				"body[data-glass-blur=on] [data-glass-frost=on]::before{" +
 				"content:\"\";position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;" +
-				"-webkit-backdrop-filter:blur(calc(var(--gm-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) var(--gm-refract);" +
-				"backdrop-filter:blur(calc(var(--gm-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) var(--gm-refract);" +
+				"-webkit-backdrop-filter:blur(var(--gm-blur)) saturate(var(--gm-sat)) var(--gm-refract);" +
+				"backdrop-filter:blur(var(--gm-blur)) saturate(var(--gm-sat)) var(--gm-refract);" +
 				"background-color:var(--gm-frost);" +
 				"box-shadow:inset 0 1px 0 var(--gm-rim-strong),inset 0 0 0 1px var(--gm-rim-soft),0 0 24px var(--gm-halo)}",
 			/* ---- one-shot cross-fade of surface colors, only around a mood change ---- */
@@ -1641,7 +1641,7 @@ window.__ModuleLoader__.load({
 					}
 				}
 			var vars = ["--gm-media-dim", "--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract",
-				"--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao",
+				"--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao",
 				"--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge",
 				"--gm-divider", "--gm-wall-fit", "--gm-wall-opacity", "--gm-wall-blur",
 				"--gm-wall-scale", "--gm-tint"];
@@ -2804,10 +2804,11 @@ window.__ModuleLoader__.load({
 				style.setProperty("--gm-frame-radius", panels.frameRadius + "px");
 				style.setProperty("--gm-radius", panels.panelRadius + "px");
 				style.setProperty("--gm-refract", panels.refraction ? "url(#" + REFRACTION_ID + "-filter)" : "none");
-				// With refraction on, the frost gives up a little blur so the edge reads
-				// as a lens rather than as extra blur (the knob used to look like a
-				// blur switch, which is exactly what it must not be).
-				style.setProperty("--gm-blur-scale", panels.refraction ? "0.86" : "1");
+				// Nothing else about the frost follows this switch. It used to scale the
+				// blur down while it was on — a real trade (displacement needs structure,
+				// and blur eats structure), but at 19px the 14% it took was invisible as
+				// refraction and perfectly visible as "the panel got blurrier", which is
+				// the one thing this knob must never look like.
 				// One switch for content-derived colour: it drives both the pane and the rim.
 				// The mood's own slot, read ahead of time: a switch must not spend four
 				// seconds wearing the previous clip's colour.
@@ -3168,7 +3169,7 @@ window.__ModuleLoader__.load({
 						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-alpha");
 						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-shadow");
 					}
-					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge", "--gm-divider"].forEach(function (name) {
+					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge", "--gm-divider"].forEach(function (name) {
 						doc.body.style.removeProperty(name);
 					});
 					doc.body.style.removeProperty("--gm-media-dim");

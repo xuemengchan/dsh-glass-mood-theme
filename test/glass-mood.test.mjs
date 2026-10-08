@@ -1596,10 +1596,13 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.notEqual(bodyVar(m, '--gm-rim-edge'), undefined, 'the rim publishes its edge tone')
   assert.match(bodyVar(m, '--gm-rim-edge'), /^rgba\(120,132,156,0\.34\)$/, 'the light scheme edge is a cool grey, not white-on-white')
 
-  // Refraction is a lens, not a blur knob: no pre-blur in the filter, and the
-  // frost gives up a little blur while it is on.
+  // Refraction is a lens, not a blur knob: no pre-blur in the filter, and nothing
+  // about the frost follows the switch — moving the frost is what made it read as a
+  // blur control.
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
   assert.equal(m.document.querySelector('[data-glass-refraction]').innerHTML.includes('feGaussianBlur'), false, 'the refraction filter has no pre-blur')
-  assert.equal(bodyVar(m, '--gm-blur-scale'), '0.86', 'the refraction filter still trims the frost it rides on')
+  assert.equal(bodyVar(m, '--gm-blur-scale'), '', 'no blur variable follows the edge switch')
+  assert.match(css, /\[data-glass-frost=on\]::before\{[^}]*backdrop-filter:blur\(var\(--gm-blur\)\)/, 'the frosted surfaces are not scaled by it either')
   // And the switch has to be visible ON THE EDGE: with it off, the rim relaxes to a
   // soft hairline with no dispersion in it. (It used to move nothing but the panel
   // blur, which is why it read as a blur control.)
@@ -1612,7 +1615,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.engine.setPanels({ refraction: true })
   assert.equal(bodyVar(m, '--gm-rim-band'), rimOn, 'and back on')
   m.engine.setPanels({ refraction: false })
-  assert.equal(bodyVar(m, '--gm-blur-scale'), '1', 'and restores the full blur when off')
+  assert.equal(bodyVar(m, '--gm-blur-scale'), '', 'and still no blur variable when it is off')
 
   // Values are clamped, never trusted.
   const clamped = m.engine.setPanels({ gap: 99, frameRadius: -5, panelRadius: 999, divder: 3, divider: 9, left: { opacity: 5, blur: -3, sheen: 4 } })
@@ -1705,7 +1708,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(bodyVar(second, '--gm-gap'), '', 'and removes its variables')
   assert.equal(bodyVar(second, '--gm-panel-left-shadow'), '', 'and the per-panel contact shadow')
   assert.equal(bodyVar(second, '--gm-rim-edge'), '', 'and the rim edge tone')
-  assert.equal(bodyVar(second, '--gm-blur-scale'), '', 'and the refraction blur scale')
+  assert.equal(bodyVar(second, '--gm-sheen-edge'), '', 'and the edge weight')
   assert.equal(second.document.body.dataset.glassPanels, undefined, 'and its body attributes')
   assert.equal(second.document.querySelector('[data-glass-refraction]'), null, 'and the refraction filter')
   console.log('ok  panel config persists + columns re-tag')
