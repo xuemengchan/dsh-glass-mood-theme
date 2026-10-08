@@ -71,6 +71,8 @@ window.__ModuleLoader__.load({
 		var POLL_MS = 1500;
 		/** How often the shell columns and the big surfaces are re-found. */
 		var RETAG_MS = 2500;
+		/** How often a column resize may cost a re-tag while an animation is running. */
+		var RESIZE_THROTTLE_MS = 120;
 		/** How long the one-shot surface cross-fade window stays open (slowest fade + slack). */
 		var FADE_WINDOW_MS = 1100;
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
@@ -633,6 +635,8 @@ window.__ModuleLoader__.load({
 			/* Reduced motion has to cut the mood crossfade too, and it must come after the
 			   rules it overrides: equal specificity means the last declaration wins. */
 			"@media (prefers-reduced-motion: reduce){body[data-glass-mood]{--gm-fade:1ms}}",
+			/* An expanding column earns its material on the way, not in a jump. */
+			"@media (prefers-reduced-motion: reduce){body[data-glass-panels] [data-glass-panel]{transition:none}}",
 			/* ---- frosted glass on three verified-safe targets ----
 			   backdrop-filter would turn a column container into the containing block of
 			   its fixed-position descendants, so it rides a ::before pseudo whose parent
@@ -678,7 +682,7 @@ window.__ModuleLoader__.load({
 			   on exactly one surface per arrangement: with a gap, each column is its own
 			   card inset by the gutter; without one, the panels are square and the
 			   frame's own radius clips them into a single continuous sheet. */
-			"body[data-glass-panels] [data-glass-panel]{position:relative;z-index:0;margin:var(--gm-gap) calc(var(--gm-gap) / 2) 0;border-radius:var(--gm-radius);overflow:hidden;box-shadow:var(--gm-panel-shadow,none)}",
+			"body[data-glass-panels] [data-glass-panel]{position:relative;z-index:0;margin:var(--gm-gap) calc(var(--gm-gap) / 2) 0;border-radius:var(--gm-radius);overflow:hidden;box-shadow:var(--gm-panel-shadow,none);transition:border-radius 220ms cubic-bezier(.4,0,.2,1),background-color 220ms cubic-bezier(.4,0,.2,1),box-shadow 220ms cubic-bezier(.4,0,.2,1)}",
 			/* A fullscreen right panel is an overlay, not a column: leave it alone. */
 			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=right]{margin:0;overflow:visible;border-radius:0}",
 			/* The column IS the surface: its layout wrapper must not paint a second
@@ -713,16 +717,16 @@ window.__ModuleLoader__.load({
 				"body[data-glass-selftest=on] [data-glass-panel]:not([data-glass-delegate=on])::before{" +
 				"-webkit-backdrop-filter:blur(40px) !important;backdrop-filter:blur(40px) !important}",
 			"body[data-glass-panels][data-glass-blur=on] [data-glass-blur-host=element]{" +
-				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
-				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
+				"-webkit-backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
+				"backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
 			"body[data-glass-panels][data-glass-blur=on] [data-glass-surface]:not([data-glass-blur-host=element])::before{" +
 				"content:\"\";position:absolute;inset:0;z-index:-1;pointer-events:none;background:transparent;" +
-				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
-				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
+				"-webkit-backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
+				"backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
 			"body[data-glass-panels][data-glass-blur=on] [data-glass-panel]:not([data-glass-delegate=on]):not([data-glass-blur-host=element])::before{" +
 				"content:\"\";position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;background:transparent;" +
-				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
-				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
+				"-webkit-backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
+				"backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
 			"body[data-glass-panels] [data-glass-panel=left]{--gm-panel-blur:var(--gm-panel-left-blur);--gm-sheen:var(--gm-panel-left-sheen);--gm-panel-shadow:var(--gm-panel-left-shadow);margin-left:var(--gm-gap);background-color:var(--gm-panel-left-fill)}",
 			"body[data-glass-panels] [data-glass-panel=main]{--gm-panel-blur:var(--gm-panel-main-blur);--gm-sheen:var(--gm-panel-main-sheen);--gm-panel-shadow:var(--gm-panel-main-shadow);background-color:var(--gm-panel-main-fill)}",
 			"body[data-glass-panels] [data-glass-panel=right]{--gm-panel-blur:var(--gm-panel-right-blur);--gm-sheen:var(--gm-panel-right-sheen);--gm-panel-shadow:var(--gm-panel-right-shadow);margin-right:var(--gm-gap);background-color:var(--gm-panel-right-fill)}",
@@ -757,7 +761,7 @@ window.__ModuleLoader__.load({
 			"linear-gradient(to left,var(--gm-rim-c) 0,transparent 62%) center right/calc(var(--gm-rim-band,10px) * .7) 100% no-repeat," +
 			"radial-gradient(90px 70px at 0% 0%,var(--gm-rim-catch,rgba(255,255,255,.12)) 0,transparent 68%)," +
 			"radial-gradient(120px 100px at 100% 100%,var(--gm-rim-shade,rgba(84,104,150,.07)) 0,transparent 66%);" +
-			"opacity:calc(var(--gm-sheen) * var(--gm-sheen-mood,1));" +
+			"opacity:calc(var(--gm-sheen) * var(--gm-sheen-mood,1) * var(--gm-sheen-edge,1));" +
 			"box-shadow:inset 0 1px 0 var(--gm-rim-disp,var(--gm-rim-a)),inset 0 -1px 0 var(--gm-rim-warm,transparent)," +
 			"inset 0 0 0 1px var(--gm-rim-edge),inset 0 -28px 56px -34px var(--gm-rim-ao)}",
 			/* The divider lives on that overlay, so it draws over the sidebar surface. */
@@ -1332,6 +1336,8 @@ window.__ModuleLoader__.load({
 			 * wider, the decisive one is a crisp lens edge.
 			 */
 			band: work ? "7px" : "10px",
+			/** The same rim with the edge switch off: a soft hairline, no dispersion. */
+			softBand: work ? "4px" : "6px",
 				/**
 				 * The flush-layout hairline, scaled by the user's divider strength. The
 				 * base is deliberately strong enough to see: a 5% hairline is not a
@@ -1377,6 +1383,7 @@ window.__ModuleLoader__.load({
 			/** Watches the shell columns' size, so an opening sidebar is tagged at once. */
 			var resizeObserver = null;
 			var resizeTimer = 0;
+			var lastResizeAt = -Infinity;
 			var observedNodes = [];
 			var layerDispose = null;
 			var unsubscribes = [];
@@ -1391,26 +1398,47 @@ window.__ModuleLoader__.load({
 			/** The alpha each panel currently paints, for the row's readout. */
 			var panelAlphaCache = { left: 0, main: 0, right: 0 };
 			/**
-			 * What the footage currently looks like. `ready` stays false until a frame
-			 * has actually been read, so nothing is ever guessed: an unreadable clip
-			 * (a cross-origin URL taints the canvas) falls back to the neutral wash.
+			 * What each slot's footage looks like — ONE READING PER SLOT, not one for
+			 * whichever clip happens to be on screen.
+			 *
+			 * Sampling only the visible clip meant a mood switch carried the previous
+			 * clip's hue and brightness for up to one sample interval (4s): the panes
+			 * changed palette at once and then kept drifting toward the footage that had
+			 * just gone, which is exactly what "the colour lags" looks like. Both slots
+			 * are read on their own cadence, so a switch uses the colour it already has.
+			 *
+			 * `ready` stays false until a frame has actually been read, so nothing is
+			 * ever guessed: an unreadable clip (a cross-origin URL taints the canvas)
+			 * falls back to the neutral wash.
 			 */
-			var mediaSample = { ready: false, brightness: 0.5, hue: null, saturation: 0, dim: 0, sampledAt: 0 };
+			function blankSample() {
+				return { ready: false, brightness: 0.5, hue: null, saturation: 0, dim: 0, sampledAt: 0 };
+			}
+			var mediaSamples = { idle: blankSample(), work: blankSample() };
+			/** @returns 'work' or 'idle': the slot the current mood is showing. */
+			function activeSlot() {
+				return mood === "work" ? "work" : "idle";
+			}
+			/** @param slot - a mood slot. @returns its last reading, never undefined. */
+			function sampleFor(slot) {
+				return mediaSamples[slot] === undefined || mediaSamples[slot] === null ? blankSample() : mediaSamples[slot];
+			}
 			var sampleCanvas = null;
 			var prefers = { reducedTransparency: false, moreContrast: false };
 			var preferenceLists = [];
 
 		/**
-		 * @returns the clip on screen right now — the one the CURRENT mood shows,
-		 * falling back to the other slot only when that one has no frame to read.
+		 * @param slot - the mood slot to read.
+		 * @returns the clip element that serves it (the other slot's when one clip
+		 * covers both moods), or null when there is no frame to read.
 		 *
 		 * Reading whichever slot happens to be first is why the material stopped
 		 * following the wallpaper: with both clips configured the sampler always took
 		 * the idle one, so in the work mood the panes and the rim kept the idle
 		 * footage's hue (and its dimming) while a cold clip was playing behind them.
 		 */
-		function activeVideo() {
-			var order = mood === "work" ? ["work", "idle"] : ["idle", "work"];
+		function videoFor(slot) {
+			var order = slot === "work" ? ["work", "idle"] : ["idle", "work"];
 			for (var i = 0; i < order.length; i++) {
 				var video = videos[order[i]];
 				if (video === undefined || video === null) continue;
@@ -1438,13 +1466,15 @@ window.__ModuleLoader__.load({
 			}
 
 			/** Publish what the footage implies: a dim layer and a hue to spill. */
+			/** Publish what the clip on screen implies: a dim layer for the media stack. */
 			function publishMedia() {
+				var sample = sampleFor(activeSlot());
 				var dim = 0;
-				if (wallpaper.autoDim === true && mediaSample.ready && mediaSample.brightness > DIM_KNEE) {
-					dim = Math.min(DIM_MAX, ((mediaSample.brightness - DIM_KNEE) / (1 - DIM_KNEE)) * DIM_MAX);
+				if (wallpaper.autoDim === true && sample.ready && sample.brightness > DIM_KNEE) {
+					dim = Math.min(DIM_MAX, ((sample.brightness - DIM_KNEE) / (1 - DIM_KNEE)) * DIM_MAX);
 				}
-				mediaSample.dim = Math.round(dim * 1000) / 1000;
-				doc.body.style.setProperty("--gm-media-dim", String(mediaSample.dim));
+				sample.dim = Math.round(dim * 1000) / 1000;
+				doc.body.style.setProperty("--gm-media-dim", String(sample.dim));
 			}
 
 			/**
@@ -1455,18 +1485,33 @@ window.__ModuleLoader__.load({
 			 */
 			function sampleMedia(force) {
 				if (disposed) return false;
-				var video = activeVideo();
+				var read = false;
+				for (var i = 0; i < SLOTS.length; i++) {
+					if (readSlot(SLOTS[i], force)) read = true;
+				}
+				publishMedia();
+				syncPanels();
+				return read;
+			}
+
+			/**
+			 * Read one frame of one slot into that slot's own reading.
+			 * @param slot - 'idle' or 'work'.
+			 * @param force - ignore the throttle (a new clip, or a mood switch).
+			 * @returns whether the reading changed.
+			 */
+			function readSlot(slot, force) {
+				var video = videoFor(slot);
 				if (video === null) {
-					if (mediaSample.ready) {
-						mediaSample = { ready: false, brightness: 0.5, hue: null, saturation: 0, dim: 0, sampledAt: mediaSample.sampledAt };
-						publishMedia();
-						syncPanels();
+					if (mediaSamples[slot].ready) {
+						mediaSamples[slot] = blankSample();
+						return true;
 					}
 					return false;
 				}
-				var now = deps.now();
-				if (force !== true && now - mediaSample.sampledAt < SAMPLE_INTERVAL_MS) return false;
-				mediaSample.sampledAt = now;
+				var at = deps.now();
+				if (force !== true && at - mediaSamples[slot].sampledAt < SAMPLE_INTERVAL_MS) return false;
+				mediaSamples[slot].sampledAt = at;
 				var canvas = ensureSampleCanvas();
 				if (canvas === null || typeof canvas.getContext !== "function") return false;
 				var context = null;
@@ -1479,11 +1524,8 @@ window.__ModuleLoader__.load({
 					pixels = image === undefined || image === null ? null : image.data;
 				} catch (error) {
 					// Tainted canvas (a cross-origin clip): stop guessing, use the wash.
-					mediaSample.ready = false;
-					mediaSample.hue = null;
-					publishMedia();
-					syncPanels();
-					return false;
+					mediaSamples[slot] = blankSample();
+					return true;
 				}
 				if (pixels === null || pixels.length < 4) return false;
 				var total = 0;
@@ -1503,16 +1545,14 @@ window.__ModuleLoader__.load({
 				var max = Math.max(r, g, b);
 				var min = Math.min(r, g, b);
 				var brightness = brightnessOf(r, g, b);
-				mediaSample = {
+				mediaSamples[slot] = {
 					ready: true,
 					brightness: brightness,
 					hue: brightness < SPILL_MIN_BRIGHTNESS ? null : hueOf(r, g, b),
 					saturation: max === 0 ? 0 : (max - min) / max,
-					dim: mediaSample.dim,
-					sampledAt: now
+					dim: mediaSamples[slot].dim,
+					sampledAt: at
 				};
-				publishMedia();
-				syncPanels();
 				return true;
 			}
 
@@ -1602,7 +1642,7 @@ window.__ModuleLoader__.load({
 				}
 			var vars = ["--gm-media-dim", "--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract",
 				"--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao",
-				"--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band",
+				"--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge",
 				"--gm-divider", "--gm-wall-fit", "--gm-wall-opacity", "--gm-wall-blur",
 				"--gm-wall-scale", "--gm-tint"];
 				for (var v = 0; v < vars.length; v++) doc.body.style.removeProperty(vars[v]);
@@ -2021,12 +2061,19 @@ window.__ModuleLoader__.load({
 			if (resizeObserver !== null) return;
 			resizeObserver = new win.ResizeObserver(function () {
 				if (disposed) return;
-				if (resizeTimer !== 0) clearTimer(resizeTimer);
+				// Leading edge, then at most one pass per throttle window. A trailing
+				// debounce only fires once the animation STOPS — which is precisely the
+				// "plain column that snaps at the end" this is here to prevent.
+				if (resizeTimer !== 0) return;
+				var since = now() - lastResizeAt;
+				if (since >= RESIZE_THROTTLE_MS) {
+					runResizePass();
+					return;
+				}
 				resizeTimer = setTimer(function () {
 					resizeTimer = 0;
-					tagPanels();
-					syncPanels();
-				}, 60);
+					runResizePass();
+				}, RESIZE_THROTTLE_MS - since);
 			});
 		}
 
@@ -2047,6 +2094,13 @@ window.__ModuleLoader__.load({
 					observedNodes.push(node);
 				} catch (error) { /* a node the observer cannot take */ }
 			}
+		}
+
+		/** One re-tag-and-republish pass, however many resizes asked for it. */
+		function runResizePass() {
+			lastResizeAt = now();
+			tagPanels();
+			syncPanels();
 		}
 
 		function unwatchColumns() {
@@ -2755,7 +2809,9 @@ window.__ModuleLoader__.load({
 				// blur switch, which is exactly what it must not be).
 				style.setProperty("--gm-blur-scale", panels.refraction ? "0.86" : "1");
 				// One switch for content-derived colour: it drives both the pane and the rim.
-				var spillSample = panels.rimSpill === true ? mediaSample : null;
+				// The mood's own slot, read ahead of time: a switch must not spend four
+				// seconds wearing the previous clip's colour.
+				var spillSample = panels.rimSpill === true ? sampleFor(moodNow === "work" ? "work" : "idle") : null;
 				for (var i = 0; i < PANEL_KEYS.length; i++) {
 					var key = PANEL_KEYS[i];
 					var panel = panels[key];
@@ -2782,11 +2838,17 @@ window.__ModuleLoader__.load({
 				style.setProperty("--gm-rim-edge", rim.edge);
 			style.setProperty("--gm-rim-ao", rim.ao);
 			style.setProperty("--gm-rim-contact", rim.contact);
-			style.setProperty("--gm-rim-disp", rim.disp);
-			style.setProperty("--gm-rim-warm", rim.warm);
+			// The edge switch has to change the EDGE. It used to do nothing but scale the
+			// frost blur, which is why it read as a blur control: the rim now tightens
+			// into a lens edge (a brighter, wider specular with its dispersion showing),
+			// or relaxes back to a soft hairline.
+			var refracting = panels.refraction === true;
+			style.setProperty("--gm-rim-band", refracting ? rim.band : rim.softBand);
+			style.setProperty("--gm-rim-disp", refracting ? rim.disp : "transparent");
+			style.setProperty("--gm-rim-warm", refracting ? rim.warm : "transparent");
+			style.setProperty("--gm-sheen-edge", refracting ? "1.15" : "0.82");
 			style.setProperty("--gm-rim-catch", rim.catch);
 			style.setProperty("--gm-rim-shade", rim.shade);
-			style.setProperty("--gm-rim-band", rim.band);
 			style.setProperty("--gm-divider", rim.divider(panels.divider));
 			}
 
@@ -3106,7 +3168,7 @@ window.__ModuleLoader__.load({
 						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-alpha");
 						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-shadow");
 					}
-					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-divider"].forEach(function (name) {
+					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-blur-scale", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge", "--gm-divider"].forEach(function (name) {
 						doc.body.style.removeProperty(name);
 					});
 					doc.body.style.removeProperty("--gm-media-dim");
@@ -3173,13 +3235,18 @@ window.__ModuleLoader__.load({
 				 * @returns the sampler state.
 				 */
 				media: function () {
+					var sample = sampleFor(activeSlot());
 					return {
-						ready: mediaSample.ready,
-						brightness: Math.round(mediaSample.brightness * 1000) / 1000,
-						hue: mediaSample.hue === null ? null : Math.round(mediaSample.hue),
-						saturation: Math.round(mediaSample.saturation * 1000) / 1000,
-						dim: mediaSample.dim
+						ready: sample.ready,
+						brightness: Math.round(sample.brightness * 1000) / 1000,
+						hue: sample.hue === null ? null : Math.round(sample.hue),
+						saturation: Math.round(sample.saturation * 1000) / 1000,
+						dim: sample.dim
 					};
+				},
+				/** Both slots' last reading, for anyone debugging the spill. */
+				mediaSlots: function () {
+					return { idle: sampleFor("idle"), work: sampleFor("work") };
 				},
 				/** Panic switch: drop every hook and the stylesheet for this session. */
 				off: shutdown,

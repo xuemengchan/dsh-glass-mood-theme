@@ -118,13 +118,21 @@ function createDocument(fixture = {}) {
         el.width = 0
         el.height = 0
         el.getContext = () => ({
-          // Which element was sampled is part of the contract: the reading has to
-          // come from the clip the current mood is showing, not from whichever slot
-          // happens to be first.
-          drawImage(video) { fixture.canvas.drawCalls += 1; fixture.canvas.lastVideo = video },
+          // Which element was sampled is part of the contract: each slot has to be
+          // read into its OWN reading, or a mood switch wears the other clip's
+          // colour. `perSlot` lets a test give the two clips different frames.
+          drawImage(video) {
+            fixture.canvas.drawCalls += 1
+            fixture.canvas.drawnSlots.push(video.getAttribute('data-glass-slot'))
+            fixture.canvas.lastSlot = video.getAttribute('data-glass-slot')
+          },
           getImageData() {
             if (fixture.canvas.throws) throw new Error('tainted canvas')
-            return { data: Uint8ClampedArray.from(fixture.canvas.pixels) }
+            const perSlot = fixture.canvas.perSlot
+            const pixels = perSlot !== undefined && perSlot[fixture.canvas.lastSlot] !== undefined
+              ? perSlot[fixture.canvas.lastSlot]
+              : fixture.canvas.pixels
+            return { data: Uint8ClampedArray.from(pixels) }
           }
         })
       }
@@ -903,33 +911,49 @@ const alphaOf = (color) => {
 //#region media sampling
 /** A frame of one flat colour, the way the sampler would average it. */
 function flatFrame(canvas, r, g, b) {
-  const pixels = []
-  for (let i = 0; i < 24 * 14; i++) pixels.push(r, g, b, 255)
-  canvas.pixels = pixels
+  canvas.pixels = framePixels(r, g, b)
   return canvas
 }
-const newCanvas = () => ({ pixels: [], throws: false, drawCalls: 0 })
+const newCanvas = () => ({ pixels: [], throws: false, drawCalls: 0, drawnSlots: [], lastSlot: null })
+/** A flat frame of one colour, as the sampler would see it. */
+const framePixels = (r, g, b) => {
+  const pixels = []
+  for (let i = 0; i < 24 * 14; i++) pixels.push(r, g, b, 255)
+  return pixels
+}
 const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Number)
 
 {
   // What the sampler reads has to be the clip on screen. Taking the first slot
   // instead meant that with both clips configured the work mood kept the idle
   // footage's hue (and its dimming) while a cold clip played behind the glass.
-  const canvas = flatFrame(newCanvas(), 90, 140, 220)
+  // Both clips get their own frame here: a warm one and a cold one, so "which
+  // reading is this pane wearing?" is answerable by looking at the pane.
+  const canvas = newCanvas()
+  canvas.perSlot = { idle: framePixels(250, 140, 40), work: framePixels(90, 140, 220) }
   const m = mount({ canvas })
   m.engine.setWallpaper({ url: 'https://cdn.example.com/calm.mp4', slot: 'idle' })
   m.engine.setWallpaper({ url: 'https://cdn.example.com/focus.mp4', slot: 'work' })
   m.clock.advance(4500)
-  assert.equal(canvas.lastVideo.getAttribute('data-glass-slot'), 'idle', 'in the calm mood the calm clip is the one being read')
+  assert.ok(canvas.drawnSlots.includes('idle'), 'the calm slot is read into its own reading')
+  assert.ok(canvas.drawnSlots.includes('work'), 'and so is the cold one, ahead of time')
+  assert.equal(m.engine.media().ready, true, 'the reading the calm mood paints comes from the calm clip')
 
+  // The switch must land on the colour it already has: no sampling interval is due
+  // yet, and the pane still turns cold in the same tick. (Reading only the clip on
+  // screen is what made it wear the warm hue for another four seconds.)
+  const warm = rgbOf(bodyVar(m, '--gm-panel-main-fill'))
+  const drawsBefore = canvas.drawCalls
   m.sessionStatus.set(new Map([['s1', { running: true }]]))
   m.clock.advance(120)
   assert.equal(m.document.body.dataset.glassMood, 'work', 'the mood switched')
-  m.clock.advance(4500)
-  assert.equal(canvas.lastVideo.getAttribute('data-glass-slot'), 'work', 'and the clip now on screen is the one being read')
+  const cold = rgbOf(bodyVar(m, '--gm-panel-main-fill'))
+  assert.equal(canvas.drawCalls, drawsBefore, 'and no new frame was read to do it')
+  assert.ok(cold[2] - cold[0] > warm[2] - warm[0], `the pane turns cold at once (${warm} -> ${cold})`)
 
-  // One decoder, not two: the slot the crossfade has finished with is parked, and
-  // it comes back the moment it is needed again.
+  // One decoder, not two: once the crossfade is over, the slot that is not showing
+  // is parked, and it comes back the moment it is needed again.
+  m.clock.advance(1200)
   assert.equal(videoEl(m, 'work').paused, false, 'the clip on screen is playing')
   assert.equal(videoEl(m, 'idle').paused, true, 'the clip that is not showing is parked')
   assert.equal(
@@ -1184,12 +1208,12 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   // containing block, which is what once hid the sidebar's reopen control.
   assert.match(
     css,
-    /\[data-glass-blur=on\] \[data-glass-blur-host=element\]\{[^}]*backdrop-filter:blur\(calc\(var\(--gm-panel-blur\)/,
+    /\[data-glass-blur=on\] \[data-glass-blur-host=element\]\{[^}]*backdrop-filter:blur\(var\(--gm-panel-blur\)/,
     'the material element can carry the blur itself'
   )
   assert.match(
     css,
-    /\[data-glass-surface\]:not\(\[data-glass-blur-host=element\]\)::before\{[^}]*backdrop-filter:blur\(calc\(var\(--gm-panel-blur\)/,
+    /\[data-glass-surface\]:not\(\[data-glass-blur-host=element\]\)::before\{[^}]*backdrop-filter:blur\(var\(--gm-panel-blur\)/,
     'and the pseudo remains the fallback for a delegated surface'
   )
   assert.match(
@@ -1575,7 +1599,18 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   // Refraction is a lens, not a blur knob: no pre-blur in the filter, and the
   // frost gives up a little blur while it is on.
   assert.equal(m.document.querySelector('[data-glass-refraction]').innerHTML.includes('feGaussianBlur'), false, 'the refraction filter has no pre-blur')
-  assert.equal(bodyVar(m, '--gm-blur-scale'), '0.86', 'refraction slightly reduces the frost blur')
+  assert.equal(bodyVar(m, '--gm-blur-scale'), '0.86', 'the refraction filter still trims the frost it rides on')
+  // And the switch has to be visible ON THE EDGE: with it off, the rim relaxes to a
+  // soft hairline with no dispersion in it. (It used to move nothing but the panel
+  // blur, which is why it read as a blur control.)
+  const rimOn = bodyVar(m, '--gm-rim-band')
+  const sheenOn = bodyVar(m, '--gm-sheen-edge')
+  m.engine.setPanels({ refraction: false })
+  assert.notEqual(bodyVar(m, '--gm-rim-band'), rimOn, 'the edge switch changes the rim, not just the blur')
+  assert.equal(bodyVar(m, '--gm-rim-disp'), 'transparent', 'off means no dispersion fringe')
+  assert.notEqual(bodyVar(m, '--gm-sheen-edge'), sheenOn, 'and a weaker specular')
+  m.engine.setPanels({ refraction: true })
+  assert.equal(bodyVar(m, '--gm-rim-band'), rimOn, 'and back on')
   m.engine.setPanels({ refraction: false })
   assert.equal(bodyVar(m, '--gm-blur-scale'), '1', 'and restores the full blur when off')
 

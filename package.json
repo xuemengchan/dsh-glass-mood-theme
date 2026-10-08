@@ -1,6 +1,6 @@
 {
   "name": "dsh-glass-mood-theme",
-  "version": "1.24.0",
+  "version": "1.25.0",
   "description": "Glassmorphism theme for the DeepSeek Harness web GUI: mood-driven palette, per-state MP4/WebM wallpapers, per-panel glass, opaque content surfaces, content-adaptive light and dimming, press deformation, and answers to reduced transparency / increased contrast / reduced motion.",
   "keywords": [
     "dsh",
