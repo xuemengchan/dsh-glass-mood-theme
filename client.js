@@ -619,10 +619,17 @@ window.__ModuleLoader__.load({
 			/* ---- lift the app frame: a plain stacking context, never a filter ---- */
 			"#root{position:relative;z-index:1}",
 			/* ---- mood design variables (structure, not color) ---- */
-			"body[data-glass-mood]{--gm-fade:900ms;--gm-blur:26px;--gm-sat:118%;--gm-frost:rgba(255,255,255,.10);--gm-rim-strong:rgba(255,255,255,.46);--gm-rim-soft:rgba(255,255,255,.16);--gm-halo:rgba(86,96,140,.10);--gm-tint:0.3;--gm-sheen-mood:0.92;--gm-refract:none}",
-			"body[data-glass-mood=work]{--gm-fade:260ms;--gm-blur:13px;--gm-sat:128%;--gm-frost:rgba(214,234,255,.10);--gm-rim-strong:rgba(255,255,255,.55);--gm-rim-soft:rgba(150,200,255,.18);--gm-halo:rgba(24,72,132,.16);--gm-sheen-mood:1.08}",
-			"body[data-ds-dark-theme][data-glass-mood]{--gm-frost:rgba(255,255,255,.07);--gm-rim-strong:rgba(255,255,255,.26);--gm-rim-soft:rgba(255,255,255,.10);--gm-halo:rgba(0,0,0,.30)}",
-			"body[data-ds-dark-theme][data-glass-mood=work]{--gm-frost:rgba(150,200,255,.08);--gm-rim-strong:rgba(196,226,255,.30);--gm-rim-soft:rgba(150,200,255,.14);--gm-halo:rgba(0,0,0,.34)}",
+		/* The frost is a veil, and a veil is what turns glass into milk: Apple's own
+		   guidance (and every audit of it) puts translucency at "frost 10-25, above 30
+		   reads as milky plastic". So the white layer stays thin and the separation is
+		   earned the way the Clear variant earns it — by dimming what is behind the
+		   glass, not by painting over it — with a small contrast lift to hold text.
+		   Blur follows the same logic: Liquid Glass bends light, it does not haze it,
+		   so the radius stays low enough for the footage to stay recognisable. */
+		"body[data-glass-mood]{--gm-fade:520ms;--gm-blur:19px;--gm-sat:118%;--gm-contrast:1.03;--gm-frost:rgba(255,255,255,.055);--gm-rim-strong:rgba(255,255,255,.46);--gm-rim-soft:rgba(255,255,255,.16);--gm-halo:rgba(86,96,140,.10);--gm-tint:0.3;--gm-sheen-mood:0.92;--gm-refract:none}",
+		"body[data-glass-mood=work]{--gm-fade:260ms;--gm-blur:10px;--gm-sat:128%;--gm-contrast:1.06;--gm-frost:rgba(214,234,255,.055);--gm-rim-strong:rgba(255,255,255,.55);--gm-rim-soft:rgba(150,200,255,.18);--gm-halo:rgba(24,72,132,.16);--gm-sheen-mood:1.08}",
+		"body[data-ds-dark-theme][data-glass-mood]{--gm-frost:rgba(255,255,255,.04);--gm-rim-strong:rgba(255,255,255,.26);--gm-rim-soft:rgba(255,255,255,.10);--gm-halo:rgba(0,0,0,.30)}",
+		"body[data-ds-dark-theme][data-glass-mood=work]{--gm-frost:rgba(150,200,255,.045);--gm-rim-strong:rgba(196,226,255,.30);--gm-rim-soft:rgba(150,200,255,.14);--gm-halo:rgba(0,0,0,.34)}",
 			/* Reduced motion has to cut the mood crossfade too, and it must come after the
 			   rules it overrides: equal specificity means the last declaration wins. */
 			"@media (prefers-reduced-motion: reduce){body[data-glass-mood]{--gm-fade:1ms}}",
@@ -706,16 +713,16 @@ window.__ModuleLoader__.load({
 				"body[data-glass-selftest=on] [data-glass-panel]:not([data-glass-delegate=on])::before{" +
 				"-webkit-backdrop-filter:blur(40px) !important;backdrop-filter:blur(40px) !important}",
 			"body[data-glass-panels][data-glass-blur=on] [data-glass-blur-host=element]{" +
-				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
-				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
+				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
+				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
 			"body[data-glass-panels][data-glass-blur=on] [data-glass-surface]:not([data-glass-blur-host=element])::before{" +
 				"content:\"\";position:absolute;inset:0;z-index:-1;pointer-events:none;background:transparent;" +
-				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
-				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
+				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
+				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
 			"body[data-glass-panels][data-glass-blur=on] [data-glass-panel]:not([data-glass-delegate=on]):not([data-glass-blur-host=element])::before{" +
 				"content:\"\";position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;background:transparent;" +
-				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat));" +
-				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat))}",
+				"-webkit-backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
+				"backdrop-filter:blur(calc(var(--gm-panel-blur) * var(--gm-blur-scale,1))) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
 			"body[data-glass-panels] [data-glass-panel=left]{--gm-panel-blur:var(--gm-panel-left-blur);--gm-sheen:var(--gm-panel-left-sheen);--gm-panel-shadow:var(--gm-panel-left-shadow);margin-left:var(--gm-gap);background-color:var(--gm-panel-left-fill)}",
 			"body[data-glass-panels] [data-glass-panel=main]{--gm-panel-blur:var(--gm-panel-main-blur);--gm-sheen:var(--gm-panel-main-sheen);--gm-panel-shadow:var(--gm-panel-main-shadow);background-color:var(--gm-panel-main-fill)}",
 			"body[data-glass-panels] [data-glass-panel=right]{--gm-panel-blur:var(--gm-panel-right-blur);--gm-sheen:var(--gm-panel-right-sheen);--gm-panel-shadow:var(--gm-panel-right-shadow);margin-right:var(--gm-gap);background-color:var(--gm-panel-right-fill)}",
@@ -744,12 +751,12 @@ window.__ModuleLoader__.load({
 		   reads as a border, not as glass. */
 		"body[data-glass-panels] [data-glass-panel]::after{content:\"\";position:absolute;inset:0;border-radius:inherit;pointer-events:none;" +
 			"background:" +
-			"linear-gradient(to bottom,var(--gm-rim-a) 0,var(--gm-rim-b) 24%,transparent 76%) top center/100% var(--gm-rim-band,18px) no-repeat," +
-			"linear-gradient(to top,var(--gm-rim-c) 0,transparent 78%) bottom center/100% calc(var(--gm-rim-band,18px) * .7) no-repeat," +
-			"linear-gradient(to right,var(--gm-rim-b) 0,transparent 78%) center left/var(--gm-rim-band,18px) 100% no-repeat," +
-			"linear-gradient(to left,var(--gm-rim-c) 0,transparent 78%) center right/calc(var(--gm-rim-band,18px) * .7) 100% no-repeat," +
-			"radial-gradient(140px 100px at 0% 0%,var(--gm-rim-catch,rgba(255,255,255,.18)) 0,transparent 72%)," +
-			"radial-gradient(180px 140px at 100% 100%,var(--gm-rim-shade,rgba(84,104,150,.1)) 0,transparent 70%);" +
+			"linear-gradient(to bottom,var(--gm-rim-a) 0,var(--gm-rim-b) 18%,transparent 58%) top center/100% var(--gm-rim-band,10px) no-repeat," +
+			"linear-gradient(to top,var(--gm-rim-c) 0,transparent 62%) bottom center/100% calc(var(--gm-rim-band,10px) * .7) no-repeat," +
+			"linear-gradient(to right,var(--gm-rim-b) 0,transparent 62%) center left/var(--gm-rim-band,10px) 100% no-repeat," +
+			"linear-gradient(to left,var(--gm-rim-c) 0,transparent 62%) center right/calc(var(--gm-rim-band,10px) * .7) 100% no-repeat," +
+			"radial-gradient(90px 70px at 0% 0%,var(--gm-rim-catch,rgba(255,255,255,.12)) 0,transparent 68%)," +
+			"radial-gradient(120px 100px at 100% 100%,var(--gm-rim-shade,rgba(84,104,150,.07)) 0,transparent 66%);" +
 			"opacity:calc(var(--gm-sheen) * var(--gm-sheen-mood,1));" +
 			"box-shadow:inset 0 1px 0 var(--gm-rim-disp,var(--gm-rim-a)),inset 0 -1px 0 var(--gm-rim-warm,transparent)," +
 			"inset 0 0 0 1px var(--gm-rim-edge),inset 0 -28px 56px -34px var(--gm-rim-ao)}",
@@ -1313,15 +1320,18 @@ window.__ModuleLoader__.load({
 			 */
 			disp: dark ? (work ? "rgba(150,205,255,0.40)" : "rgba(255,240,222,0.34)") : (work ? "rgba(120,175,235,0.52)" : "rgba(255,247,235,0.46)"),
 			warm: dark ? (work ? "rgba(120,170,225,0.26)" : "rgba(255,214,170,0.26)") : (work ? "rgba(150,195,240,0.30)" : "rgba(255,206,150,0.30)"),
-			/** The corner nearest the key light, and the one furthest from it. */
-			catch: dark ? (work ? "rgba(190,225,255,0.12)" : "rgba(255,252,246,0.10)") : (work ? "rgba(210,235,255,0.20)" : "rgba(255,255,255,0.18)"),
-			shade: dark ? "rgba(0,0,0,0.18)" : "rgba(84,104,150,0.10)",
+			/** The corner nearest the key light, and the one furthest from it. Both stay
+			 * faint: a corner glow large enough to notice is a haze over the content. */
+			catch: dark ? (work ? "rgba(190,225,255,0.08)" : "rgba(255,252,246,0.07)") : (work ? "rgba(210,235,255,0.13)" : "rgba(255,255,255,0.12)"),
+			shade: dark ? "rgba(0,0,0,0.13)" : "rgba(84,104,150,0.07)",
 			/**
-			 * How far the Fresnel band reaches inward. Grazing light is a rim, not a
-			 * wash, so the calm mood breathes a little wider and the decisive one is a
-			 * crisp lens edge.
+			 * How far the Fresnel band reaches inward. Apple's specular highlight is a
+			 * glint with an amplitude of a few pixels, not a gradient across the panel:
+			 * the band has to die within a handful of pixels or it reads as a wash (the
+			 * first attempt at 18px did exactly that). The calm mood breathes a little
+			 * wider, the decisive one is a crisp lens edge.
 			 */
-			band: work ? "13px" : "18px",
+			band: work ? "7px" : "10px",
 				/**
 				 * The flush-layout hairline, scaled by the user's divider strength. The
 				 * base is deliberately strong enough to see: a 5% hairline is not a
@@ -1364,6 +1374,10 @@ window.__ModuleLoader__.load({
 			/** The one-shot timer that parks the clip the crossfade has finished with. */
 			var parkTimer = 0;
 			var visibilityWatched = false;
+			/** Watches the shell columns' size, so an opening sidebar is tagged at once. */
+			var resizeObserver = null;
+			var resizeTimer = 0;
+			var observedNodes = [];
 			var layerDispose = null;
 			var unsubscribes = [];
 			/** One video element per mood slot: both exist so a switch never waits. */
@@ -1991,6 +2005,57 @@ window.__ModuleLoader__.load({
 			sampleMedia(true);
 		}
 
+		/**
+		 * Watch the columns' own size. The retag pass runs every 2.5s, which is fine
+		 * for a shell that never changes and far too slow for one that does: an
+		 * opening sidebar sat there as a plain column for a second before it got its
+		 * radius and its material. A resize is the one signal that arrives in the same
+		 * frame as the change.
+		 *
+		 * Debounced, because an animated sidebar fires every frame and a re-tag is a
+		 * measured probe (each pass reads geometry and computed styles): 60ms is
+		 * imperceptible and turns ~20 probes into one.
+		 */
+		function watchColumns() {
+			if (win === undefined || win === null || typeof win.ResizeObserver !== "function") return;
+			if (resizeObserver !== null) return;
+			resizeObserver = new win.ResizeObserver(function () {
+				if (disposed) return;
+				if (resizeTimer !== 0) clearTimer(resizeTimer);
+				resizeTimer = setTimer(function () {
+					resizeTimer = 0;
+					tagPanels();
+					syncPanels();
+				}, 60);
+			});
+		}
+
+		/**
+		 * Observe the three columns whether or not they currently qualify as panels:
+		 * a collapsed rail is exactly the one that has to be watched, because it is
+		 * the one that is about to change.
+		 */
+		function observeColumns() {
+			if (resizeObserver === null || typeof doc.querySelector !== "function") return;
+			for (var i = 0; i < PANEL_KEYS.length; i++) {
+				var node = null;
+				try { node = doc.querySelector(PANEL_SELECTOR[PANEL_KEYS[i]]); } catch (error) { node = null; }
+				if (node === null || node === undefined) continue;
+				if (observedNodes.indexOf(node) !== -1) continue;
+				try {
+					resizeObserver.observe(node);
+					observedNodes.push(node);
+				} catch (error) { /* a node the observer cannot take */ }
+			}
+		}
+
+		function unwatchColumns() {
+			if (resizeObserver === null) return;
+			try { resizeObserver.disconnect(); } catch (error) { /* already gone */ }
+			resizeObserver = null;
+			observedNodes = [];
+		}
+
 		function watchVisibility() {
 			if (doc === undefined || doc === null || typeof doc.addEventListener !== "function") return;
 			try {
@@ -2557,10 +2622,12 @@ window.__ModuleLoader__.load({
 					panelNodes[key] = node;
 					node.setAttribute("data-glass-panel", key);
 				}
-				if (deep === true || rebuilt) discoverSurfaces();
-				// A rebuilt shell also needs the wallpaper stage moved back inside it.
-				ensureStageHost();
-				return panelFound;
+			if (deep === true || rebuilt) discoverSurfaces();
+			// A rebuilt shell also needs the wallpaper stage moved back inside it.
+			ensureStageHost();
+			// Whatever this pass found, the next resize has to arrive in the same frame.
+			observeColumns();
+			return panelFound;
 			}
 
 			/**
@@ -2909,6 +2976,7 @@ window.__ModuleLoader__.load({
 			subscribe();
 			// A background tab keeps neither clock nor decoder running.
 			watchVisibility();
+			watchColumns();
 				// The panel material is part of the theme, not a mode: mount it with the
 				// engine and re-find the columns whenever the shell rebuilds them.
 				mountRefraction();
@@ -2973,6 +3041,11 @@ window.__ModuleLoader__.load({
 						fadeTimer = 0;
 					}
 					unwatchVisibility();
+					unwatchColumns();
+					if (resizeTimer !== 0) {
+						clearTimer(resizeTimer);
+						resizeTimer = 0;
+					}
 					stopRetag();
 					if (parkTimer !== 0) {
 						clearTimer(parkTimer);

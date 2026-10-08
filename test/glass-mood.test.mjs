@@ -197,6 +197,8 @@ function mountShellColumns(document) {
 /** The module is a plain __ModuleLoader__ bundle: run it with injected globals. */
 function loadBundle(document, storage, requireImpl) {
   const captured = []
+  /** Every observer the engine creates, so a test can drive a column resize. */
+  const observers = []
   const window = {
     __ModuleLoader__: { load: (entry) => captured.push(entry) },
     /** A desktop viewport, which the page-versus-popover size gate measures against. */
@@ -212,8 +214,25 @@ function loadBundle(document, storage, requireImpl) {
       backdropFilter: 'none',
       getPropertyValue: () => '',
       ...el.computed
-    })
+    }),
+    /**
+     * A resize observer the shell drives by hand. A column that changes size has to
+     * be re-tagged in the same frame, not on the next 2.5s pass — that delay is what
+     * made an opening sidebar sit there as a plain column for a second.
+     */
+    ResizeObserver: class {
+      constructor(callback) {
+        this.callback = callback
+        this.targets = []
+        observers.push(this)
+      }
+      observe(node) { this.targets.push(node) }
+      disconnect() { this.targets = [] }
+      /** Fire the way the browser would: once, with every entry. */
+      emit() { this.callback(this.targets.map((target) => ({ target })), this) }
+    }
   }
+  window.observers = observers
   const factory = new Function('window', 'document', 'localStorage', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', source)
   factory(window, document, storage, window.setTimeout, window.clearTimeout, window.setInterval, window.clearInterval)
   assert.equal(captured.length, 1, 'the bundle registers exactly one loader entry')
@@ -1059,7 +1078,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   // after the rules it overrides: equal specificity means the last one wins, so an
   // override placed first would be silently cancelled.
   const fadeAt = css.indexOf('prefers-reduced-motion: reduce){body[data-glass-mood]{--gm-fade:1ms}')
-  const baseAt = css.indexOf('body[data-glass-mood]{--gm-fade:900ms;')
+  const baseAt = css.indexOf('body[data-glass-mood]{--gm-fade:520ms;')
   assert.ok(fadeAt > 0, 'reduced motion shortens the mood crossfade')
   assert.ok(baseAt > 0 && fadeAt > baseAt, 'and the override is declared after the rule it overrides')
 
@@ -1265,6 +1284,36 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(m.document.getElementById('dsh-glass-mood-bg'), null, 'and the stage')
   assert.equal(m.document.body.dataset.glassMood, undefined, 'and the body attributes')
   console.log('ok  collapsed columns are left alone + panic switch')
+}
+
+{
+  // An expanding sidebar must not wait for the 2.5s retag pass. The app's own
+  // control survives the delay, but the column sat there as a plain column for a
+  // second before it got its radius and its material.
+  const m = mount()
+  const observer = m.window.observers[0]
+  assert.ok(observer, 'the columns are watched')
+  assert.equal(observer.targets.length, 3, 'all three are watched, collapsed ones included')
+
+  m.shell.left.box = { width: 0, height: 780 }
+  m.engine.retag(true)
+  assert.equal(m.engine.panelStatus().found.left, false, 'a collapsed column is not a panel')
+
+  // Reopening: the resize arrives on its own, and the debounce is far shorter than
+  // the retag interval.
+  m.shell.left.box = { width: 260, height: 780 }
+  observer.emit()
+  m.clock.advance(70)
+  assert.equal(m.engine.panelStatus().found.left, true, 'reopening is picked up at once, not on the next pass')
+  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', 'and the column is tagged again')
+  assert.ok(
+    m.document.body.style.getPropertyValue('--gm-panel-left-fill') !== '',
+    'with its material published, not just its hook'
+  )
+
+  m.dispose()
+  assert.equal(observer.targets.length, 0, 'dispose stops watching')
+  console.log('ok  a column that changes size is re-tagged at once')
 }
 
 {
