@@ -75,6 +75,12 @@ window.__ModuleLoader__.load({
 		var RESIZE_THROTTLE_MS = 120;
 		/** How long the one-shot surface cross-fade window stays open (slowest fade + slack). */
 		var FADE_WINDOW_MS = 1100;
+		/**
+		 * The build the settings row prints. It exists so "the fix did not work" can never
+		 * be confused with "the new build never loaded": which one is on screen is visible
+		 * in the UI, and a test keeps this in step with package.json.
+		 */
+		var BUILD = "1.27.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -2754,11 +2760,31 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * Whether the app has the right panel expanded over the frame. In that mode
+			 * the app caps the column at 70% of the viewport and squeezes the centre to
+			 * 400px, while the panel's own content keeps a narrower width than the column
+			 * it now sits in — so the material has to stay on the column, which is the
+			 * only element that spans the mode.
+			 * @returns true while the frame reports the expanded right panel.
+			 */
+			function rightbarExpanded() {
+				if (typeof doc.querySelector !== "function") return false;
+				try {
+					// The app writes this attribute on the frame and nowhere else, so it is
+					// queried on its own rather than through a class name.
+					return doc.querySelector("[data-rightbar-fullscreen]") !== null;
+				} catch (error) {
+					return false;
+				}
+			}
+
+			/**
 			 * Hand each panel's material to the element that actually paints it. Without
 			 * this the sidebar's own surface stays on top of the column, so that panel's
 			 * opacity and blur knobs move values nobody can see.
 			 */
 			function discoverSurfaces() {
+				var expanded = rightbarExpanded();
 				for (var i = 0; i < PANEL_KEYS.length; i++) {
 					var key = PANEL_KEYS[i];
 					var column = panelNodes[key];
@@ -2777,7 +2803,12 @@ window.__ModuleLoader__.load({
 					// that finds nothing leaves the inner layer's own (now protected, nearly
 					// opaque) fill in charge — re-validating keeps that protection without
 					// freezing a stale measurement in place.
-					if (surfaceAttached(sticky) && surfaceStillCovers(win, column, sticky)) {
+					// An expanded right panel keeps the material on the column: the panel's own
+					// content is narrower than the column it now fills, so delegating would
+					// leave the extra width bare — which is exactly the "the opacity and blur
+					// did not follow into fullscreen" report.
+					var keepOnColumn = key === "right" && expanded;
+					if (keepOnColumn !== true && surfaceAttached(sticky) && surfaceStillCovers(win, column, sticky)) {
 						if (sticky.getAttribute("data-glass-surface") !== key) sticky.setAttribute("data-glass-surface", key);
 						aimBlur(key);
 						column.setAttribute("data-glass-delegate", "on");
@@ -2792,6 +2823,9 @@ window.__ModuleLoader__.load({
 					}
 					var painters = paintersIn(win, column) ?? [];
 					var next = painters.length === 0 ? null : painters[painters.length - 1];
+					// Nothing is hollowed in the expanded mode either: the panel's content
+					// stays opaque on top of the column's material, which is the design.
+					if (keepOnColumn === true) next = null;
 					// Hand the material to the column and hollow the painters instead, when the
 					// painter cannot see past itself.
 					var rooted = next === null ? [] : backdropRoots(next);
@@ -3336,6 +3370,37 @@ window.__ModuleLoader__.load({
 					}
 					return lines;
 				},
+				/** The build the settings row prints. */
+				build: function () { return BUILD; },
+				/**
+				 * What the layout measures right now, for the expanded right panel. The
+				 * material has to sit on an element that spans the mode, so this reports the
+				 * column beside the element that actually holds it.
+				 * @returns the expanded flag plus one readable line per panel.
+				 */
+				layoutReport: function () {
+					var expanded = rightbarExpanded();
+					var lines = [];
+					if (expanded !== true) return { expanded: false, lines: lines };
+					lines.push("已展开右栏：材质应挂在列上");
+					for (var i = 0; i < PANEL_KEYS.length; i++) {
+						var key = PANEL_KEYS[i];
+						var label = key === "left" ? "左侧栏" : (key === "main" ? "主面板" : "右侧栏");
+						var column = panelNodes[key];
+						if (column === null || column === undefined) { lines.push(label + "：未识别"); continue; }
+						var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : column;
+						var columnBox = typeof column.getBoundingClientRect === "function" ? column.getBoundingClientRect() : null;
+						var hostBox = typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : null;
+						var width = function (box) { return box === null || box === undefined ? "?" : Math.round(box.width); };
+						var left = function (box) { return box === null || box === undefined ? "?" : Math.round(box.left); };
+						var where = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined
+							? (typeof host.tagName === "string" ? host.tagName.toLowerCase() : "?") + "." + String(host.getAttribute === undefined ? "" : (host.getAttribute("class") ?? ""))
+							: "列自身";
+						lines.push(label + "：列 x=" + left(columnBox) + " 宽 " + width(columnBox) +
+							"；材质在 " + where + " x=" + left(hostBox) + " 宽 " + width(hostBox));
+					}
+					return { expanded: true, lines: lines };
+				},
 				/** The two accessibility preferences this theme answers. */
 				preferences: function () {
 					return { reducedTransparency: prefers.reducedTransparency, moreContrast: prefers.moreContrast };
@@ -3631,13 +3696,21 @@ window.__ModuleLoader__.load({
 				// Diagnostics on demand: normally silent, and only speaks when a panel was
 				// not identified or a blur had to be placed around a floating control.
 				var diagnosis = engine.blurSummary().filter(function (line) {
-					return /\u672a\u8bc6\u522b|fixed|\u964d\u7ea7/.test(line);
+					return /未识别|fixed|降级/.test(line);
 				});
+				// While the right panel is expanded the layout is the thing in question, so
+				// the row states what it measures: the column, the element holding the
+				// material, and both widths.
+				var layout = engine.layoutReport();
+				if (layout.expanded === true) diagnosis = diagnosis.concat(layout.lines);
 
 				return h("div", { className: "gm-row" },
 					h("div", null,
 						h("div", { className: "gm-row-title" }, "玻璃主题 · 面板与光感"),
 						h("div", { className: "gm-row-hint" }, hint),
+						// Which build is on screen, so a fix that "did not work" is never
+						// confused with a build that never loaded.
+						h("div", { className: "gm-row-hint" }, "版本 v" + engine.build()),
 						// The blur can fail in a way no computed value reveals, so the row
 						// used to print where each panel's material and blur ended up. That
 						// is diagnostics, not a setting: it now appears only when there is

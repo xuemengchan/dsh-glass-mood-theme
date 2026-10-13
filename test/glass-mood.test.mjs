@@ -1246,6 +1246,67 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 }
 //#endregion
 
+//#region expanded
+{
+  // Reported again after the first fix: with the right panel expanded, the extra width
+  // stayed bare while the panel's own content kept a narrower box. The app caps that
+  // column at 70% of the viewport and squeezes the centre to 400px, so the content can
+  // be much narrower than the column it now sits in — which means the material belongs
+  // on the column itself in that mode, whatever the probe found before it.
+  const m = mount()
+  // Give the right panel a painting wrapper, so it starts delegated like the sidebar.
+  m.shell.rightWrapper.computed = { backgroundColor: 'rgba(255, 255, 255, 0.5)' }
+  m.engine.retag(true)
+  assert.equal(m.engine.blurReport().right.delegated, true, 'the right panel starts delegated to its wrapper')
+
+  // The user presses expand: the frame gets the attribute and the column takes 70%.
+  m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
+  m.shell.right.box = { width: 900, height: 780, left: 500, top: 0 }
+  m.shell.rightWrapper.box = { width: 520, height: 780, left: 880, top: 0 }
+  m.window.observers.at(-1).emit()
+  m.clock.advance(200)
+
+  assert.equal(m.engine.blurReport().right.delegated, false, 'the expanded panel keeps its material on the column')
+  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, 'so the column stops deferring to the wrapper')
+  assert.equal(m.shell.rightWrapper.getAttribute('data-glass-surface'), undefined, 'and the narrow wrapper is released')
+  assert.equal(m.engine.blurReport().right.blurHost, 'element', 'with the blur on the element that spans the mode')
+
+  // The row states the measurement while the mode is on, so the layout can be reported
+  // without a console.
+  const layout = m.engine.layoutReport()
+  assert.equal(layout.expanded, true, 'the layout report knows the mode is on')
+  assert.ok(
+    layout.lines.some((line) => /右侧栏：列 x=\d+ 宽 900/.test(line)),
+    `and gives the column's geometry (${JSON.stringify(layout.lines)})`
+  )
+
+  // Collapsing it back returns the delegation.
+  m.shell.frame.removeAttribute('data-rightbar-fullscreen')
+  m.shell.right.box = { width: 320, height: 780, left: 888, top: 0 }
+  m.shell.rightWrapper.box = { width: 320, height: 780, left: 888, top: 0 }
+  m.window.observers.at(-1).emit()
+  m.clock.advance(200)
+  assert.equal(m.engine.blurReport().right.delegated, true, 'and a normal-width column delegates again')
+  assert.equal(m.engine.layoutReport().expanded, false, 'with the layout report going quiet')
+  m.dispose()
+  console.log('ok  an expanded right panel keeps the material on the column that spans it')
+}
+//#endregion
+
+//#region version
+{
+  // The row prints the build so "the fix did not work" can never be confused with "the
+  // new build never loaded", which costs a whole round trip every time. That makes the
+  // constant load-bearing, so it is locked to the package.
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const m = mount()
+  assert.equal(m.engine.build(), pkg.version, `the printed build (${m.engine.build()}) matches package.json`)
+  assert.match(m.engine.build(), /^\d+\.\d+\.\d+$/, 'and it is a plain version')
+  m.dispose()
+  console.log('ok  the row prints the build that is actually loaded')
+}
+//#endregion
+
 //#region panels
 {
   // A backdrop-filter only blurs what is painted behind its backdrop root, and
