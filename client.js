@@ -685,6 +685,10 @@ window.__ModuleLoader__.load({
 			"body[data-glass-panels] [data-glass-panel]{position:relative;z-index:0;margin:var(--gm-gap) calc(var(--gm-gap) / 2) 0;border-radius:var(--gm-radius);overflow:hidden;box-shadow:var(--gm-panel-shadow,none);transition:border-radius 220ms cubic-bezier(.4,0,.2,1),background-color 220ms cubic-bezier(.4,0,.2,1),box-shadow 220ms cubic-bezier(.4,0,.2,1)}",
 			/* A fullscreen right panel is an overlay, not a column: leave it alone. */
 			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=right]{margin:0;overflow:visible;border-radius:0}",
+			/* An expanded right panel is meant to sit flush against the main panel: the
+			   main panel's own gutter margin is what left a visible seam between them,
+			   because the right panel's margins are already zeroed above. */
+			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=main]{margin-right:0}",
 			/* The column IS the surface: its layout wrapper must not paint a second
 			   fill on top of it, or the opacity knob would be invisible. */
 			"body[data-glass-panels] [data-glass-panel] > *{background-color:transparent}",
@@ -976,6 +980,33 @@ window.__ModuleLoader__.load({
 				}
 			}
 			return found;
+		}
+
+		/**
+		 * Whether an already-delegated surface still earns the material. The delegation
+		 * was handed out from one measurement, and the layout moves under it: when the
+		 * right panel goes fullscreen the column widens while the inner surface the
+		 * material was handed to keeps its old width, so the pane's fill and blur stop
+		 * covering the panel and the app's own paint shows through the rest.
+		 * @param win - the window (supplies getComputedStyle).
+		 * @param column - the column the material would fall back to.
+		 * @param node - the surface currently holding the material.
+		 * @returns true when it still covers the column and still paints.
+		 */
+		function surfaceStillCovers(win, column, node) {
+			if (win === undefined || win === null || typeof win.getComputedStyle !== "function") return false;
+			if (node === undefined || node === null || typeof node.getBoundingClientRect !== "function") return false;
+			if (column === undefined || column === null || typeof column.getBoundingClientRect !== "function") return false;
+			var columnBox = column.getBoundingClientRect();
+			if (!(columnBox.width > 0) || !(columnBox.height > 0)) return false;
+			var box = node.getBoundingClientRect();
+			if (!(box.width >= columnBox.width * SURFACE_MIN_COVERAGE)) return false;
+			if (!(box.height >= columnBox.height * SURFACE_MIN_COVERAGE)) return false;
+			var style = null;
+			try { style = win.getComputedStyle(node); } catch (error) { style = null; }
+			if (style === null || style === undefined) return false;
+			if (parseAlpha(style.backgroundColor) >= SURFACE_MIN_ALPHA) return true;
+			return typeof style.backgroundImage === "string" && style.backgroundImage !== "none" && style.backgroundImage !== "";
 		}
 
 		/** Clamp a number into a range, falling back when it is not finite. */
@@ -1958,7 +1989,10 @@ window.__ModuleLoader__.load({
 		function startRetag() {
 			if (retagTimer !== 0) return;
 			retagTimer = deps.setInterval(function () {
-				tagPanels();
+				// Deep as well: the tick is also the safety net for a layout that changed
+				// without any column resizing (the app swapping an inner surface, say), and
+				// a surface that still covers exits immediately instead of re-probing.
+				tagPanels(true);
 				tagBigSurfaces();
 				ensureStageHost();
 			}, RETAG_MS);
@@ -2099,7 +2133,10 @@ window.__ModuleLoader__.load({
 		/** One re-tag-and-republish pass, however many resizes asked for it. */
 		function runResizePass() {
 			lastResizeAt = now();
-			tagPanels();
+			// Deep, so the delegated surfaces are re-validated against the new column
+			// widths: a resize is exactly the moment a delegation can go stale, and the
+			// fullscreen right panel is the case that made this visible.
+			tagPanels(true);
 			syncPanels();
 		}
 
@@ -2731,17 +2768,29 @@ window.__ModuleLoader__.load({
 						panelSurfaces[key] = null;
 						continue;
 					}
-					// Keep the surface we already handed the material to. Re-probing on every
-					// pass made the panel's opacity flicker between two values, because a probe
+					// Keep the surface we already handed the material to, but only while it
+					// still covers the column: the delegation was measured once, and the
+					// column moves under it (the right panel going fullscreen widens the
+					// column without widening the inner surface, which is why the pane's
+					// opacity and blur stopped covering the panel). Re-probing on every pass
+					// made the panel's opacity flicker between two values, because a probe
 					// that finds nothing leaves the inner layer's own (now protected, nearly
-					// opaque) fill in charge.
-					if (surfaceAttached(sticky)) {
+					// opaque) fill in charge — re-validating keeps that protection without
+					// freezing a stale measurement in place.
+					if (surfaceAttached(sticky) && surfaceStillCovers(win, column, sticky)) {
 						if (sticky.getAttribute("data-glass-surface") !== key) sticky.setAttribute("data-glass-surface", key);
-					aimBlur(key);
+						aimBlur(key);
 						column.setAttribute("data-glass-delegate", "on");
 						continue;
 					}
-					var painters = paintersIn(win, column);
+					if (sticky !== null && sticky !== undefined) {
+						// It stopped covering the column, so it goes back to the app's own
+						// paint and the material returns to whichever element covers now.
+						sticky.removeAttribute("data-glass-surface");
+						panelSurfaces[key] = null;
+						column.removeAttribute("data-glass-delegate");
+					}
+					var painters = paintersIn(win, column) ?? [];
 					var next = painters.length === 0 ? null : painters[painters.length - 1];
 					// Hand the material to the column and hollow the painters instead, when the
 					// painter cannot see past itself.

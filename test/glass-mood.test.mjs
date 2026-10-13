@@ -1119,6 +1119,64 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 
 //#region accessibility
 {
+  // Reported: with the right panel expanded to fullscreen, that panel's opacity and
+  // blur stopped covering it and a seam showed against the main panel. The app does
+  // not move any DOM for that mode — it only rewrites the frame's grid columns — so
+  // the column widens while the inner surface the material was delegated to keeps its
+  // old width. The delegation was measured once and never re-checked, which is what
+  // this locks down.
+  const m = mount()
+  assert.equal(m.engine.blurReport().left.delegated, true, 'the left panel starts delegated to its inner surface')
+  const observer = m.window.observers.at(-1)
+  assert.ok(observer, 'the columns are observed, which is how an expansion is noticed')
+
+  // Fullscreen: the column doubles, the inner surface does not (260 of 520 < 85%).
+  m.shell.left.box = { width: 520, height: 780, left: 0, top: 0 }
+  observer.emit()
+  m.clock.advance(200)
+
+  assert.equal(m.engine.blurReport().left.delegated, false, 'a surface that stopped covering gives the material back')
+  assert.equal(m.shell.leftSurface.getAttribute('data-glass-surface'), undefined, 'the stale surface is released')
+  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, 'and the column stops deferring to it')
+  assert.equal(
+    m.engine.blurSummary().every((line) => !/未识别|fixed|降级/.test(line)),
+    true,
+    'and a healthy panel reports nothing'
+  )
+
+  // The knobs move what is actually on screen again.
+  m.engine.setPanels({ left: { opacity: 0.42 } })
+  assert.equal(
+    panelAlpha(bodyVar(m, '--gm-panel-left-fill')),
+    0.42,
+    'the panel the material fell back to takes the new opacity'
+  )
+
+  // Shrinking back re-delegates: it is a measurement, not a one-way door.
+  m.shell.left.box = { width: 260, height: 780, left: 0, top: 0 }
+  observer.emit()
+  m.clock.advance(200)
+  assert.equal(m.engine.blurReport().left.delegated, true, 'and a column that fits its surface again delegates once more')
+
+  // The seam: an expanded right panel is meant to sit flush against the main panel,
+  // and the main panel's own gutter margin is what left a visible strip between them.
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
+  assert.match(
+    css,
+    /\[data-rightbar-fullscreen\] \[data-glass-panel=right\]\{margin:0/,
+    'an expanded right panel drops its own gutter'
+  )
+  assert.match(
+    css,
+    /\[data-rightbar-fullscreen\] \[data-glass-panel=main\]\{margin-right:0\}/,
+    'and the main panel drops its half of the gutter, so no seam is left between them'
+  )
+  m.dispose()
+  console.log('ok  an expanded panel re-validates the surface it delegated to, and closes the seam')
+}
+
+//#region accessibility
+{
   // Accessibility, which Apple's HIG names explicitly for Liquid Glass: Reduced
   // Transparency and Increased Contrast. Both are read from media queries, both
   // change the tokens, and both are answered again when the system flips.
