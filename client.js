@@ -73,6 +73,8 @@ window.__ModuleLoader__.load({
 		var RETAG_MS = 2500;
 		/** How often a column resize may cost a re-tag while an animation is running. */
 		var RESIZE_THROTTLE_MS = 120;
+		/** How much of the frame an expanded panel has to cover to be that panel. */
+		var OVERLAY_MIN_SPAN = 0.6;
 		/** How long the one-shot surface cross-fade window stays open (slowest fade + slack). */
 		var FADE_WINDOW_MS = 1100;
 		/**
@@ -80,7 +82,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.27.1";
+		var BUILD = "1.28.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -2682,6 +2684,40 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * The element that renders an expanded right panel. The app does not widen the
+			 * column for that mode — the frame's grid is untouched and `rightbarFullscreen`
+			 * only suppresses transitions and hides the drag handle — so the expanded panel
+			 * is presented over the frame instead, in the shell's overlay layer. The column
+			 * stays where it was, which is why the material used to sit on the old geometry
+			 * while the expanded panel stayed bare and the main panel showed through it.
+			 * @returns the largest frame-spanning child of the overlay, or null.
+			 */
+			function overlayPanelNode() {
+				if (typeof doc.querySelector !== "function") return null;
+				var layer = null;
+				try { layer = doc.querySelector("[data-shell-overlay]"); } catch (error) { layer = null; }
+				if (layer === null || layer === undefined || layer.children === undefined) return null;
+				var frame = null;
+				try { frame = doc.querySelector('[class*="_frame"]'); } catch (error) { frame = null; }
+				var frameBox = frame !== null && frame !== undefined && typeof frame.getBoundingClientRect === "function"
+					? frame.getBoundingClientRect()
+					: null;
+				var best = null;
+				var bestArea = 0;
+				for (var i = 0; i < layer.children.length; i++) {
+					var child = layer.children[i];
+					if (child === null || child === undefined || typeof child.getBoundingClientRect !== "function") continue;
+					var box = child.getBoundingClientRect();
+					if (!(box.width > 0) || !(box.height > 0)) continue;
+					// A toast or a notice also lives here; an expanded panel covers the frame.
+					if (frameBox !== null && (box.width < frameBox.width * OVERLAY_MIN_SPAN || box.height < frameBox.height * OVERLAY_MIN_SPAN)) continue;
+					var area = box.width * box.height;
+					if (area > bestArea) { bestArea = area; best = child; }
+				}
+				return best;
+			}
+
+			/**
 			 * Find the three shell columns and stamp our own hooks on them. The
 			 * shell's class local names are the lookup, our attributes are the contract:
 			 * every style rule then reads a name this plugin owns.
@@ -2692,10 +2728,27 @@ window.__ModuleLoader__.load({
 				if (disposed) return panelFound;
 				var frame = doc.querySelector('[class*="_frame"]');
 				if (frame !== null && frame !== undefined) frame.setAttribute("data-glass-frame", "");
+				// An expanded right panel is rendered in the overlay instead of its column.
+				var expandedPanel = rightbarExpanded() ? overlayPanelNode() : null;
 				var rebuilt = false;
 				for (var i = 0; i < PANEL_KEYS.length; i++) {
 					var key = PANEL_KEYS[i];
-					var node = doc.querySelector(PANEL_SELECTOR[key]);
+					var node = key === "right" && expandedPanel !== null ? expandedPanel : doc.querySelector(PANEL_SELECTOR[key]);
+					if (key === "right" && expandedPanel !== null && node === expandedPanel && typeof node.setAttribute === "function") {
+						node.setAttribute("data-glass-overlay-panel", "");
+					}
+					// Whoever held this panel before gives the hooks back: the column must not
+					// keep a pane at the old geometry while the overlay renders the panel.
+					var previous = panelNodes[key];
+					if (previous !== null && previous !== undefined && previous !== node) {
+						previous.removeAttribute("data-glass-panel");
+						previous.removeAttribute("data-glass-delegate");
+						previous.removeAttribute("data-glass-overlay-panel");
+						if (panelSurfaces[key] !== null && panelSurfaces[key] !== undefined) {
+							panelSurfaces[key].removeAttribute("data-glass-surface");
+							panelSurfaces[key] = null;
+						}
+					}
 					if (node === null || node === undefined) {
 						panelFound[key] = false;
 						panelNodes[key] = null;
@@ -2784,7 +2837,6 @@ window.__ModuleLoader__.load({
 			 * opacity and blur knobs move values nobody can see.
 			 */
 			function discoverSurfaces() {
-				var expanded = rightbarExpanded();
 				for (var i = 0; i < PANEL_KEYS.length; i++) {
 					var key = PANEL_KEYS[i];
 					var column = panelNodes[key];
@@ -2803,12 +2855,7 @@ window.__ModuleLoader__.load({
 					// that finds nothing leaves the inner layer's own (now protected, nearly
 					// opaque) fill in charge — re-validating keeps that protection without
 					// freezing a stale measurement in place.
-					// An expanded right panel keeps the material on the column: the panel's own
-					// content is narrower than the column it now fills, so delegating would
-					// leave the extra width bare — which is exactly the "the opacity and blur
-					// did not follow into fullscreen" report.
-					var keepOnColumn = key === "right" && expanded;
-					if (keepOnColumn !== true && surfaceAttached(sticky) && surfaceStillCovers(win, column, sticky)) {
+					if (surfaceAttached(sticky) && surfaceStillCovers(win, column, sticky)) {
 						if (sticky.getAttribute("data-glass-surface") !== key) sticky.setAttribute("data-glass-surface", key);
 						aimBlur(key);
 						column.setAttribute("data-glass-delegate", "on");
@@ -2823,9 +2870,6 @@ window.__ModuleLoader__.load({
 					}
 					var painters = paintersIn(win, column) ?? [];
 					var next = painters.length === 0 ? null : painters[painters.length - 1];
-					// Nothing is hollowed in the expanded mode either: the panel's content
-					// stays opaque on top of the column's material, which is the design.
-					if (keepOnColumn === true) next = null;
 					// Hand the material to the column and hollow the painters instead, when the
 					// painter cannot see past itself.
 					var rooted = next === null ? [] : backdropRoots(next);
@@ -3395,7 +3439,9 @@ window.__ModuleLoader__.load({
 						var left = function (box) { return box === null || box === undefined ? "?" : Math.round(box.left); };
 						var where = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined
 							? (typeof host.tagName === "string" ? host.tagName.toLowerCase() : "?") + "." + String(host.getAttribute === undefined ? "" : (host.getAttribute("class") ?? ""))
-							: "列自身";
+							: (host.getAttribute !== undefined && host.getAttribute("data-glass-overlay-panel") !== undefined
+								? "覆盖层"
+								: "列自身");
 						var fill = doc.body.style.getPropertyValue("--gm-panel-" + key + "-fill");
 						var asked = doc.body.style.getPropertyValue("--gm-panel-" + key + "-blur");
 						lines.push(label + "：列 x=" + left(columnBox) + " 宽 " + width(columnBox) +

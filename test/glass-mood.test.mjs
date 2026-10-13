@@ -1246,6 +1246,59 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 }
 //#endregion
 
+//#region overlay
+{
+  // The real shape of the reported bug, which the app's own code explains: an expanded
+  // right panel is NOT the wider column. The frame's grid is untouched for that mode
+  // (`rightbarFullscreen` only suppresses transitions and hides the drag handle), and
+  // the panel is presented over the frame in the shell's overlay layer. So the plugin
+  // used to keep the material on the column — the panel's old position — while the
+  // overlay rendered the panel with no material at all, letting the transparent main
+  // panel show through it.
+  const m = mount()
+  const layer = m.document.createElement('div')
+  layer.setAttribute('data-shell-overlay', '')
+  const panel = m.document.createElement('div')
+  panel.setAttribute('class', 'PlanFull_root')
+  panel.computed = { backgroundColor: 'rgba(255, 255, 255, 0.6)' }
+  panel.box = { width: 1000, height: 780, left: 0, top: 0 }
+  layer.appendChild(panel)
+  m.shell.frame.appendChild(layer)
+
+  // Not expanded yet: the right panel is its column.
+  m.engine.retag(true)
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'the column is the right panel normally')
+  assert.equal(panel.getAttribute('data-glass-panel'), undefined, 'and the overlay is left alone')
+
+  // Expanded: the panel moves to the overlay, and the column gives its hooks back, so
+  // no pane is left behind at the old geometry.
+  m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
+  m.engine.retag(true)
+  assert.equal(panel.getAttribute('data-glass-panel'), 'right', 'an expanded panel is the overlay, not the column')
+  assert.equal(panel.getAttribute('data-glass-overlay-panel'), '', 'and is marked as living there')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), undefined, 'while the column gives its hooks back')
+  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, 'including any delegation it held')
+  assert.equal(m.engine.panelStatus().found.right, true, 'and the panel is still reported as found')
+  assert.match(
+    m.engine.layoutReport().lines.join(' '),
+    /右侧栏：.*覆盖层/,
+    'with the row saying where the panel is rendered'
+  )
+  // The material follows the panel: the overlay panel paints, so it hosts the pane.
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
+  assert.match(css, /\[data-glass-panel=right\]\{--gm-panel-blur:var\(--gm-panel-right-blur\)/, 'and it takes the right panel material')
+
+  // Collapsed again: everything goes back to the column, and the overlay is released.
+  m.shell.frame.removeAttribute('data-rightbar-fullscreen')
+  m.engine.retag(true)
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'collapsing returns the panel to its column')
+  assert.equal(panel.getAttribute('data-glass-panel'), undefined, 'and the overlay host is released')
+  assert.equal(panel.getAttribute('data-glass-overlay-panel'), undefined, 'marker included')
+  m.dispose()
+  console.log('ok  an expanded right panel is hosted by the overlay it is rendered in')
+}
+//#endregion
+
 //#region expanded
 {
   // Reported again after the first fix: with the right panel expanded, the extra width
