@@ -80,7 +80,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.27.0";
+		var BUILD = "1.27.1";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -3396,8 +3396,14 @@ window.__ModuleLoader__.load({
 						var where = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined
 							? (typeof host.tagName === "string" ? host.tagName.toLowerCase() : "?") + "." + String(host.getAttribute === undefined ? "" : (host.getAttribute("class") ?? ""))
 							: "列自身";
+						var fill = doc.body.style.getPropertyValue("--gm-panel-" + key + "-fill");
+						var asked = doc.body.style.getPropertyValue("--gm-panel-" + key + "-blur");
 						lines.push(label + "：列 x=" + left(columnBox) + " 宽 " + width(columnBox) +
-							"；材质在 " + where + " x=" + left(hostBox) + " 宽 " + width(hostBox));
+							"；材质在 " + where + " x=" + left(hostBox) + " 宽 " + width(hostBox) +
+							"；alpha " + (fill === "" ? "?" : String(effectiveAlpha(fill))) +
+							"；模糊 " + (asked === "" ? "?" : asked) +
+							"；宿主=" + (panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? "内层" : "列") +
+							(panelBlurHost[key] === "element" ? "（模糊在元素上）" : "（模糊在伪元素上）"));
 					}
 					return { expanded: true, lines: lines };
 				},
