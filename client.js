@@ -82,6 +82,9 @@ window.__ModuleLoader__.load({
 		/** Bounds for that search, so one probe stays cheap. */
 		var FULLSCREEN_MAX_NODES = 260;
 		var FULLSCREEN_MAX_DEPTH = 8;
+		/** Bounds for the presentation-layer search. */
+		var PRESENT_MAX_NODES = 400;
+		var PRESENT_MAX_DEPTH = 10;
 		/** Where a diagnostic build sends one report; nothing listens in normal use. */
 		var REPORT_URL = "http://127.0.0.1:8791/glass-report";
 		var REPORT_KEY = "dsh-glass-mood:last-report";
@@ -93,7 +96,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.31.0";
+		var BUILD = "1.32.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -711,6 +714,7 @@ window.__ModuleLoader__.load({
 			   expanded panel's. `visibility` and not `display`: the grid keeps its columns,
 			   nothing reflows, and collapsing restores it. */
 			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=main]{margin-right:0;visibility:hidden}",
+			"body[data-glass-panels] [data-glass-presentation]{margin:0;border-radius:0;overflow:visible}",
 			/* The column IS the surface: its layout wrapper must not paint a second
 			   fill on top of it, or the opacity knob would be invisible. */
 			"body[data-glass-panels] [data-glass-panel] > *{background-color:transparent}",
@@ -2711,7 +2715,82 @@ window.__ModuleLoader__.load({
 			 * It stays because it is what made that visible in a report.
 			 * @returns the deepest frame-covering element that paints, or null.
 			 */
-			function fullscreenPanelNode() {
+			/**
+		 * The layer that presents the right panel full. It covers the frame, it paints,
+		 * and — the clause that matters — it does not belong to another panel. Without
+		 * that last test the search returned the centre panel's own content root, whose box
+		 * is simply the centre column's, and the right panel's material ended up on the
+		 * centre panel: the blur seen through the expanded panel was the centre's own.
+		 * @returns the deepest qualifying element, or null.
+		 */
+		function presentationLayerNode() {
+			var frame = null;
+			try { frame = doc.querySelector('[class*="_frame"]'); } catch (error) { frame = null; }
+			if (frame === null || frame === undefined || typeof frame.getBoundingClientRect !== "function") return null;
+			var frameBox = frame.getBoundingClientRect();
+			if (!(frameBox.width > 0) || !(frameBox.height > 0)) return null;
+			var queue = [];
+			var roots = [];
+			if (doc.body !== undefined && doc.body !== null && doc.body.children !== undefined) {
+				for (var b = 0; b < doc.body.children.length && b < 24; b++) roots.push(doc.body.children[b]);
+			}
+			for (var r = 0; r < roots.length; r++) queue.push({ node: roots[r], depth: 0 });
+			var best = null;
+			var bestDepth = -1;
+			var visited = 0;
+			while (queue.length > 0 && visited < PRESENT_MAX_NODES) {
+				var entry = queue.shift();
+				visited += 1;
+				var node = entry.node;
+				if (node === null || node === undefined) continue;
+				if (typeof node.getBoundingClientRect !== "function") continue;
+				if (node.getAttribute !== undefined && node.getAttribute("id") === STAGE_ID) continue;
+				// Not inside another panel: that is what keeps the centre panel's own surfaces,
+				// and the sidebar's, out of the running however large they are.
+				if (insidePanel(node)) continue;
+				var box = node.getBoundingClientRect();
+				if (box.width >= frameBox.width * FULLSCREEN_MIN_SPAN && box.height >= frameBox.height * FULLSCREEN_MIN_HEIGHT) {
+					var style = null;
+					try { style = win.getComputedStyle(node); } catch (error) { style = null; }
+					var paints = style !== null && style !== undefined && (
+						parseAlpha(style.backgroundColor) >= SURFACE_MIN_ALPHA ||
+						(typeof style.backgroundImage === "string" && style.backgroundImage !== "none" && style.backgroundImage !== "")
+					);
+					if (paints && entry.depth > bestDepth) { best = node; bestDepth = entry.depth; }
+				}
+				if (entry.depth >= PRESENT_MAX_DEPTH) continue;
+				var children = node.children;
+				if (children === undefined || children === null) continue;
+				for (var c = 0; c < children.length && c < 12; c++) {
+					if (children[c] === undefined || children[c] === null) continue;
+					queue.push({ node: children[c], depth: entry.depth + 1 });
+				}
+			}
+			return best;
+		}
+
+		/**
+		 * Whether a node belongs to one of the three panels. A presentation layer never
+		 * does: it is the thing presented *instead* of them.
+		 * @param node - the candidate.
+		 * @returns true when a panel is one of its ancestors.
+		 */
+		function insidePanel(node) {
+			for (var i = 0; i < PANEL_KEYS.length; i++) {
+				var panel = panelNodes[PANEL_KEYS[i]];
+				if (panel === null || panel === undefined) continue;
+				var walk = node;
+				var guard = 0;
+				while (walk !== null && walk !== undefined && guard < 64) {
+					guard += 1;
+					if (walk === panel) return true;
+					walk = walk.parentElement !== undefined ? walk.parentElement : walk.parent;
+				}
+			}
+			return false;
+		}
+
+		function fullscreenPanelNode() {
 				var frame = null;
 				try { frame = doc.querySelector('[class*="_frame"]'); } catch (error) { frame = null; }
 				if (frame === null || frame === undefined || typeof frame.getBoundingClientRect !== "function") return null;
@@ -2885,6 +2964,7 @@ window.__ModuleLoader__.load({
 					overlay: null,
 					overlayCandidate: null,
 					fullscreenCandidate: describeNode(fullscreenPanelNode()),
+					presentationLayer: describeNode(presentationLayerNode()),
 					biggest: [],
 					rightColumn: null,
 					panels: {}
@@ -2907,7 +2987,7 @@ window.__ModuleLoader__.load({
 				// The largest elements on screen, so "which layer is the panel" is answered by
 				// the data rather than by another guess.
 				var all = null;
-				try { all = doc.querySelectorAll("div, section, main, aside"); } catch (error) { all = null; }
+				try { all = doc.querySelectorAll("*"); } catch (error) { all = null; }
 				if (all !== null && all !== undefined) {
 					var hostBox = frame !== null && frame !== undefined && typeof frame.getBoundingClientRect === "function" ? frame.getBoundingClientRect() : null;
 					var frameArea = hostBox === null ? 0 : hostBox.width * hostBox.height;
@@ -2990,7 +3070,8 @@ window.__ModuleLoader__.load({
 				// none. Two lessons: a heuristic may not outrank what the app says about
 				// itself, and the pane that keeps showing through belongs to the centre.
 				var expandedMode = rightbarExpanded();
-				var expandedPanel = expandedMode ? overlayPanelNode() : null;
+				var presentation = expandedMode ? presentationLayerNode() : null;
+				var expandedPanel = expandedMode ? (presentation ?? overlayPanelNode()) : null;
 				// The mode that keeps being reported as broken gets measured once, on entry
 				// and again a moment later so a late layout is included.
 				if (rightbarExpanded() === true && deep === true && reportTimer === 0) {
@@ -3004,6 +3085,8 @@ window.__ModuleLoader__.load({
 						// A panel that spans the viewport would be the fullscreen presentation, but
 						// nothing is guessed from geometry here: see the note in tagPanels.
 						node.setAttribute("data-glass-overlay-panel", "");
+						// The presentation layer is the panel in that mode: it takes no gutter of its own.
+						if (node === presentation) node.setAttribute("data-glass-presentation", "");
 					}
 					// Whoever held this panel before gives the hooks back: the column must not
 					// keep a pane at the old geometry while the overlay renders the panel.
@@ -3012,6 +3095,7 @@ window.__ModuleLoader__.load({
 						previous.removeAttribute("data-glass-panel");
 						previous.removeAttribute("data-glass-delegate");
 						previous.removeAttribute("data-glass-overlay-panel");
+						previous.removeAttribute("data-glass-presentation");
 						if (panelSurfaces[key] !== null && panelSurfaces[key] !== undefined) {
 							panelSurfaces[key].removeAttribute("data-glass-surface");
 							panelSurfaces[key] = null;

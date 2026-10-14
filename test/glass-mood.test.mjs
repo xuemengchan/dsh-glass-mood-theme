@@ -1305,6 +1305,55 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 }
 //#endregion
 
+//#region presentation
+{
+  // The presentation layer's two rules, which the previous attempt got wrong by using
+  // geometry alone: it must cover the frame AND must not belong to another panel. On the
+  // live page the centre panel's own content root is 1701x1500 — the centre column's box
+  // — so a geometry-only search picked it and put the right panel's material on the
+  // centre panel.
+  const m = mount()
+  m.shell.frame.box = { width: 2560, height: 1552, left: 0, top: 0 }
+  m.shell.center.box = { width: 1701, height: 1500, left: 283, top: 46 }
+  m.shell.right.box = { width: 576, height: 1506, left: 1984, top: 40 }
+
+  // The decoy: big, painted, and inside the centre panel.
+  const decoy = m.document.createElement('div')
+  decoy.setAttribute('class', 'Dc7zOa_root')
+  decoy.computed = { backgroundColor: 'rgba(243, 235, 231, 0.1)', position: 'relative', backgroundImage: 'none' }
+  decoy.box = { width: 1701, height: 1500, left: 283, top: 46 }
+  m.shell.center.appendChild(decoy)
+
+  m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
+  m.engine.retag(true)
+  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, 'a layer inside a panel is never the presentation')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'so the right panel keeps its own column')
+
+  // A real presentation layer: it covers the frame and lives outside every panel.
+  const layer = m.document.createElement('section')
+  layer.setAttribute('class', 'RightPanel_presentation')
+  layer.computed = { backgroundColor: 'rgba(252, 250, 248, 0.9)', position: 'fixed', backgroundImage: 'none' }
+  layer.box = { width: 2560, height: 1552, left: 0, top: 0 }
+  m.document.body.appendChild(layer)
+  m.engine.retag(true)
+  assert.equal(layer.getAttribute('data-glass-panel'), 'right', 'a frame-covering layer outside the panels becomes the host')
+  assert.equal(layer.getAttribute('data-glass-presentation'), '', 'and is marked as the presentation')
+  assert.equal(layer.getAttribute('data-glass-blur-host'), 'element', 'taking the blur on itself')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), undefined, 'while the column hands its hooks back')
+
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
+  assert.match(css, /\[data-glass-presentation\]\{margin:0;border-radius:0;overflow:visible\}/, 'and it carries no gutter of its own')
+
+  // Collapsing releases it again.
+  m.shell.frame.removeAttribute('data-rightbar-fullscreen')
+  m.engine.retag(true)
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'collapsing returns the panel to its column')
+  assert.equal(layer.getAttribute('data-glass-presentation'), undefined, 'and the presentation layer is released')
+  m.dispose()
+  console.log('ok  the presentation host must cover the frame and live outside the panels')
+}
+//#endregion
+
 //#region overlay
 {
   // The real shape of the reported bug, which the app's own code explains: an expanded
