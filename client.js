@@ -75,6 +75,10 @@ window.__ModuleLoader__.load({
 		var RESIZE_THROTTLE_MS = 120;
 		/** How much of the frame an expanded panel has to cover to be that panel. */
 		var OVERLAY_MIN_SPAN = 0.6;
+		/** Where a diagnostic build sends one report; nothing listens in normal use. */
+		var REPORT_URL = "http://127.0.0.1:8791/glass-report";
+		var REPORT_KEY = "dsh-glass-mood:last-report";
+		var REPORT_MAX_POSTS = 6;
 		/** How long the one-shot surface cross-fade window stays open (slowest fade + slack). */
 		var FADE_WINDOW_MS = 1100;
 		/**
@@ -82,7 +86,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.28.0";
+		var BUILD = "1.29.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -1715,6 +1719,8 @@ window.__ModuleLoader__.load({
 			var panelBlurHost = { left: null, main: null, right: null };
 			/** Set when a fixed descendant forced the pseudo arrangement. */
 			var panelBlurNote = { left: [], main: [], right: [] };
+			var reportPosts = 0;
+			var reportTimer = 0;
 
 			/**
 			 * Put the blur where it demonstrably works for this panel. A column keeps the
@@ -2718,6 +2724,163 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * A short, bounded description of one element: what it is, what it says about
+			 * itself, where it is, and the CSS that decides what it paints and how it stacks.
+			 * @param node - the element.
+			 * @returns a plain object, or null when it cannot be read.
+			 */
+			function describeNode(node) {
+				if (node === null || node === undefined || typeof node.getBoundingClientRect !== "function") return null;
+				var box = node.getBoundingClientRect();
+				var out = {
+					sel: (typeof node.tagName === "string" ? node.tagName.toLowerCase() : "?") + "." + String(node.getAttribute === undefined ? "" : (node.getAttribute("class") ?? "")),
+					attrs: {},
+					box: [Math.round(box.left), Math.round(box.top), Math.round(box.width), Math.round(box.height)]
+				};
+				if (node.attributes !== undefined && node.attributes !== null) {
+					for (var i = 0; i < node.attributes.length && i < 14; i++) {
+						var attr = node.attributes[i];
+						if (attr === undefined || attr === null) continue;
+						var name = String(attr.name ?? "");
+						if (name.indexOf("data-") !== 0 && name !== "class" && name !== "style") continue;
+						if (name === "class") continue;
+						out.attrs[name] = String(attr.value ?? "").slice(0, 80);
+					}
+				}
+				var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle : null;
+				if (read !== null) {
+					var style = null;
+					try { style = read.call(win, node); } catch (error) { style = null; }
+					if (style !== null && style !== undefined) {
+						out.css = {
+							position: String(style.position ?? ""),
+							zIndex: String(style.zIndex ?? ""),
+							overflow: String(style.overflow ?? ""),
+							display: String(style.display ?? ""),
+							bg: String(style.backgroundColor ?? ""),
+							bgImage: String(style.backgroundImage ?? "none").slice(0, 60),
+							backdrop: String(style.backdropFilter ?? style.webkitBackdropFilter ?? "none").slice(0, 120),
+							isolation: String(style.isolation ?? ""),
+							contain: String(style.contain ?? ""),
+							opacity: String(style.opacity ?? ""),
+							radius: String(style.borderRadius ?? "")
+						};
+					}
+				}
+				return out;
+			}
+
+			/**
+			 * Walk a subtree breadth-first into a bounded list, so one report can answer
+			 * "what is actually on screen and who paints it" without a console.
+			 * @param node - the subtree root.
+			 * @param max - how many elements to describe.
+			 * @returns the list, root first.
+			 */
+			function describeTree(node, max) {
+				var out = [];
+				if (node === null || node === undefined) return out;
+				var queue = [{ node: node, depth: 0 }];
+				while (queue.length > 0 && out.length < max) {
+					var entry = queue.shift();
+					var described = describeNode(entry.node);
+					if (described === null) continue;
+					described.depth = entry.depth;
+					out.push(described);
+					if (entry.depth >= 3) continue;
+					var children = entry.node.children;
+					if (children === undefined || children === null) continue;
+					for (var i = 0; i < children.length && i < 8; i++) {
+						if (children[i] === undefined || children[i] === null) continue;
+						queue.push({ node: children[i], depth: entry.depth + 1 });
+					}
+				}
+				return out;
+			}
+
+			/**
+			 * Everything the expanded-right-panel question needs: the frame's shape, the
+			 * overlay layer if there is one, the right column's subtree, and what this plugin
+			 * decided for each panel.
+			 * @returns a plain object safe to send as JSON.
+			 */
+			function domReport() {
+				var frame = null;
+				try { frame = doc.querySelector('[class*="_frame"]'); } catch (error) { frame = null; }
+				var overlay = null;
+				try { overlay = doc.querySelector("[data-shell-overlay]"); } catch (error) { overlay = null; }
+				var report = {
+					build: BUILD,
+					at: new Date().toISOString(),
+					viewport: [win.innerWidth, win.innerHeight],
+					expanded: rightbarExpanded(),
+					frame: describeNode(frame),
+					frameChildren: [],
+					overlay: null,
+					overlayCandidate: null,
+					rightColumn: null,
+					panels: {}
+				};
+				if (frame !== null && frame !== undefined && frame.children !== undefined) {
+					for (var i = 0; i < frame.children.length && i < 8; i++) {
+						var child = frame.children[i];
+						var described = describeNode(child);
+						if (described !== null) report.frameChildren.push(described);
+					}
+					if (frame.style !== undefined && frame.style !== null && typeof frame.style.getPropertyValue === "function") {
+						report.frameGrid = String(frame.style.gridTemplateColumns ?? "");
+					}
+				}
+				if (overlay !== null && overlay !== undefined) {
+					report.overlay = describeTree(overlay, 10);
+					var candidate = overlayPanelNode();
+					report.overlayCandidate = describeNode(candidate);
+				}
+				var column = panelNodes.right;
+				if (column !== null && column !== undefined) report.rightColumn = describeTree(column, 12);
+				for (var k = 0; k < PANEL_KEYS.length; k++) {
+					var key = PANEL_KEYS[k];
+					var node = panelNodes[key];
+					report.panels[key] = {
+						node: describeNode(node),
+						delegated: panelSurfaces[key] !== null && panelSurfaces[key] !== undefined,
+						surface: describeNode(panelSurfaces[key]),
+						fill: String(doc.body.style.getPropertyValue("--gm-panel-" + key + "-fill")),
+						blur: String(doc.body.style.getPropertyValue("--gm-panel-" + key + "-blur")),
+						blurHost: panelBlurHost[key],
+						found: panelFound[key] === true,
+						hollowed: panelHollow[key] === null ? 0 : panelHollow[key].length
+					};
+				}
+				return report;
+			}
+
+			/**
+			 * Send one report and keep a copy locally, so a blocked request still leaves the
+			 * evidence somewhere the row can point at.
+			 * @param reason - what asked for it, recorded in the payload.
+			 */
+			function postDomReport(reason) {
+				if (reportPosts >= REPORT_MAX_POSTS) return;
+				reportPosts += 1;
+				var payload = domReport();
+				payload.reason = reason;
+				var text = "";
+				try { text = JSON.stringify(payload); } catch (error) { text = ""; }
+				if (text === "") return;
+				try {
+					if (storage !== null && storage !== undefined && typeof storage.setItem === "function") {
+						storage.setItem(REPORT_KEY, text.slice(0, 200000));
+					}
+				} catch (error) { /* a full quota costs the copy, not the report */ }
+				if (typeof win.fetch !== "function") return;
+				try {
+					var sent = win.fetch(REPORT_URL, { method: "POST", body: text, mode: "cors", headers: { "content-type": "text/plain" } });
+					if (sent !== undefined && sent !== null && typeof sent.catch === "function") sent.catch(function () { /* nothing listening */ });
+				} catch (error) { /* nothing listening */ }
+			}
+
+			/**
 			 * Find the three shell columns and stamp our own hooks on them. The
 			 * shell's class local names are the lookup, our attributes are the contract:
 			 * every style rule then reads a name this plugin owns.
@@ -2730,6 +2893,11 @@ window.__ModuleLoader__.load({
 				if (frame !== null && frame !== undefined) frame.setAttribute("data-glass-frame", "");
 				// An expanded right panel is rendered in the overlay instead of its column.
 				var expandedPanel = rightbarExpanded() ? overlayPanelNode() : null;
+				// The mode that keeps being reported as broken gets measured once, on entry
+				// and again a moment later so a late layout is included.
+				if (rightbarExpanded() === true && deep === true && reportTimer === 0) {
+					reportTimer = setTimer(function () { reportTimer = 0; postDomReport("expanded"); }, 900);
+				}
 				var rebuilt = false;
 				for (var i = 0; i < PANEL_KEYS.length; i++) {
 					var key = PANEL_KEYS[i];
@@ -3414,6 +3582,10 @@ window.__ModuleLoader__.load({
 					}
 					return lines;
 				},
+				/** The DOM report a diagnostic build sends; also readable on demand. */
+				domReport: domReport,
+				/** Send one now (used by the row while the panel is expanded). */
+				postReport: function () { postDomReport("manual"); return reportPosts; },
 				/** The build the settings row prints. */
 				build: function () { return BUILD; },
 				/**
