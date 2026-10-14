@@ -1246,6 +1246,51 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 }
 //#endregion
 
+//#region fullscreen
+{
+  // The shape the app really produces, taken from a report of the live page: in the
+  // expanded mode the grid is untouched (sidebar 271, centre 1701, right 576), and the
+  // fullscreen presentation is a floating panel that OVERFLOWS its 576px column to span
+  // the viewport. The material used to sit on the column — "only the right panel's
+  // previous position responds to the opacity knob" — while the layer that actually
+  // covers the screen had none, so the transparent main panel showed through it.
+  const m = mount()
+  m.shell.frame.box = { width: 2560, height: 1552, left: 0, top: 0 }
+  m.shell.right.box = { width: 576, height: 1506, left: 1984, top: 40 }
+  const floating = m.document.createElement('div')
+  floating.setAttribute('class', 'RightPanel_fullscreen')
+  floating.computed = { backgroundColor: 'rgba(250, 248, 246, 0.86)', position: 'absolute', backgroundImage: 'none' }
+  floating.box = { width: 2277, height: 1506, left: 283, top: 40 } // frame minus the sidebar
+  const fab = m.document.createElement('button')
+  fab.setAttribute('class', 'RightPanel_close')
+  fab.computed = { position: 'fixed' }
+  floating.appendChild(fab)
+  m.shell.right.appendChild(floating)
+  m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
+  m.engine.retag(true)
+
+  assert.equal(m.engine.panelStatus().found.right, true, 'the panel is reported as found')
+  const host = m.engine.domReport().panels.right.node
+  assert.equal(host.sel, 'div.RightPanel_fullscreen', 'the host is the element that spans the viewport')
+  assert.deepEqual(host.box, [283, 40, 2277, 1506], "with the fullscreen geometry, not the column's")
+  assert.equal(floating.getAttribute('data-glass-fullscreen-panel'), '', 'marked as the fullscreen presentation')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), undefined, 'while the 576px column gives its hooks back')
+  assert.equal(
+    floating.getAttribute('data-glass-blur-host'),
+    'element',
+    'and it keeps the blur on itself even though it holds a fixed control: re-anchoring inside a viewport-spanning panel lands in the same place'
+  )
+
+  // Collapsing returns the panel to its column.
+  m.shell.frame.removeAttribute('data-rightbar-fullscreen')
+  m.engine.retag(true)
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'collapsing returns the panel to its column')
+  assert.equal(floating.getAttribute('data-glass-fullscreen-panel'), undefined, 'and the floating panel is released')
+  m.dispose()
+  console.log('ok  an expanded right panel is hosted by the layer that actually spans the viewport')
+}
+//#endregion
+
 //#region overlay
 {
   // The real shape of the reported bug, which the app's own code explains: an expanded

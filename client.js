@@ -75,6 +75,13 @@ window.__ModuleLoader__.load({
 		var RESIZE_THROTTLE_MS = 120;
 		/** How much of the frame an expanded panel has to cover to be that panel. */
 		var OVERLAY_MIN_SPAN = 0.6;
+		/** How much of the frame's width a fullscreen panel covers (the expanded sidebar stays clear). */
+		var FULLSCREEN_MIN_SPAN = 0.6;
+		/** Its height, on the other hand, is the frame's: it sits below the caption and spans the rest. */
+		var FULLSCREEN_MIN_HEIGHT = 0.85;
+		/** Bounds for that search, so one probe stays cheap. */
+		var FULLSCREEN_MAX_NODES = 260;
+		var FULLSCREEN_MAX_DEPTH = 8;
 		/** Where a diagnostic build sends one report; nothing listens in normal use. */
 		var REPORT_URL = "http://127.0.0.1:8791/glass-report";
 		var REPORT_KEY = "dsh-glass-mood:last-report";
@@ -86,7 +93,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.29.0";
+		var BUILD = "1.30.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -701,6 +708,7 @@ window.__ModuleLoader__.load({
 			   main panel's own gutter margin is what left a visible seam between them,
 			   because the right panel's margins are already zeroed above. */
 			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=main]{margin-right:0}",
+			"body[data-glass-panels] [data-glass-fullscreen-panel]{margin:0;border-radius:0;overflow:visible}",
 			/* The column IS the surface: its layout wrapper must not paint a second
 			   fill on top of it, or the opacity knob would be invisible. */
 			"body[data-glass-panels] [data-glass-panel] > *{background-color:transparent}",
@@ -1752,7 +1760,12 @@ window.__ModuleLoader__.load({
 			// columns (the sidebar collapse control is one), and re-anchoring moved it
 			// out of the top bar onto the sidebar logo. Position beats frost: such a
 			// panel keeps its fill and its rim, and goes without the blur.
-			if (panels.fixedGuard === true && fixed.length > 0) {
+			// A panel that already spans the viewport is positioned against it, so a fixed
+			// descendant re-anchored to it lands in the same place. The guard exists for
+			// floating controls inside a column, not for the fullscreen presentation - and
+			// skipping the frost there is exactly the fault this change is answering.
+			var spansFrame = host.getAttribute !== undefined && host.getAttribute("data-glass-fullscreen-panel") !== undefined;
+			if (panels.fixedGuard === true && fixed.length > 0 && spansFrame !== true) {
 				host.removeAttribute("data-glass-blur-host");
 				panelBlurHost[key] = "none";
 				panelBlurNote[key] = ["\u542b fixed \u5b50\u5143\u7d20\uff1a" + fixed.join("\u3001") + "\uff08\u5df2\u8df3\u8fc7\u78e8\u7802\uff0c\u4fdd\u4f4f\u5176\u5b9a\u4f4d\uff09"];
@@ -2690,6 +2703,60 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * The element that covers the frame while the right panel is presented full.
+			 * The app's own documentation describes that presentation: a fullscreen panel is
+			 * a floating panel which, on a wide viewport, leaves the centre width unchanged
+			 * and is kept below the caption and to the right of the expanded sidebar — so it
+			 * overflows the column it belongs to. The material belongs on whatever spans the
+			 * viewport, not on the column that merely contains it. (This lives inside the
+			 * engine because it needs the engine's own `doc` and `win`.)
+			 * @returns the deepest frame-covering element that paints, or null.
+			 */
+			function fullscreenPanelNode() {
+				var frame = null;
+				try { frame = doc.querySelector('[class*="_frame"]'); } catch (error) { frame = null; }
+				if (frame === null || frame === undefined || typeof frame.getBoundingClientRect !== "function") return null;
+				var frameBox = frame.getBoundingClientRect();
+				if (!(frameBox.width > 0) || !(frameBox.height > 0)) return null;
+				var queue = [];
+				if (frame.children !== undefined) {
+					for (var i = 0; i < frame.children.length; i++) queue.push({ node: frame.children[i], depth: 0 });
+				}
+				if (doc.body !== undefined && doc.body !== null && doc.body.children !== undefined) {
+					for (var b = 0; b < doc.body.children.length && b < 20; b++) queue.push({ node: doc.body.children[b], depth: 0 });
+				}
+				var best = null;
+				var bestDepth = -1;
+				var visited = 0;
+				while (queue.length > 0 && visited < FULLSCREEN_MAX_NODES) {
+					var entry = queue.shift();
+					visited += 1;
+					var node = entry.node;
+					if (node === null || node === undefined || node === frame) continue;
+					if (typeof node.getBoundingClientRect !== "function") continue;
+					if (node.getAttribute !== undefined && node.getAttribute("id") === STAGE_ID) continue;
+					var box = node.getBoundingClientRect();
+					if (box.width >= frameBox.width * FULLSCREEN_MIN_SPAN && box.height >= frameBox.height * FULLSCREEN_MIN_HEIGHT) {
+						var style = null;
+						try { style = win.getComputedStyle(node); } catch (error) { style = null; }
+						var paints = style !== null && style !== undefined && (
+							parseAlpha(style.backgroundColor) >= SURFACE_MIN_ALPHA ||
+							(typeof style.backgroundImage === "string" && style.backgroundImage !== "none" && style.backgroundImage !== "")
+						);
+						if (paints && entry.depth > bestDepth) { best = node; bestDepth = entry.depth; }
+					}
+					if (entry.depth >= FULLSCREEN_MAX_DEPTH) continue;
+					var children = node.children;
+					if (children === undefined || children === null) continue;
+					for (var c = 0; c < children.length && c < 10; c++) {
+						if (children[c] === undefined || children[c] === null) continue;
+						queue.push({ node: children[c], depth: entry.depth + 1 });
+					}
+				}
+				return best;
+			}
+
+			/**
 			 * The element that renders an expanded right panel. The app does not widen the
 			 * column for that mode — the frame's grid is untouched and `rightbarFullscreen`
 			 * only suppresses transitions and hides the drag handle — so the expanded panel
@@ -2818,6 +2885,8 @@ window.__ModuleLoader__.load({
 					frameChildren: [],
 					overlay: null,
 					overlayCandidate: null,
+					fullscreenCandidate: describeNode(fullscreenPanelNode()),
+					biggest: [],
 					rightColumn: null,
 					panels: {}
 				};
@@ -2835,6 +2904,28 @@ window.__ModuleLoader__.load({
 					report.overlay = describeTree(overlay, 10);
 					var candidate = overlayPanelNode();
 					report.overlayCandidate = describeNode(candidate);
+				}
+				// The largest elements on screen, so "which layer is the panel" is answered by
+				// the data rather than by another guess.
+				var all = null;
+				try { all = doc.querySelectorAll("div, section, main, aside"); } catch (error) { all = null; }
+				if (all !== null && all !== undefined) {
+					var hostBox = frame !== null && frame !== undefined && typeof frame.getBoundingClientRect === "function" ? frame.getBoundingClientRect() : null;
+					var frameArea = hostBox === null ? 0 : hostBox.width * hostBox.height;
+					var ranked = [];
+					for (var q = 0; q < all.length && q < 1500; q++) {
+						var el = all[q];
+						if (el === undefined || el === null || typeof el.getBoundingClientRect !== "function") continue;
+						var eb = el.getBoundingClientRect();
+						var area = eb.width * eb.height;
+						if (area < frameArea * 0.2) continue;
+						ranked.push({ area: area, node: el });
+					}
+					ranked.sort(function (x, y) { return y.area - x.area; });
+					for (var z = 0; z < ranked.length && z < 10; z++) {
+						var described = describeNode(ranked[z].node);
+						if (described !== null) { described.area = Math.round(ranked[z].area); report.biggest.push(described); }
+					}
 				}
 				var column = panelNodes.right;
 				if (column !== null && column !== undefined) report.rightColumn = describeTree(column, 12);
@@ -2892,7 +2983,11 @@ window.__ModuleLoader__.load({
 				var frame = doc.querySelector('[class*="_frame"]');
 				if (frame !== null && frame !== undefined) frame.setAttribute("data-glass-frame", "");
 				// An expanded right panel is rendered in the overlay instead of its column.
-				var expandedPanel = rightbarExpanded() ? overlayPanelNode() : null;
+				var expandedMode = rightbarExpanded();
+				// A fullscreen panel overflows its column to span the frame; the overlay slot is
+				// the older guess and stays as a fallback.
+				var fullscreenNode = expandedMode ? fullscreenPanelNode() : null;
+				var expandedPanel = expandedMode ? (fullscreenNode ?? overlayPanelNode()) : null;
 				// The mode that keeps being reported as broken gets measured once, on entry
 				// and again a moment later so a late layout is included.
 				if (rightbarExpanded() === true && deep === true && reportTimer === 0) {
@@ -2904,6 +2999,9 @@ window.__ModuleLoader__.load({
 					var node = key === "right" && expandedPanel !== null ? expandedPanel : doc.querySelector(PANEL_SELECTOR[key]);
 					if (key === "right" && expandedPanel !== null && node === expandedPanel && typeof node.setAttribute === "function") {
 						node.setAttribute("data-glass-overlay-panel", "");
+						// A panel that spans the viewport is the fullscreen presentation: it differs in
+						// blur hosting and in having no gutter of its own.
+						if (node === fullscreenNode) node.setAttribute("data-glass-fullscreen-panel", "");
 					}
 					// Whoever held this panel before gives the hooks back: the column must not
 					// keep a pane at the old geometry while the overlay renders the panel.
@@ -2912,6 +3010,7 @@ window.__ModuleLoader__.load({
 						previous.removeAttribute("data-glass-panel");
 						previous.removeAttribute("data-glass-delegate");
 						previous.removeAttribute("data-glass-overlay-panel");
+						previous.removeAttribute("data-glass-fullscreen-panel");
 						if (panelSurfaces[key] !== null && panelSurfaces[key] !== undefined) {
 							panelSurfaces[key].removeAttribute("data-glass-surface");
 							panelSurfaces[key] = null;
