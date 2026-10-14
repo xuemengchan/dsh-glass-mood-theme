@@ -93,7 +93,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.30.0";
+		var BUILD = "1.31.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -704,11 +704,13 @@ window.__ModuleLoader__.load({
 			"body[data-glass-panels] [data-glass-panel]{position:relative;z-index:0;margin:var(--gm-gap) calc(var(--gm-gap) / 2) 0;border-radius:var(--gm-radius);overflow:hidden;box-shadow:var(--gm-panel-shadow,none);transition:border-radius 220ms cubic-bezier(.4,0,.2,1),background-color 220ms cubic-bezier(.4,0,.2,1),box-shadow 220ms cubic-bezier(.4,0,.2,1)}",
 			/* A fullscreen right panel is an overlay, not a column: leave it alone. */
 			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=right]{margin:0;overflow:visible;border-radius:0}",
-			/* An expanded right panel is meant to sit flush against the main panel: the
-			   main panel's own gutter margin is what left a visible seam between them,
-			   because the right panel's margins are already zeroed above. */
-			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=main]{margin-right:0}",
-			"body[data-glass-panels] [data-glass-fullscreen-panel]{margin:0;border-radius:0;overflow:visible}",
+			/* While the right panel is presented full, the centre panel stays mounted but
+			   must stop showing through it. The presentation layer is the app's own and may
+			   be only part-transparent, so without this the centre pane reads as a ghost
+			   behind the expanded panel — and its blur is what someone sees there, not the
+			   expanded panel's. `visibility` and not `display`: the grid keeps its columns,
+			   nothing reflows, and collapsing restores it. */
+			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=main]{margin-right:0;visibility:hidden}",
 			/* The column IS the surface: its layout wrapper must not paint a second
 			   fill on top of it, or the opacity knob would be invisible. */
 			"body[data-glass-panels] [data-glass-panel] > *{background-color:transparent}",
@@ -1760,12 +1762,7 @@ window.__ModuleLoader__.load({
 			// columns (the sidebar collapse control is one), and re-anchoring moved it
 			// out of the top bar onto the sidebar logo. Position beats frost: such a
 			// panel keeps its fill and its rim, and goes without the blur.
-			// A panel that already spans the viewport is positioned against it, so a fixed
-			// descendant re-anchored to it lands in the same place. The guard exists for
-			// floating controls inside a column, not for the fullscreen presentation - and
-			// skipping the frost there is exactly the fault this change is answering.
-			var spansFrame = host.getAttribute !== undefined && host.getAttribute("data-glass-fullscreen-panel") !== undefined;
-			if (panels.fixedGuard === true && fixed.length > 0 && spansFrame !== true) {
+			if (panels.fixedGuard === true && fixed.length > 0) {
 				host.removeAttribute("data-glass-blur-host");
 				panelBlurHost[key] = "none";
 				panelBlurNote[key] = ["\u542b fixed \u5b50\u5143\u7d20\uff1a" + fixed.join("\u3001") + "\uff08\u5df2\u8df3\u8fc7\u78e8\u7802\uff0c\u4fdd\u4f4f\u5176\u5b9a\u4f4d\uff09"];
@@ -2703,13 +2700,15 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
-			 * The element that covers the frame while the right panel is presented full.
-			 * The app's own documentation describes that presentation: a fullscreen panel is
-			 * a floating panel which, on a wide viewport, leaves the centre width unchanged
-			 * and is kept below the caption and to the right of the expanded sidebar — so it
-			 * overflows the column it belongs to. The material belongs on whatever spans the
-			 * viewport, not on the column that merely contains it. (This lives inside the
-			 * engine because it needs the engine's own `doc` and `win`.)
+			 * DIAGNOSTIC ONLY — never used to choose a host. It reports the deepest element
+			 * that covers the frame while the right panel is presented full, from the app's
+			 * own description of that presentation (a floating panel that leaves the centre
+			 * width unchanged and sits below the caption, right of the expanded sidebar).
+			 *
+			 * It was tried as the host and it picked the CENTRE panel's content root, whose
+			 * box is the centre column's, so the right panel's material landed on the centre
+			 * panel and the blur seen through the expanded panel was the centre panel's own.
+			 * It stays because it is what made that visible in a report.
 			 * @returns the deepest frame-covering element that paints, or null.
 			 */
 			function fullscreenPanelNode() {
@@ -2982,12 +2981,16 @@ window.__ModuleLoader__.load({
 				if (disposed) return panelFound;
 				var frame = doc.querySelector('[class*="_frame"]');
 				if (frame !== null && frame !== undefined) frame.setAttribute("data-glass-frame", "");
-				// An expanded right panel is rendered in the overlay instead of its column.
+				// The overlay slot, when the app puts the presentation there. Guessing further
+				// than this was a mistake worth recording: a "deepest element that covers the
+				// frame" search picked the centre panel's own content root (1701x1500, the
+				// same box as the centre column), so the right panel's material landed on the
+				// centre panel — the blur someone sees through the expanded panel was the
+				// centre panel's own, and the layer actually presenting the panel still had
+				// none. Two lessons: a heuristic may not outrank what the app says about
+				// itself, and the pane that keeps showing through belongs to the centre.
 				var expandedMode = rightbarExpanded();
-				// A fullscreen panel overflows its column to span the frame; the overlay slot is
-				// the older guess and stays as a fallback.
-				var fullscreenNode = expandedMode ? fullscreenPanelNode() : null;
-				var expandedPanel = expandedMode ? (fullscreenNode ?? overlayPanelNode()) : null;
+				var expandedPanel = expandedMode ? overlayPanelNode() : null;
 				// The mode that keeps being reported as broken gets measured once, on entry
 				// and again a moment later so a late layout is included.
 				if (rightbarExpanded() === true && deep === true && reportTimer === 0) {
@@ -2998,10 +3001,9 @@ window.__ModuleLoader__.load({
 					var key = PANEL_KEYS[i];
 					var node = key === "right" && expandedPanel !== null ? expandedPanel : doc.querySelector(PANEL_SELECTOR[key]);
 					if (key === "right" && expandedPanel !== null && node === expandedPanel && typeof node.setAttribute === "function") {
+						// A panel that spans the viewport would be the fullscreen presentation, but
+						// nothing is guessed from geometry here: see the note in tagPanels.
 						node.setAttribute("data-glass-overlay-panel", "");
-						// A panel that spans the viewport is the fullscreen presentation: it differs in
-						// blur hosting and in having no gutter of its own.
-						if (node === fullscreenNode) node.setAttribute("data-glass-fullscreen-panel", "");
 					}
 					// Whoever held this panel before gives the hooks back: the column must not
 					// keep a pane at the old geometry while the overlay renders the panel.
@@ -3010,7 +3012,6 @@ window.__ModuleLoader__.load({
 						previous.removeAttribute("data-glass-panel");
 						previous.removeAttribute("data-glass-delegate");
 						previous.removeAttribute("data-glass-overlay-panel");
-						previous.removeAttribute("data-glass-fullscreen-panel");
 						if (panelSurfaces[key] !== null && panelSurfaces[key] !== undefined) {
 							panelSurfaces[key].removeAttribute("data-glass-surface");
 							panelSurfaces[key] = null;

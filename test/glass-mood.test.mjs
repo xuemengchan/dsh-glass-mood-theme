@@ -1168,8 +1168,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   )
   assert.match(
     css,
-    /\[data-rightbar-fullscreen\] \[data-glass-panel=main\]\{margin-right:0\}/,
-    'and the main panel drops its half of the gutter, so no seam is left between them'
+    /\[data-rightbar-fullscreen\] \[data-glass-panel=main\]\{margin-right:0;visibility:hidden\}/,
+    'and the main panel drops its half of the gutter while being hidden, so nothing of it shows through the expanded panel'
   )
   m.dispose()
   console.log('ok  an expanded panel re-validates the surface it delegated to, and closes the seam')
@@ -1248,46 +1248,60 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 
 //#region fullscreen
 {
-  // The shape the app really produces, taken from a report of the live page: in the
-  // expanded mode the grid is untouched (sidebar 271, centre 1701, right 576), and the
-  // fullscreen presentation is a floating panel that OVERFLOWS its 576px column to span
-  // the viewport. The material used to sit on the column — "only the right panel's
-  // previous position responds to the opacity knob" — while the layer that actually
-  // covers the screen had none, so the transparent main panel showed through it.
+  // The live page's shape, from a report of the real thing: in the expanded mode the
+  // grid is untouched (sidebar 271, centre 1701, right 576) and the presentation layer
+  // is the app's own, in the right column. A "deepest element that covers the frame"
+  // search was tried here and it picked the CENTRE panel's content root — same box as
+  // the centre column, so it qualified — which put the right panel's material on the
+  // centre panel: the blur seen through the expanded panel was the centre panel's own.
+  // So the rule now is: the material stays on the right column, and the centre panel
+  // stops showing through the presentation.
   const m = mount()
   m.shell.frame.box = { width: 2560, height: 1552, left: 0, top: 0 }
+  m.shell.center.box = { width: 1701, height: 1500, left: 283, top: 46 }
   m.shell.right.box = { width: 576, height: 1506, left: 1984, top: 40 }
-  const floating = m.document.createElement('div')
-  floating.setAttribute('class', 'RightPanel_fullscreen')
-  floating.computed = { backgroundColor: 'rgba(250, 248, 246, 0.86)', position: 'absolute', backgroundImage: 'none' }
-  floating.box = { width: 2277, height: 1506, left: 283, top: 40 } // frame minus the sidebar
-  const fab = m.document.createElement('button')
-  fab.setAttribute('class', 'RightPanel_close')
-  fab.computed = { position: 'fixed' }
-  floating.appendChild(fab)
-  m.shell.right.appendChild(floating)
+  // A centre-panel element big enough to satisfy any frame-covering test.
+  const centreSurface = m.document.createElement('div')
+  centreSurface.setAttribute('class', 'Dc7zOa_root')
+  centreSurface.computed = { backgroundColor: 'rgba(243, 235, 231, 0.1)', position: 'relative', backgroundImage: 'none' }
+  centreSurface.box = { width: 1701, height: 1500, left: 283, top: 46 }
+  m.shell.center.appendChild(centreSurface)
   m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
   m.engine.retag(true)
 
-  assert.equal(m.engine.panelStatus().found.right, true, 'the panel is reported as found')
-  const host = m.engine.domReport().panels.right.node
-  assert.equal(host.sel, 'div.RightPanel_fullscreen', 'the host is the element that spans the viewport')
-  assert.deepEqual(host.box, [283, 40, 2277, 1506], "with the fullscreen geometry, not the column's")
-  assert.equal(floating.getAttribute('data-glass-fullscreen-panel'), '', 'marked as the fullscreen presentation')
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), undefined, 'while the 576px column gives its hooks back')
+  const report = m.engine.domReport()
+  assert.equal(m.engine.panelStatus().found.right, true, 'the right panel is reported as found')
   assert.equal(
-    floating.getAttribute('data-glass-blur-host'),
-    'element',
-    'and it keeps the blur on itself even though it holds a fixed control: re-anchoring inside a viewport-spanning panel lands in the same place'
+    m.shell.right.getAttribute('data-glass-panel'),
+    'right',
+    'and stays on its own column'
+  )
+  assert.equal(
+    centreSurface.getAttribute('data-glass-panel'),
+    undefined,
+    "the centre panel's own element is never handed the right panel's material"
+  )
+  assert.equal(
+    m.shell.center.getAttribute('data-glass-panel'),
+    'main',
+    'the centre panel keeps its own material'
   )
 
-  // Collapsing returns the panel to its column.
+  // The centre panel is hidden (not unmounted) while the panel is presented full.
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
+  assert.match(
+    css,
+    /\[data-rightbar-fullscreen\] \[data-glass-panel=main\]\{margin-right:0;visibility:hidden\}/,
+    'and it is hidden while the presentation is up, so it cannot show through it'
+  )
+  assert.ok(!/display:none/.test(css), 'with visibility rather than display: the grid keeps its columns and nothing reflows')
+
+  // Collapsing restores everything.
   m.shell.frame.removeAttribute('data-rightbar-fullscreen')
   m.engine.retag(true)
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'collapsing returns the panel to its column')
-  assert.equal(floating.getAttribute('data-glass-fullscreen-panel'), undefined, 'and the floating panel is released')
+  assert.equal(m.engine.panelStatus().found.main, true, 'collapsing brings the centre panel back')
   m.dispose()
-  console.log('ok  an expanded right panel is hosted by the layer that actually spans the viewport')
+  console.log('ok  an expanded right panel keeps its own material, and the centre panel stops showing through')
 }
 //#endregion
 
