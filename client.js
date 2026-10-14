@@ -96,7 +96,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.32.0";
+		var BUILD = "1.33.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -2723,6 +2723,35 @@ window.__ModuleLoader__.load({
 		 * centre panel: the blur seen through the expanded panel was the centre's own.
 		 * @returns the deepest qualifying element, or null.
 		 */
+		/**
+		 * Every element that could be the presentation layer, for the diagnostic. The
+		 * finder answers "which one"; this answers "what was there at all", which is what
+		 * turns a miss into a reading instead of another guess.
+		 * @returns up to six descriptions.
+		 */
+		function presentationCandidates() {
+			var out = [];
+			var frame = null;
+			try { frame = doc.querySelector('[class*="_frame"]'); } catch (error) { frame = null; }
+			if (frame === null || frame === undefined || typeof frame.getBoundingClientRect !== "function") return out;
+			var frameBox = frame.getBoundingClientRect();
+			var all = null;
+			try { all = doc.querySelectorAll("*"); } catch (error) { all = null; }
+			if (all === null || all === undefined) return out;
+			for (var i = 0; i < all.length && out.length < 6; i++) {
+				var node = all[i];
+				if (node === undefined || node === null || typeof node.getBoundingClientRect !== "function") continue;
+				if (node === frame) continue;
+				if (insidePanel(node)) continue;
+				var box = node.getBoundingClientRect();
+				if (!(box.width >= frameBox.width * FULLSCREEN_MIN_SPAN)) continue;
+				if (!(box.height >= frameBox.height * FULLSCREEN_MIN_HEIGHT)) continue;
+				var described = describeNode(node);
+				if (described !== null) out.push(described);
+			}
+			return out;
+		}
+
 		function presentationLayerNode() {
 			var frame = null;
 			try { frame = doc.querySelector('[class*="_frame"]'); } catch (error) { frame = null; }
@@ -2749,14 +2778,19 @@ window.__ModuleLoader__.load({
 				// and the sidebar's, out of the running however large they are.
 				if (insidePanel(node)) continue;
 				var box = node.getBoundingClientRect();
-				if (box.width >= frameBox.width * FULLSCREEN_MIN_SPAN && box.height >= frameBox.height * FULLSCREEN_MIN_HEIGHT) {
-					var style = null;
-					try { style = win.getComputedStyle(node); } catch (error) { style = null; }
-					var paints = style !== null && style !== undefined && (
-						parseAlpha(style.backgroundColor) >= SURFACE_MIN_ALPHA ||
-						(typeof style.backgroundImage === "string" && style.backgroundImage !== "none" && style.backgroundImage !== "")
-					);
-					if (paints && entry.depth > bestDepth) { best = node; bestDepth = entry.depth; }
+				// A presentation panel is kept below the caption and to the right of the
+				// sidebar, so it starts where the centre does and runs to the frame's right
+				// edge. That one clause keeps whole-app wrappers (left edge 0) out.
+				var centre = panelNodes.main;
+				var centreBox = centre !== null && centre !== undefined && typeof centre.getBoundingClientRect === "function" ? centre.getBoundingClientRect() : null;
+				var leftEdge = centreBox === null ? frameBox.left : centreBox.left;
+				var inBand = box.left >= leftEdge - 12 && (box.left + box.width) >= (frameBox.left + frameBox.width) - 12;
+				if (inBand && box.width >= frameBox.width * FULLSCREEN_MIN_SPAN && box.height >= frameBox.height * FULLSCREEN_MIN_HEIGHT) {
+					// No paint test: the layer that presents a panel is a transparent
+					// container and its children do the drawing. Requiring it to paint
+					// itself rejected the one element that mattered — the live report came
+					// back with no candidate at all.
+					if (entry.depth > bestDepth) { best = node; bestDepth = entry.depth; }
 				}
 				if (entry.depth >= PRESENT_MAX_DEPTH) continue;
 				var children = node.children;
@@ -2965,6 +2999,7 @@ window.__ModuleLoader__.load({
 					overlayCandidate: null,
 					fullscreenCandidate: describeNode(fullscreenPanelNode()),
 					presentationLayer: describeNode(presentationLayerNode()),
+					presentationCandidates: presentationCandidates(),
 					biggest: [],
 					rightColumn: null,
 					panels: {}

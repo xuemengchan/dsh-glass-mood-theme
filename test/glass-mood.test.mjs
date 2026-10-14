@@ -1329,11 +1329,23 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(decoy.getAttribute('data-glass-panel'), undefined, 'a layer inside a panel is never the presentation')
   assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'so the right panel keeps its own column')
 
-  // A real presentation layer: it covers the frame and lives outside every panel.
+  // A whole-app wrapper covers the frame too, but a presentation panel is kept to the
+  // right of the expanded sidebar — so a wrapper starting at 0 is not it.
+  const wrapper = m.document.createElement('div')
+  wrapper.setAttribute('class', 'AppRoot_wrapper')
+  wrapper.computed = { backgroundColor: 'rgba(253, 252, 250, 0.5)', position: 'relative', backgroundImage: 'none' }
+  wrapper.box = { width: 2560, height: 1552, left: 0, top: 0 }
+  m.document.body.appendChild(wrapper)
+  m.engine.retag(true)
+  assert.equal(wrapper.getAttribute('data-glass-panel'), undefined, 'a whole-app wrapper is not the presentation layer')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'so the right panel still keeps its column')
+
+  // A real presentation layer: frame-covering, outside every panel, and starting where
+  // the centre does — which is how the app documents a fullscreen panel.
   const layer = m.document.createElement('section')
   layer.setAttribute('class', 'RightPanel_presentation')
   layer.computed = { backgroundColor: 'rgba(252, 250, 248, 0.9)', position: 'fixed', backgroundImage: 'none' }
-  layer.box = { width: 2560, height: 1552, left: 0, top: 0 }
+  layer.box = { width: 2277, height: 1552, left: 283, top: 0 }
   m.document.body.appendChild(layer)
   m.engine.retag(true)
   assert.equal(layer.getAttribute('data-glass-panel'), 'right', 'a frame-covering layer outside the panels becomes the host')
