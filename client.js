@@ -88,7 +88,7 @@ window.__ModuleLoader__.load({
 		/** Where a diagnostic build sends one report; nothing listens in normal use. */
 		var REPORT_URL = "http://127.0.0.1:8791/glass-report";
 		var REPORT_KEY = "dsh-glass-mood:last-report";
-		var REPORT_MAX_POSTS = 6;
+		var REPORT_MAX_POSTS = 14;
 		/** How long the one-shot surface cross-fade window stays open (slowest fade + slack). */
 		var FADE_WINDOW_MS = 1100;
 		/**
@@ -96,7 +96,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.33.0";
+		var BUILD = "1.52.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -127,6 +127,23 @@ window.__ModuleLoader__.load({
 			main: '[class*="_centerCol"]',
 			right: '[data-rightbar-col], [class*="_rightbarCol"]'
 		};
+		/**
+		 * The right panel's own presentation marker, read out of the app's bundle
+		 * rather than guessed: `ui-sidebar-right` renders the panel element with
+		 * `data-sidebar-right-panel={fullscreen ? "fullscreen" : "push"}` and
+		 * `style={{ width: fullscreen ? "100vw" : width }}`, while its own stylesheet
+		 * pins it `position:absolute; top:0; bottom:0; right:0` inside the right
+		 * column (`.rightbarCol{min-width:0;position:relative;overflow:visible}`).
+		 *
+		 * So a fullscreen right panel is NOT the column: the column keeps its normal
+		 * track underneath ("fullscreen covers the viewport while retaining the
+		 * wide-screen columns underneath", per the same package's README) and the
+		 * panel hangs left over the centre to cover it. Painting the material on the
+		 * column therefore covers only the strip the panel used to occupy — which is
+		 * exactly the reported "transparency and blur stop at the sidebar's old
+		 * position". The selector is the app's own word for that layer.
+		 */
+		var RIGHT_PANEL_FULLSCREEN_SELECTOR = '[data-sidebar-right-panel="fullscreen"]';
 		/**
 		 * Geometry and light defaults. Frame 0 keeps the window's own corners as
 		 * the outer contour; panel 20 is the official `--dsw-radius-xl` for an
@@ -705,8 +722,33 @@ window.__ModuleLoader__.load({
 			   card inset by the gutter; without one, the panels are square and the
 			   frame's own radius clips them into a single continuous sheet. */
 			"body[data-glass-panels] [data-glass-panel]{position:relative;z-index:0;margin:var(--gm-gap) calc(var(--gm-gap) / 2) 0;border-radius:var(--gm-radius);overflow:hidden;box-shadow:var(--gm-panel-shadow,none);transition:border-radius 220ms cubic-bezier(.4,0,.2,1),background-color 220ms cubic-bezier(.4,0,.2,1),box-shadow 220ms cubic-bezier(.4,0,.2,1)}",
-			/* A fullscreen right panel is an overlay, not a column: leave it alone. */
-			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=right]{margin:0;overflow:visible;border-radius:0}",
+			/* A fullscreen right panel is an overlay, not a column, so the column must stop
+			   drawing a card of its own — but it keeps its GUTTER, and that is load-bearing.
+			   The layer inside it is positioned `top:0; right:0; bottom:0` against the
+			   column's box, so the column's own gutter is what holds the expanded panel on
+			   the same rhythm as every other card: the top and right gaps come from the
+			   column's margins and the bottom one from the frame's `padding-bottom`.
+			   Clearing the margins (which is what this rule used to do) left the panel
+			   flush against the title bar while the frame's padding still held it off the
+			   bottom — the reported "the top gap is gone but the bottom one is still
+			   there". So the margins are deliberately NOT touched here, which also makes
+			   the column's geometry identical in both modes.
+
+			   `border-radius` is deliberately not touched either. It used to be set to 0,
+			   from when the column WAS the panel in this mode — and because every panel
+			   carries `transition: border-radius 220ms`, collapsing animated the column
+			   from a square back to 12px. The material returns to the column at that same
+			   moment, so the switch played as "square first, then it rounds off". Leaving
+			   the radius alone means there is nothing to animate. */
+			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=right]{overflow:visible;box-shadow:none}",
+			/* The column must also stop drawing its own rim and divider. That overlay is a
+			   positioned `::after` — the LAST child, so it paints ABOVE the panel the app
+			   presents — and the column is still only 447px wide here. Left alone it drew
+			   its left-edge rim and its divider as a bright vertical line straight down
+			   the middle of the expanded panel: exactly the seam between the old centre
+			   panel and the old right panel, surviving into a mode where neither of those
+			   boxes means anything. The contour and the rim belong to the layer now. */
+			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=right]::after{content:none}",
 			/* While the right panel is presented full, the centre panel stays mounted but
 			   must stop showing through it. The presentation layer is the app's own and may
 			   be only part-transparent, so without this the centre pane reads as a ghost
@@ -714,7 +756,12 @@ window.__ModuleLoader__.load({
 			   expanded panel's. `visibility` and not `display`: the grid keeps its columns,
 			   nothing reflows, and collapsing restores it. */
 			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=main]{margin-right:0;visibility:hidden}",
-			"body[data-glass-panels] [data-glass-presentation]{margin:0;border-radius:0;overflow:visible}",
+			/* Its rim stops being drawn too, rather than being left to `visibility` alone.
+			   A hidden pane is supposed to leave nothing behind; the rim overlay is a
+			   separate positioned child carrying both a shadow and a corner gradient, and
+			   "the shadow of the old centre panel is still there" is exactly what it looks
+			   like when it does. */
+			"body[data-glass-panels] [data-glass-frame][data-rightbar-fullscreen] [data-glass-panel=main]::after{content:none}",
 			/* The column IS the surface: its layout wrapper must not paint a second
 			   fill on top of it, or the opacity knob would be invisible. */
 			"body[data-glass-panels] [data-glass-panel] > *{background-color:transparent}",
@@ -725,8 +772,94 @@ window.__ModuleLoader__.load({
 			/* A painter that cannot see the wallpaper gives up its own paint so the
 			   column's material (and its frost) is what shows. */
 			"body[data-glass-panels] [data-glass-hollow]{background-color:transparent;background-image:none}",
-			"body[data-glass-panels] [data-glass-surface]{position:relative;z-index:0}",
-			"body[data-glass-panels] [data-glass-surface=left]{--gm-panel-blur:var(--gm-panel-left-blur);background-color:var(--gm-panel-left-fill)}",
+			"body[data-glass-panels] [data-glass-surface]{position:relative;z-index:0;border-radius:var(--gm-radius);overflow:hidden}",
+			/* The contour has to be on the surface, not only on the column.
+			   A delegated panel paints NO fill of its own (`background-color:transparent`),
+			   so a corner radius on the column draws nothing — there is no paint to round.
+			   The paint is on the inner surface, whose own radius is 0, and which sits
+			   inside the column at exactly its size, so `overflow:hidden` on the column has
+			   nothing to clip. The result is square corners on a panel that measures
+			   `border-radius: 12px`: the radius was being asked of the one element that
+			   paints nothing. Both round now, and the surface clips its own content. */
+			/* A fullscreen right panel is positioned by the app: `position:absolute`,
+			   anchored top/bottom/right inside the right column so it can hang left
+			   across the centre and cover the frame. The generic surface rule just above
+			   would answer `position:relative` and drop it back into the column's flow —
+			   which does not merely misplace the material, it undoes the presentation the
+			   app is drawing. This host therefore keeps the position the app gave it; the
+			   extra attribute is what wins the specificity contest. */
+			"body[data-glass-panels] [data-glass-surface][data-glass-fullscreen]{position:absolute}",
+			/* The contour moves with the material. Two things make this look like ONE card
+			   rather than a card inside a card:
+
+			   1. It clips. The app gives the pane inside it its own
+			      `--dsh-windows-content-radius` on the top-left corner only, so without a
+			      clip the corner showed two nested arcs of different radii — the outer
+			      glass and the inner pane. Clipping to the outer radius leaves one contour.
+			      (The app's own note, "only fullscreen panels clip overflow for that
+			      corner", is about the same corner.)
+			   2. All four corners round. This rule used to say `R 0 0 R`, because the layer
+			      was anchored to the window's right edge and rounding there would bite two
+			      crescents of wallpaper out of nothing. That reason expired when the panel
+			      gained its own gutter (see the max-width below): it now stops 6px short of
+			      the edge, so the right side is a free edge like every other, and leaving it
+			      square made the expanded panel the only pane on screen with two square
+			      corners. */
+			"body[data-glass-panels] [data-glass-surface][data-glass-fullscreen]{border-radius:var(--gm-radius);overflow:hidden}",
+			/* The left side needs a gutter of its own. The layer's width comes from the
+			   app (`100vw`, capped to `100vw - sidebar`), so the column's margins cannot
+			   reach it — and without this the panel's left edge sat exactly on the sidebar
+			   instead of holding the same gap as every other card. The cap shrinks by the
+			   gap on each side of that seam: half of it is the sidebar's own right gutter
+			   and the other half is this one. Windows-only, because the variable it reads
+			   (`--dsh-windows-sidebar-width`) is only published there — the app's own cap
+			   is Windows-only for the same reason. */
+			"[data-windows-titlebar] body[data-glass-panels] [data-glass-surface][data-glass-fullscreen]{max-width:calc(100vw - var(--dsh-windows-sidebar-width) - var(--gm-gap) - var(--gm-gap) / 2)}",
+			/* The pane inside a fullscreen panel brings its OWN top-left corner:
+			   `[data-windows-titlebar] .OUqwTW_panel[data-sidebar-right-panel=fullscreen]
+			    [data-dockkit-column="0"][data-dockkit-pane]{border-radius:var(--dsh-windows-content-radius) 0 0 0}`
+			   — 16px, against this theme's 12px. Two arcs of different radii on the same
+			   corner is the reported ghosting, and clipping cannot fix it: the pane sits
+			   inside the panel, so `overflow:hidden` never reaches it.
+			   So the pane follows the glass rather than the glass following the pane —
+			   the radius knob stays in charge, and there is one contour. */
+			/* `[data-windows-titlebar]` is not decoration here — it is what wins. The app's
+			   own rule for this pane is
+			     [data-windows-titlebar] .OUqwTW_panel[data-sidebar-right-panel=fullscreen]
+			       [data-dockkit-column="0"][data-dockkit-pane]   → (0,5,0)
+			   and the same rule written without that prefix is only (0,4,1), so it LOST and
+			   the corner went on drawing two arcs while the test — which only checked that
+			   the text existed — stayed green. Specificity is part of the contract. */
+			/* NO radius at all, not "the same radius".
+			   Only one element may own the contour. The glass (this layer) owns it; the pane
+			   is the content container inside it and had its own arc from the app's
+			   `--dsh-windows-content-radius` (16px). Matching it to 12px still left two arcs
+			   whenever the two boxes were not pixel-identical — which a content container
+			   never quite is. With no radius it cannot draw one, and since the pane sits at
+			   exactly the layer's box, the layer's own `overflow:hidden` clips its square
+			   corners away. */
+			"[data-windows-titlebar] body[data-glass-panels] [data-glass-fullscreen] [data-dockkit-column=\"0\"][data-dockkit-pane]{border-radius:0}",
+			/* One surface, not two. The pane paints a pale layer of its own
+			   (`rgba(255,255,255,0.094)`), and two rounded rects of the SAME box and the
+			   SAME radius stacked should coincide — but only one of them is transparent,
+			   so the edge a person sees is the pane's, drawn just inside the glass's.
+			   That sliver is what was left of the ghosting. It also means the opacity knob
+			   was lying: set to 0 the pane still showed a white wash the knob could not
+			   reach. The glass underneath is the surface; the pane is content. */
+			"[data-windows-titlebar] body[data-glass-panels] [data-glass-fullscreen] [data-dockkit-pane]{background-color:transparent}",
+			/* The rim follows too, with the sheen knob the right panel owns — otherwise the
+			   expanded panel is the one pane on screen with a fill and a frost but no
+			   edge light, which reads as flat paint rather than glass. */
+			"body[data-glass-panels] [data-glass-fullscreen]{--gm-sheen:calc(var(--gm-panel-right-sheen) * var(--gm-panel-right-rim,1))}",
+			/* The sidebar's surface is WIDER than its column. The app sizes it from the track
+			   (measured: surface 269px inside a 260px column), because this theme insets the
+			   column with a gutter. So its corner sits 9px outside the column and the column's
+			   `overflow:hidden` cuts it into a short remnant — which is why the sidebar's
+			   corner reads SMALLER than the centre panel's, even though both measure 12px.
+			   Here the column owns the contour and the surface only paints. (The centre
+			   column's surface is exactly its column's size, so its own 12px coincides and
+			   costs nothing — but a surface that overlays its column must not round.) */
+			"body[data-glass-panels] [data-glass-surface=left]{--gm-panel-blur:var(--gm-panel-left-blur);background-color:var(--gm-panel-left-fill);border-radius:0}",
 			"body[data-glass-panels] [data-glass-surface=main]{--gm-panel-blur:var(--gm-panel-main-blur);background-color:var(--gm-panel-main-fill)}",
 			"body[data-glass-panels] [data-glass-surface=right]{--gm-panel-blur:var(--gm-panel-right-blur);background-color:var(--gm-panel-right-fill)}",
 			/* The frost is deliberately NOT gated on the transparency preference. Skipping
@@ -757,9 +890,9 @@ window.__ModuleLoader__.load({
 				"content:\"\";position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;background:transparent;" +
 				"-webkit-backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
 				"backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
-			"body[data-glass-panels] [data-glass-panel=left]{--gm-panel-blur:var(--gm-panel-left-blur);--gm-sheen:var(--gm-panel-left-sheen);--gm-panel-shadow:var(--gm-panel-left-shadow);margin-left:var(--gm-gap);background-color:var(--gm-panel-left-fill)}",
-			"body[data-glass-panels] [data-glass-panel=main]{--gm-panel-blur:var(--gm-panel-main-blur);--gm-sheen:var(--gm-panel-main-sheen);--gm-panel-shadow:var(--gm-panel-main-shadow);background-color:var(--gm-panel-main-fill)}",
-			"body[data-glass-panels] [data-glass-panel=right]{--gm-panel-blur:var(--gm-panel-right-blur);--gm-sheen:var(--gm-panel-right-sheen);--gm-panel-shadow:var(--gm-panel-right-shadow);margin-right:var(--gm-gap);background-color:var(--gm-panel-right-fill)}",
+			"body[data-glass-panels] [data-glass-panel=left]{--gm-panel-blur:var(--gm-panel-left-blur);--gm-sheen:calc(var(--gm-panel-left-sheen) * var(--gm-panel-left-rim,1));--gm-panel-shadow:var(--gm-panel-left-shadow);margin-left:var(--gm-gap);background-color:var(--gm-panel-left-fill)}",
+			"body[data-glass-panels] [data-glass-panel=main]{--gm-panel-blur:var(--gm-panel-main-blur);--gm-sheen:calc(var(--gm-panel-main-sheen) * var(--gm-panel-main-rim,1));--gm-panel-shadow:var(--gm-panel-main-shadow);background-color:var(--gm-panel-main-fill)}",
+			"body[data-glass-panels] [data-glass-panel=right]{--gm-panel-blur:var(--gm-panel-right-blur);--gm-sheen:calc(var(--gm-panel-right-sheen) * var(--gm-panel-right-rim,1));--gm-panel-shadow:var(--gm-panel-right-shadow);margin-right:var(--gm-gap);background-color:var(--gm-panel-right-fill)}",
 			/* The scheme is resolved in JS (one published fill per panel follows the
 			   presenter), so there is deliberately no per-scheme variant here. */
 			/* A collapsed right column leaves the centre as the last surface. */
@@ -770,6 +903,17 @@ window.__ModuleLoader__.load({
 			   app's own floating controls (the sidebar reopen control is one). */
 			"body[data-glass-panels][data-glass-gap=off] [data-glass-frame]{overflow:hidden}",
 			"body[data-glass-panels][data-glass-gap=on] [data-glass-frame]{background:transparent}",
+			/* The title bar is a PSEUDO-ELEMENT with an opaque fill, spanning the whole
+			   window above every panel:
+			     [data-windows-titlebar] .BynINW_frame:before{
+			       content:""; height:var(--dsh-windows-titlebar-height);
+			       background:var(--dsw-specific-sidebar-fill); inset:0 0 auto }
+			   Everything else in this theme floats on the wallpaper, but that strip never
+			   joined the system — and because its bottom edge is dead straight, a panel's
+			   rounded corner sitting just below it reads as "a right-angled shadow pressed
+			   onto the corner". It is the one opaque band in the whole arrangement, so it
+			   goes transparent like the rest. Nothing about the drag region changes. */
+			"[data-windows-titlebar] body[data-glass-panels] [data-glass-frame]::before{background:transparent}",
 			/* The rim + divider overlay: `::after` is a positioned child, so it paints
 			   ABOVE the column's in-flow content. A divider drawn as the column's own
 			   inset shadow could not — the sidebar surface covered it, which is exactly
@@ -783,13 +927,21 @@ window.__ModuleLoader__.load({
 		   gradients carry the key light and its opposite, and two 1px fringes give
 		   the edge its dispersion. The band is a few px wide on purpose: a 1px ring
 		   reads as a border, not as glass. */
-		"body[data-glass-panels] [data-glass-panel]::after{content:\"\";position:absolute;inset:0;border-radius:inherit;pointer-events:none;" +
+		"body[data-glass-panels] [data-glass-panel]::after," +
+			"body[data-glass-panels] [data-glass-fullscreen]::after{content:\"\";position:absolute;inset:0;border-radius:inherit;pointer-events:none;" +
 			"background:" +
 			"linear-gradient(to bottom,var(--gm-rim-a) 0,var(--gm-rim-b) 18%,transparent 58%) top center/100% var(--gm-rim-band,10px) no-repeat," +
 			"linear-gradient(to top,var(--gm-rim-c) 0,transparent 62%) bottom center/100% calc(var(--gm-rim-band,10px) * .7) no-repeat," +
 			"linear-gradient(to right,var(--gm-rim-b) 0,transparent 62%) center left/var(--gm-rim-band,10px) 100% no-repeat," +
 			"linear-gradient(to left,var(--gm-rim-c) 0,transparent 62%) center right/calc(var(--gm-rim-band,10px) * .7) 100% no-repeat," +
-			"radial-gradient(90px 70px at 0% 0%,var(--gm-rim-catch,rgba(255,255,255,.12)) 0,transparent 68%)," +
+			/* The catch light used to be a FIXED 90x70 ellipse. Laid over a 12px corner its
+			   curvature matches nothing, so the corner drew a second arc of its own — which
+			   is the reported ghosting, and it was always the top-left one because this is
+			   the only corner that carries a catch light (the bottom-right carries a shade).
+			   With the panes set this transparent the rim is most of what a person sees, so
+			   it dominated. It now scales with the panel's own radius, so it reads as the
+			   corner catching light rather than as another contour. */
+			"radial-gradient(calc(var(--gm-radius,20px) * 2.6) calc(var(--gm-radius,20px) * 2.1) at 0% 0%,var(--gm-rim-catch,rgba(255,255,255,.12)) 0,transparent 68%)," +
 			"radial-gradient(120px 100px at 100% 100%,var(--gm-rim-shade,rgba(84,104,150,.07)) 0,transparent 66%);" +
 			"opacity:calc(var(--gm-sheen) * var(--gm-sheen-mood,1) * var(--gm-sheen-edge,1));" +
 			"box-shadow:inset 0 1px 0 var(--gm-rim-disp,var(--gm-rim-a)),inset 0 -1px 0 var(--gm-rim-warm,transparent)," +
@@ -1735,6 +1887,22 @@ window.__ModuleLoader__.load({
 			var panelBlurNote = { left: [], main: [], right: [] };
 			var reportPosts = 0;
 			var reportTimer = 0;
+			/**
+			 * One report is taken from an ordinary layout, before anything is expanded.
+			 * Every report before this was taken with the right panel presented full —
+			 * the single mode in which the columns are NOT laid out the way they normally
+			 * are — so a question about a corner in the normal layout had no evidence
+			 * behind it at all, and answering it would have meant guessing again.
+			 */
+			var initialReported = false;
+			/**
+			 * Whether the right panel was presented full on the previous pass. A mode
+			 * switch is the one moment a shadow can outlive the panel that cast it, and
+			 * neither existing trigger covers it: `initial` fires once per session and
+			 * `expanded` only ever fires while the mode is ON. So collapsing gets its own
+			 * snapshot, taken just after the switch settles.
+			 */
+			var wasExpanded = false;
 
 			/**
 			 * Put the blur where it demonstrably works for this panel. A column keeps the
@@ -1748,6 +1916,25 @@ window.__ModuleLoader__.load({
 			function aimBlur(key) {
 				var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : panelNodes[key];
 				if (host === null || host === undefined || typeof host.setAttribute !== "function") return;
+				/* ONLY ONE element of a panel may carry the frost, and the other candidate
+				   has to give its marker back. This is the whole bug behind "the expanded
+				   right panel has no blur":
+
+				   An element with a `backdrop-filter` becomes a BACKDROP ROOT, and a
+				   descendant's own `backdrop-filter` can then only sample what is painted
+				   INSIDE that ancestor. A panel delegates its material to a layer inside
+				   its column, so once the column keeps a frost of its own, the layer's
+				   frost samples an empty backdrop — nothing. The measured result was the
+				   reported symptom exactly: the column's own strip (447px, where the
+				   sidebar used to be) blurred, and the 1183px layer actually covering the
+				   frame blurred nothing at all.
+
+				   `aimBlur` only ever touched the current host, so the marker the column
+				   earned before the delegation was never taken off it. */
+				var other = host === panelNodes[key] ? panelSurfaces[key] : panelNodes[key];
+				if (other !== null && other !== undefined && other !== host && typeof other.removeAttribute === "function") {
+					other.removeAttribute("data-glass-blur-host");
+				}
 				// Measured in this browser: a negative-z pseudo reports a valid blur and
 				// samples nothing, on a delegated surface and on a column alike; the element
 				// itself blurs. So the element carries it, and the one cost of that - it
@@ -2903,6 +3090,56 @@ window.__ModuleLoader__.load({
 			}
 
 			/**
+			 * Every descendant of a panel that carries a corner radius of its own.
+			 *
+			 * A corner that reads as TWO arcs always means two radii, and the second one is
+			 * never the panel's — it belongs to something inside it, at an unknown depth,
+			 * which no amount of squinting at a screenshot will name. This names it.
+			 * @returns up to 24 entries, with the box so a wrong one can be ruled out.
+			 */
+			function cornerAudit() {
+				var out = [];
+				if (typeof doc.querySelectorAll !== "function") return out;
+				for (var i = 0; i < PANEL_KEYS.length; i++) {
+					var key = PANEL_KEYS[i];
+					var column = panelNodes[key];
+					if (column === null || column === undefined) continue;
+					var columnBox = null;
+					try { columnBox = column.getBoundingClientRect(); } catch (error) { continue; }
+					/* Only something big enough to reach a corner can draw a second one. The
+					   first run of this audit spent all 24 slots on the sidebar's buttons and
+					   session rows (28x28, 256x32) and never got to the other two panels at
+					   all — a useful lesson: an audit that cannot say "nothing here" is worse
+					   than none, because it looks like an answer. */
+					var floorArea = columnBox === null || columnBox === undefined ? 0 : columnBox.width * columnBox.height * 0.08;
+					var perPanel = 0;
+					var nodes = null;
+					try { nodes = column.querySelectorAll("*"); } catch (error) { continue; }
+					if (nodes === null || nodes === undefined) continue;
+					for (var n = 0; n < nodes.length && n < 500 && perPanel < 8; n++) {
+						var node = nodes[n];
+						var described = describeNode(node);
+						if (described === null) continue;
+						var radius = String(described.css === undefined ? "" : (described.css.radius ?? "0px"));
+						if (radius === "" || radius === "0px" || radius === "0") continue;
+						var box = described.box;
+						if (box === null || box === undefined) continue;
+						if (box[2] * box[3] < floorArea) continue;
+						out.push({
+							panel: key,
+							sel: described.sel,
+							box: box,
+							radius: radius,
+							bg: described.css.bg,
+							overflow: described.css.overflow
+						});
+						perPanel += 1;
+					}
+				}
+				return out;
+			}
+
+			/**
 			 * A short, bounded description of one element: what it is, what it says about
 			 * itself, where it is, and the CSS that decides what it paints and how it stacks.
 			 * @param node - the element.
@@ -2942,7 +3179,12 @@ window.__ModuleLoader__.load({
 							isolation: String(style.isolation ?? ""),
 							contain: String(style.contain ?? ""),
 							opacity: String(style.opacity ?? ""),
-							radius: String(style.borderRadius ?? "")
+							radius: String(style.borderRadius ?? ""),
+								/* A shadow and a visibility were both invisible to this report,
+								   which is why a shadow surviving a mode switch could only ever
+								   be guessed at. Both are read from now on. */
+								shadow: String(style.boxShadow ?? ""),
+								visibility: String(style.visibility ?? "")
 						};
 					}
 				}
@@ -2992,14 +3234,68 @@ window.__ModuleLoader__.load({
 					build: BUILD,
 					at: new Date().toISOString(),
 					viewport: [win.innerWidth, win.innerHeight],
+					// The gutter every card is supposed to agree on, so "the gaps do not
+					// match" can be read off the report instead of eyeballed.
+					gap: panels.gap,
 					expanded: rightbarExpanded(),
 					frame: describeNode(frame),
+					/* The title bar lives on a pseudo-element, which `describeNode` can
+					   never see. It carried an opaque fill for the whole life of this theme
+					   while every report said the frame was transparent — a blind spot that
+					   cost a full round trip. Read it explicitly. */
+					frameBefore: (function () {
+						if (frame === null || frame === undefined) return null;
+						if (win === undefined || win === null || typeof win.getComputedStyle !== "function") return null;
+						var style = null;
+						try { style = win.getComputedStyle(frame, "::before"); } catch (error) { return null; }
+						if (style === null || style === undefined) return null;
+						return {
+							content: String(style.content ?? ""),
+							height: String(style.height ?? ""),
+							bg: String(style.backgroundColor ?? "")
+						};
+					})(),
+					/* The rim is a pseudo-element too, and it is the only other thing drawing
+					   into the same corner as the glass. When the pane is nearly transparent
+					   the rim is most of what is left on screen, so "there are two arcs" can
+					   only be settled by reading it. */
+					fullscreenAfter: (function () {
+						var panel = fullscreenRightPanel();
+						if (panel === null || panel === undefined) return null;
+						if (win === undefined || win === null || typeof win.getComputedStyle !== "function") return null;
+						var style = null;
+						try { style = win.getComputedStyle(panel, "::after"); } catch (error) { return null; }
+						if (style === null || style === undefined) return null;
+						return {
+							content: String(style.content ?? ""),
+							radius: String(style.borderRadius ?? ""),
+							shadow: String(style.boxShadow ?? ""),
+							opacity: String(style.opacity ?? "")
+						};
+					})(),
 					frameChildren: [],
 					overlay: null,
 					overlayCandidate: null,
 					fullscreenCandidate: describeNode(fullscreenPanelNode()),
+					// What the app itself calls the fullscreen panel, beside the two
+					// geometry guesses above: when they disagree, the app wins.
+					fullscreenPanel: describeNode(fullscreenRightPanel()),
 					presentationLayer: describeNode(presentationLayerNode()),
 					presentationCandidates: presentationCandidates(),
+					// Which element inside a panel is drawing a SECOND corner.
+					cornerAudit: cornerAudit(),
+					/* Anything still wearing the fullscreen marker, whether or not this pass
+					   handed it the material. The marker drives a rim, so one left behind
+					   after the mode ends is a shadow that outlived its panel — which is
+					   exactly what "the old panel's shadow is still there" would look like. */
+					fullscreenMarked: (function () {
+						var list = null;
+						try { list = doc.querySelectorAll("[data-glass-fullscreen]"); } catch (error) { return []; }
+						var out = [];
+						if (list === null || list === undefined) return out;
+						for (var i = 0; i < list.length; i++) out.push(describeNode(list[i]));
+						return out;
+					})(),
 					biggest: [],
 					rightColumn: null,
 					panels: {}
@@ -3043,6 +3339,10 @@ window.__ModuleLoader__.load({
 				}
 				var column = panelNodes.right;
 				if (column !== null && column !== undefined) report.rightColumn = describeTree(column, 12);
+				// The centre column too: a question about ITS corners could not be answered
+				// from a report that only ever walked the right one.
+				var mainColumn = panelNodes.main;
+				if (mainColumn !== null && mainColumn !== undefined) report.mainColumn = describeTree(mainColumn, 12);
 				for (var k = 0; k < PANEL_KEYS.length; k++) {
 					var key = PANEL_KEYS[k];
 					var node = panelNodes[key];
@@ -3050,6 +3350,16 @@ window.__ModuleLoader__.load({
 						node: describeNode(node),
 						delegated: panelSurfaces[key] !== null && panelSurfaces[key] !== undefined,
 						surface: describeNode(panelSurfaces[key]),
+						// What the knobs were ASKED for, beside what the CSS resolved: an
+						// alpha of 0 in the fill is a person's own setting until this says
+						// otherwise, and the two must never be confused.
+						asked: {
+							opacity: panels[key] === undefined || panels[key] === null ? null : panels[key].opacity,
+							blur: panels[key] === undefined || panels[key] === null ? null : panels[key].blur
+						},
+						// Anything that would make the frost sample nothing.
+						backdropRoots: panelDiag[key],
+						blurNote: panelBlurNote[key],
 						fill: String(doc.body.style.getPropertyValue("--gm-panel-" + key + "-fill")),
 						blur: String(doc.body.style.getPropertyValue("--gm-panel-" + key + "-blur")),
 						blurHost: panelBlurHost[key],
@@ -3065,8 +3375,14 @@ window.__ModuleLoader__.load({
 			 * evidence somewhere the row can point at.
 			 * @param reason - what asked for it, recorded in the payload.
 			 */
-			function postDomReport(reason) {
-				if (reportPosts >= REPORT_MAX_POSTS) return;
+			function postDomReport(reason, force) {
+				/* The ordinary-layout snapshot is exempt from the cap on purpose. That cap
+				   exists so an expanded panel does not flood the receiver, but it also meant
+				   the one report worth most never arrived: the app restores the right panel
+				   expanded, so six `expanded` reports were spent within a second of loading
+				   and the snapshot of a NORMAL layout — the only evidence that can answer a
+				   question about a corner in a normal layout — was silently dropped. */
+				if (reportPosts >= REPORT_MAX_POSTS && force !== true) return;
 				reportPosts += 1;
 				var payload = domReport();
 				payload.reason = reason;
@@ -3096,43 +3412,50 @@ window.__ModuleLoader__.load({
 				if (disposed) return panelFound;
 				var frame = doc.querySelector('[class*="_frame"]');
 				if (frame !== null && frame !== undefined) frame.setAttribute("data-glass-frame", "");
-				// The overlay slot, when the app puts the presentation there. Guessing further
-				// than this was a mistake worth recording: a "deepest element that covers the
-				// frame" search picked the centre panel's own content root (1701x1500, the
-				// same box as the centre column), so the right panel's material landed on the
-				// centre panel — the blur someone sees through the expanded panel was the
-				// centre panel's own, and the layer actually presenting the panel still had
-				// none. Two lessons: a heuristic may not outrank what the app says about
-				// itself, and the pane that keeps showing through belongs to the centre.
-				var expandedMode = rightbarExpanded();
-				var presentation = expandedMode ? presentationLayerNode() : null;
-				var expandedPanel = expandedMode ? (presentation ?? overlayPanelNode()) : null;
+				/* Three attempts at finding the expanded right panel by geometry are recorded
+				   here as failures, because all three moved the material onto the wrong
+				   element: a "deepest element that covers the frame" search picked the
+				   centre panel's own content root (1701x1500 — the centre column's box), so
+				   the blur seen through the expanded panel was the centre's own; a
+				   "frame-spanning child of the overlay layer" search found nothing, because
+				   the app's overlay layer carries toasts, not this panel; and a
+				   "presentation band" rule found nothing either.
+				   The column is the column in every mode — the app keeps its grid track
+				   underneath a fullscreen panel — so nothing is reassigned here. What
+				   changes in that mode is only WHERE THE MATERIAL IS PAINTED, and that is
+				   decided in `discoverSurfaces()` from the app's own marker. */
 				// The mode that keeps being reported as broken gets measured once, on entry
 				// and again a moment later so a late layout is included.
 				if (rightbarExpanded() === true && deep === true && reportTimer === 0) {
 					reportTimer = setTimer(function () { reportTimer = 0; postDomReport("expanded"); }, 900);
 				}
+				// The ordinary layout, measured once per session while it is still ordinary.
+				if (deep === true && initialReported === false && rightbarExpanded() !== true) {
+					initialReported = true;
+					setTimer(function () { postDomReport("initial", true); }, 1500);
+				}
+				/* Just after collapsing. This is the snapshot the "the shadow of the old
+				   panel is still there" question needs: whatever survived the switch is
+				   still on screen here, and nothing else was looking at it. */
+				if (deep === true && wasExpanded === true && rightbarExpanded() !== true) {
+					setTimer(function () { postDomReport("collapse", true); }, 400);
+				}
+				wasExpanded = rightbarExpanded();
 				var rebuilt = false;
 				for (var i = 0; i < PANEL_KEYS.length; i++) {
 					var key = PANEL_KEYS[i];
-					var node = key === "right" && expandedPanel !== null ? expandedPanel : doc.querySelector(PANEL_SELECTOR[key]);
-					if (key === "right" && expandedPanel !== null && node === expandedPanel && typeof node.setAttribute === "function") {
-						// A panel that spans the viewport would be the fullscreen presentation, but
-						// nothing is guessed from geometry here: see the note in tagPanels.
-						node.setAttribute("data-glass-overlay-panel", "");
-						// The presentation layer is the panel in that mode: it takes no gutter of its own.
-						if (node === presentation) node.setAttribute("data-glass-presentation", "");
-					}
-					// Whoever held this panel before gives the hooks back: the column must not
-					// keep a pane at the old geometry while the overlay renders the panel.
+					var node = doc.querySelector(PANEL_SELECTOR[key]);
+					// Whoever held this panel before gives the hooks back: a stale host must
+					// not keep a pane painted where the panel no longer is.
 					var previous = panelNodes[key];
 					if (previous !== null && previous !== undefined && previous !== node) {
 						previous.removeAttribute("data-glass-panel");
 						previous.removeAttribute("data-glass-delegate");
-						previous.removeAttribute("data-glass-overlay-panel");
-						previous.removeAttribute("data-glass-presentation");
 						if (panelSurfaces[key] !== null && panelSurfaces[key] !== undefined) {
 							panelSurfaces[key].removeAttribute("data-glass-surface");
+							// The marker goes too, or the layer keeps a position this plugin
+							// was only holding for it while the mode was on.
+							panelSurfaces[key].removeAttribute("data-glass-fullscreen");
 							panelSurfaces[key] = null;
 						}
 					}
@@ -3150,7 +3473,10 @@ window.__ModuleLoader__.load({
 						if (node.getAttribute("data-glass-panel") !== undefined && node.getAttribute("data-glass-panel") !== null) node.removeAttribute("data-glass-panel");
 						if (node.getAttribute("data-glass-delegate") !== undefined && node.getAttribute("data-glass-delegate") !== null) node.removeAttribute("data-glass-delegate");
 						var stale = panelSurfaces[key];
-						if (stale !== null && stale !== undefined) stale.removeAttribute("data-glass-surface");
+						if (stale !== null && stale !== undefined) {
+							stale.removeAttribute("data-glass-surface");
+							stale.removeAttribute("data-glass-fullscreen");
+						}
 						panelSurfaces[key] = null;
 						continue;
 					}
@@ -3218,6 +3544,39 @@ window.__ModuleLoader__.load({
 				}
 			}
 
+		/**
+		 * The element that renders the right panel while it is presented full.
+		 *
+		 * Nothing here is measured against the frame or ranked by area: both of those
+		 * were tried and both picked the CENTRE panel (its content root shares the
+		 * centre column's box), which handed the right panel's material to the wrong
+		 * panel. The app names the layer itself, so the lookup is that name.
+		 *
+		 * Several session subtrees can be mounted at once ("only the foreground
+		 * subtree reports a frame track; other subtrees stay hidden"), so the visible
+		 * one is the largest box that is actually laid out — a hidden subtree collapses
+		 * to nothing and cannot win.
+		 * @returns the fullscreen panel element, or null when the mode is off.
+			 */
+			function fullscreenRightPanel() {
+				if (typeof doc.querySelectorAll !== "function") return null;
+				var list = null;
+				try { list = doc.querySelectorAll(RIGHT_PANEL_FULLSCREEN_SELECTOR); } catch (error) { return null; }
+				if (list === null || list === undefined) return null;
+				var best = null;
+				var bestArea = 0;
+				for (var i = 0; i < list.length; i++) {
+					var node = list[i];
+					if (node === undefined || node === null || typeof node.getBoundingClientRect !== "function") continue;
+					var box = null;
+					try { box = node.getBoundingClientRect(); } catch (error) { continue; }
+					if (box === null || box === undefined || !(box.width > 0) || !(box.height > 0)) continue;
+					var area = box.width * box.height;
+					if (area > bestArea) { bestArea = area; best = node; }
+				}
+				return best;
+			}
+
 			/**
 			 * Hand each panel's material to the element that actually paints it. Without
 			 * this the sidebar's own surface stays on top of the column, so that panel's
@@ -3231,6 +3590,57 @@ window.__ModuleLoader__.load({
 					if (column === null || column === undefined) {
 						if (sticky !== null && sticky !== undefined) sticky.removeAttribute("data-glass-surface");
 						panelSurfaces[key] = null;
+						continue;
+					}
+					/* A right panel presented full is a layer the app positions over the frame,
+					   not the column: the column keeps its own track underneath and the layer
+					   hangs left across the centre to cover it (see the note on
+					   RIGHT_PANEL_FULLSCREEN_SELECTOR). Material left on the column covers the
+					   strip the panel used to occupy and nothing else — the reported "the
+					   transparency and the blur stop at the sidebar's old position" — so here
+					   it moves onto the layer.
+
+					   The layer paints nothing of its own, which is why the ordinary probe
+					   never found it: a probe looks for an element that already paints, and
+					   this one is a transparent container whose children do the drawing. The
+					   fill is what turns it into a painter, and from that moment it
+					   re-validates like any other delegated surface. */
+					var full = key === "right" ? fullscreenRightPanel() : null;
+					if (key === "right" && (full === null || full === undefined)) {
+						/* The mode went off, so the layer hands everything back — the material,
+						   the marker, and the position this plugin was holding for it. This is
+						   done here rather than left to the re-validation below on purpose:
+						   the layer still covers the column once it has been given a fill, so
+						   it would look like a perfectly valid surface and keep the material
+						   in ordinary `push` mode too — where it would also lose the absolute
+						   position the app anchors it with, since that is what the marker
+						   protects. The column's own rules take over from here. */
+						if (sticky !== null && sticky !== undefined && sticky.getAttribute("data-glass-fullscreen") !== undefined) {
+							sticky.removeAttribute("data-glass-fullscreen");
+							sticky.removeAttribute("data-glass-surface");
+							column.removeAttribute("data-glass-delegate");
+							panelSurfaces[key] = null;
+							sticky = null;
+						}
+					}
+					if (full !== null && full !== undefined) {
+						if (sticky !== null && sticky !== undefined && sticky !== full) sticky.removeAttribute("data-glass-surface");
+						if (panelHollow[key] !== null) {
+							for (var hf = 0; hf < panelHollow[key].length; hf++) panelHollow[key][hf].removeAttribute("data-glass-hollow");
+						}
+						panelHollow[key] = null;
+						// Still measured, still reported: an ancestor forming a backdrop root
+						// would leave this frost with nothing to sample. It does not move the
+						// material back to the column, because the column is not where the
+						// panel is drawn — it is only where it used to be.
+						panelDiag[key] = backdropRoots(full);
+						panelSurfaces[key] = full;
+						if (full.getAttribute("data-glass-surface") !== key) full.setAttribute("data-glass-surface", key);
+						if (full.getAttribute("data-glass-fullscreen") === undefined || full.getAttribute("data-glass-fullscreen") === null) {
+							full.setAttribute("data-glass-fullscreen", "");
+						}
+						aimBlur(key);
+						column.setAttribute("data-glass-delegate", "on");
 						continue;
 					}
 					// Keep the surface we already handed the material to, but only while it
@@ -3338,12 +3748,34 @@ window.__ModuleLoader__.load({
 					// shows the truth even while it is following the palette.
 					panelAlphaCache[key] = effectiveAlpha(fill);
 					style.setProperty("--gm-panel-" + key + "-alpha", String(panelAlphaCache[key]));
+					/* A nearly clear pane has no glass for light to catch on, yet the rim —
+					   a `--gm-rim-band` wide gradient along each edge with `border-radius:
+					   inherit` — keeps drawing at full strength. At alpha 0 it is the ONLY
+					   thing left on screen, and because the band has its own rounded ends it
+					   reads as a second pane inside the first: the reported "two corners on
+					   the left". Edge light belongs to glass; it fades with the fill.
+					   Above 12% the glass is there to carry it, so nothing changes. */
+					/* Linear, and it reaches ZERO. An earlier version floored it at 0.15, which
+					   is not nothing: the rim's edge line is `inset 0 0 0 1px` — a 1px inset
+					   shadow whose inner radius is 12 - 1 = 11px against the glass's 12px, so
+					   two concentric arcs sit 1px apart. A hairline like that still reads at
+					   5% opacity on a pale pane, which is the "there is still an arc inside
+					   the corner" that survived. No glass, no edge light. */
+					var rimWeight = panelAlphaCache[key] >= 0.12 ? 1 : Math.max(0, panelAlphaCache[key] / 0.12);
+					style.setProperty("--gm-panel-" + key + "-rim", String(Math.round(rimWeight * 1000) / 1000));
 					// The rim's contact shadow carries the highlight knob's weight outside
 					// the panel, where a white hairline on a white surface cannot read.
 					var contact = Math.round((scheme === "dark" ? 0.44 : 0.22) * panel.sheen * (moodNow === "work" ? 1.15 : 0.9) * 1000) / 1000;
+					/* The spread used to be a flat -14px, and a negative spread SHRINKS the
+					   shadow's shape — the corner radius shrinks with it. With the panel at
+					   12px the effective radius was max(0, 12 - 14) = 0, so the shadow this
+					   comment wants OUTSIDE the panel was in fact a square block sitting
+					   INSIDE it. Through a pane this transparent that is not a soft halo, it
+					   is a hard right-angled shadow in the corner. The spread now follows
+					   the radius, so the shadow keeps the card's shape. */
 					style.setProperty(
 						"--gm-panel-" + key + "-shadow",
-						"0 10px 28px -14px rgba(" + (scheme === "dark" ? "0,0,0" : "84,94,124") + "," + contact + ")"
+						"0 10px 28px calc(var(--gm-radius, 20px) * -0.35) rgba(" + (scheme === "dark" ? "0,0,0" : "84,94,124") + "," + contact + ")"
 					);
 				}
 				var rim = panelRim(moodNow, scheme, spillSample);
@@ -3817,7 +4249,7 @@ window.__ModuleLoader__.load({
 					var expanded = rightbarExpanded();
 					var lines = [];
 					if (expanded !== true) return { expanded: false, lines: lines };
-					lines.push("已展开右栏：材质应挂在列上");
+					lines.push("已展开右栏：列只保留原轨道，材质应挂在全屏层上");
 					for (var i = 0; i < PANEL_KEYS.length; i++) {
 						var key = PANEL_KEYS[i];
 						var label = key === "left" ? "左侧栏" : (key === "main" ? "主面板" : "右侧栏");
@@ -3828,10 +4260,10 @@ window.__ModuleLoader__.load({
 						var hostBox = typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : null;
 						var width = function (box) { return box === null || box === undefined ? "?" : Math.round(box.width); };
 						var left = function (box) { return box === null || box === undefined ? "?" : Math.round(box.left); };
-						var where = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined
-							? (typeof host.tagName === "string" ? host.tagName.toLowerCase() : "?") + "." + String(host.getAttribute === undefined ? "" : (host.getAttribute("class") ?? ""))
-							: (host.getAttribute !== undefined && host.getAttribute("data-glass-overlay-panel") !== undefined
-								? "覆盖层"
+						var where = host.getAttribute !== undefined && host.getAttribute("data-glass-fullscreen") !== undefined
+							? "全屏层"
+							: (panelSurfaces[key] !== null && panelSurfaces[key] !== undefined
+								? (typeof host.tagName === "string" ? host.tagName.toLowerCase() : "?") + "." + String(host.getAttribute === undefined ? "" : (host.getAttribute("class") ?? ""))
 								: "列自身");
 						var fill = doc.body.style.getPropertyValue("--gm-panel-" + key + "-fill");
 						var asked = doc.body.style.getPropertyValue("--gm-panel-" + key + "-blur");
@@ -3868,7 +4300,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 
-		//#region settings row
+			//#region settings row
 		/**
 		 * A slider with a numeric readout. Every knob prints its value, because "drag
 		 * until it looks right" is not a setting — especially for values like opacity

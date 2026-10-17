@@ -1158,13 +1158,23 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.clock.advance(200)
   assert.equal(m.engine.blurReport().left.delegated, true, 'and a column that fits its surface again delegates once more')
 
-  // The seam: an expanded right panel is meant to sit flush against the main panel,
-  // and the main panel's own gutter margin is what left a visible strip between them.
+  // The seam: the pane that used to show through is the centre panel's, and hiding it
+  // is what closes the gap. The right column must NOT lose its own gutter though — an
+  // earlier version cleared its margins and the expanded panel ended up flush against
+  // the title bar while still holding off the bottom (top gap gone, bottom gap left).
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   assert.match(
     css,
-    /\[data-rightbar-fullscreen\] \[data-glass-panel=right\]\{margin:0/,
-    'an expanded right panel drops its own gutter'
+    /\[data-rightbar-fullscreen\] \[data-glass-panel=right\]\{overflow:visible;box-shadow:none\}/,
+    'an expanded right panel keeps its gutter and only gives up its own card'
+  )
+  // The column's radius must NOT change between the two modes. Every panel carries
+  // `transition: border-radius 220ms`, so setting it to 0 in the expanded mode made
+  // collapsing animate from square back to 12px — and the material returns to the column
+  // at that same moment, so the switch played as "square first, then it rounds off".
+  assert.ok(
+    !/\[data-rightbar-fullscreen\] \[data-glass-panel=right\]\{[^}]*border-radius/.test(css),
+    'and its border-radius never changes, so collapsing has nothing to animate'
   )
   assert.match(
     css,
@@ -1307,125 +1317,296 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 
 //#region presentation
 {
-  // The presentation layer's two rules, which the previous attempt got wrong by using
-  // geometry alone: it must cover the frame AND must not belong to another panel. On the
-  // live page the centre panel's own content root is 1701x1500 — the centre column's box
-  // — so a geometry-only search picked it and put the right panel's material on the
-  // centre panel.
+  // The real contract, read out of the app's own bundle instead of guessed from
+  // geometry. `ui-sidebar-right` renders the panel as
+  //   <div class="..._panel" data-sidebar-right-panel={fullscreen ? "fullscreen" : "push"}
+  //        style={{ width: fullscreen ? "100vw" : width }}>
+  // and its stylesheet pins it `position:absolute; top:0; bottom:0; right:0` inside the
+  // right column (`.rightbarCol{min-width:0;position:relative;overflow:visible}`).
+  // So a fullscreen right panel is NOT the column: the column keeps its own grid track
+  // underneath ("fullscreen covers the viewport while retaining the wide-screen columns
+  // underneath", the same package's README) and the panel hangs left across the centre.
+  //
+  // Three geometry guesses were tried here first and all three were wrong — a
+  // "deepest frame-covering element" picked the centre panel's content root, a
+  // "frame-spanning child of the overlay layer" found nothing, and a "presentation
+  // band" rule found nothing. The lookup is now the app's own marker.
   const m = mount()
   m.shell.frame.box = { width: 2560, height: 1552, left: 0, top: 0 }
   m.shell.center.box = { width: 1701, height: 1500, left: 283, top: 46 }
   m.shell.right.box = { width: 576, height: 1506, left: 1984, top: 40 }
 
-  // The decoy: big, painted, and inside the centre panel.
+  // Decoys, one per rule that failed: the centre panel's own content root (same box as
+  // the centre column), a frame-covering whole-app wrapper, and the shell's overlay
+  // slot, which carries toasts and notices rather than this panel.
   const decoy = m.document.createElement('div')
   decoy.setAttribute('class', 'Dc7zOa_root')
   decoy.computed = { backgroundColor: 'rgba(243, 235, 231, 0.1)', position: 'relative', backgroundImage: 'none' }
   decoy.box = { width: 1701, height: 1500, left: 283, top: 46 }
   m.shell.center.appendChild(decoy)
 
-  m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
-  m.engine.retag(true)
-  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, 'a layer inside a panel is never the presentation')
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'so the right panel keeps its own column')
-
-  // A whole-app wrapper covers the frame too, but a presentation panel is kept to the
-  // right of the expanded sidebar — so a wrapper starting at 0 is not it.
   const wrapper = m.document.createElement('div')
   wrapper.setAttribute('class', 'AppRoot_wrapper')
   wrapper.computed = { backgroundColor: 'rgba(253, 252, 250, 0.5)', position: 'relative', backgroundImage: 'none' }
   wrapper.box = { width: 2560, height: 1552, left: 0, top: 0 }
   m.document.body.appendChild(wrapper)
-  m.engine.retag(true)
-  assert.equal(wrapper.getAttribute('data-glass-panel'), undefined, 'a whole-app wrapper is not the presentation layer')
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'so the right panel still keeps its column')
 
-  // A real presentation layer: frame-covering, outside every panel, and starting where
-  // the centre does — which is how the app documents a fullscreen panel.
-  const layer = m.document.createElement('section')
-  layer.setAttribute('class', 'RightPanel_presentation')
-  layer.computed = { backgroundColor: 'rgba(252, 250, 248, 0.9)', position: 'fixed', backgroundImage: 'none' }
-  layer.box = { width: 2277, height: 1552, left: 283, top: 0 }
-  m.document.body.appendChild(layer)
-  m.engine.retag(true)
-  assert.equal(layer.getAttribute('data-glass-panel'), 'right', 'a frame-covering layer outside the panels becomes the host')
-  assert.equal(layer.getAttribute('data-glass-presentation'), '', 'and is marked as the presentation')
-  assert.equal(layer.getAttribute('data-glass-blur-host'), 'element', 'taking the blur on itself')
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), undefined, 'while the column hands its hooks back')
+  const overlay = m.document.createElement('div')
+  overlay.setAttribute('data-shell-overlay', '')
+  const toast = m.document.createElement('div')
+  toast.setAttribute('class', 'Toast_root')
+  toast.computed = { backgroundColor: 'rgba(255, 255, 255, 0.9)' }
+  toast.box = { width: 2400, height: 1400, left: 80, top: 60 }
+  overlay.appendChild(toast)
+  m.shell.frame.appendChild(overlay)
 
+  // What the app actually renders: the fullscreen layer, inside the right column,
+  // running from the sidebar's edge to the frame's right edge. It paints nothing of
+  // its own — its children do the drawing — which is exactly why a probe that looks
+  // for an element that already paints could never find it.
+  const layer = m.document.createElement('div')
+  layer.setAttribute('class', 'SidebarRight_panel_ab12c')
+  layer.setAttribute('data-sidebar-right-panel', 'fullscreen')
+  layer.computed = { backgroundColor: 'rgba(0, 0, 0, 0)', position: 'absolute', backgroundImage: 'none' }
+  layer.box = { width: 2280, height: 1552, left: 280, top: 0 }
+  m.shell.right.appendChild(layer)
+
+  // A second session subtree stays mounted but hidden ("other subtrees stay hidden
+  // without deleting tab state"), and it carries the same marker. It collapses to 0x0,
+  // so it must never win the material.
+  const hidden = m.document.createElement('div')
+  hidden.setAttribute('class', 'SidebarRight_panel_ab12c')
+  hidden.setAttribute('data-sidebar-right-panel', 'fullscreen')
+  hidden.computed = { backgroundColor: 'rgba(0, 0, 0, 0)', position: 'absolute', backgroundImage: 'none' }
+  hidden.box = { width: 0, height: 0, left: 0, top: 0 }
+  m.shell.right.appendChild(hidden)
+
+  m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
+  m.engine.retag(true)
+
+  assert.equal(hidden.getAttribute('data-glass-surface'), undefined, 'a hidden session subtree is never handed the material')
+
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'the column stays the right panel in every mode')
+  assert.equal(layer.getAttribute('data-glass-surface'), 'right', "the app's own fullscreen layer takes the material")
+  assert.equal(layer.getAttribute('data-glass-fullscreen'), '', 'and is marked as the fullscreen host')
+  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), 'on', 'so the column steps aside instead of painting at the old geometry')
+  assert.equal(m.engine.blurReport().right.delegated, true, 'the row reports the delegation')
+  assert.equal(m.engine.blurReport().right.blurHost, 'element', 'with the blur on the layer that spans the mode')
+
+  /* The frost must live on ONE element of a panel, and this is the bug that was
+     actually reported. An element with a `backdrop-filter` becomes a BACKDROP ROOT:
+     a descendant's own frost can then only sample what is painted INSIDE that
+     ancestor. The layer is inside the column, and the column paints nothing once it
+     delegates — so a column that kept its own frost left the layer sampling an empty
+     backdrop. Measured on the live page: the column's 447px strip blurred, the 1183px
+     layer covering the frame blurred nothing.
+     `aimBlur` only ever touched the current host, so the marker the column had earned
+     before the delegation was never taken off it. */
+  assert.equal(
+    m.shell.right.getAttribute('data-glass-blur-host'),
+    undefined,
+    'the column gives up its own frost once the material moves to a layer inside it'
+  )
+  assert.equal(layer.getAttribute('data-glass-blur-host'), 'element', 'and only the layer carries it')
+
+  for (const [name, node] of [['a whole-app wrapper', wrapper], ['the shell overlay slot', toast]]) {
+    assert.equal(node.getAttribute('data-glass-panel'), undefined, `${name} is never handed a panel`)
+    assert.equal(node.getAttribute('data-glass-surface'), undefined, `${name} is never handed any material`)
+  }
+  // The centre panel's element legitimately carries the CENTRE panel's material — it is
+  // that panel's own surface. What it must never be given is the right panel's.
+  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, 'the centre panel element is never handed the right panel')
+  assert.equal(decoy.getAttribute('data-glass-surface'), 'main', 'and keeps only its own panel material')
+
+  // The material now spans the panel, not the track it used to sit in.
+  const layout = m.engine.layoutReport()
+  assert.equal(layout.expanded, true, 'the layout report knows the mode is on')
+  assert.ok(
+    layout.lines.some((line) => /右侧栏：列 x=\d+ 宽 576/.test(line)),
+    `and still gives the column's geometry (${JSON.stringify(layout.lines)})`
+  )
+  assert.ok(
+    layout.lines.some((line) => /右侧栏：.*材质在 全屏层 x=\d+ 宽 2280/.test(line)),
+    `with the material measured on the fullscreen layer, not on the 576px track (${JSON.stringify(layout.lines)})`
+  )
+
+  // The layer keeps the position the app anchors it with: the generic surface rule
+  // answers `position:relative`, which would drop it back into the column's flow and
+  // undo the presentation itself.
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
-  assert.match(css, /\[data-glass-presentation\]\{margin:0;border-radius:0;overflow:visible\}/, 'and it carries no gutter of its own')
+  assert.match(
+    css,
+    /\[data-glass-surface\]\[data-glass-fullscreen\]\{position:absolute\}/,
+    'a fullscreen host keeps the absolute position the app gave it'
+  )
 
-  // Collapsing releases it again.
+  // The seam that survived into the expanded mode: the column's rim and divider are a
+  // positioned `::after` — the last child, so it paints ABOVE the layer the app
+  // presents — and the column is still only 447px wide. Left alone it drew its left
+  // edge as a bright vertical line down the middle of the expanded panel, which is
+  // exactly "the old gap between the centre panel and the right panel is still there".
+  assert.match(
+    css,
+    /\[data-glass-panel=right\]::after\{content:none\}/,
+    "the column stops drawing its rim and divider, which is the seam that survived"
+  )
+  // The hidden centre panel stops drawing its rim too, not just its fill: `visibility`
+  // alone was trusted to take a positioned child carrying a shadow and a corner
+  // gradient with it, and "the old centre panel's shadow is still there" is what it
+  // looks like when it does not.
+  assert.match(
+    css,
+    /\[data-glass-panel=main\]::after\{content:none\}/,
+    'and the hidden centre panel stops drawing its rim, not merely its fill'
+  )
+  assert.match(
+    css,
+    /\[data-glass-panel=right\]\{overflow:visible;box-shadow:none\}/,
+    'and drops its own card, contact shadow included, while keeping its gutter'
+  )
+
+  // The contour moves with the material, and it must read as ONE card. The column keeps
+  // its gutter in that mode on purpose: the layer is positioned `top:0; right:0;
+  // bottom:0` against the column's box, so the column's margins are what hold the
+  // expanded panel to the same rhythm as every other card — top and right from the
+  // column, bottom from the frame's padding. Clearing them all (what this rule used to
+  // do) left the top flush against the title bar while the bottom kept its gap.
+  assert.ok(
+    !/\[data-glass-panel=right\]\{margin/.test(css),
+    'the column keeps its gutter untouched, so the panel keeps its rhythm in both modes'
+  )
+  assert.match(
+    css,
+    /\[data-glass-surface\]\[data-glass-fullscreen\]\{border-radius:var\(--gm-radius\);overflow:hidden\}/,
+    'and the layer rounds ALL FOUR corners and CLIPS, so the pane inside cannot show a second arc'
+  )
+  assert.match(
+    css,
+    /\[data-windows-titlebar\] body\[data-glass-panels\] \[data-glass-surface\]\[data-glass-fullscreen\]\{max-width:calc\(100vw - var\(--dsh-windows-sidebar-width\) - var\(--gm-gap\) - var\(--gm-gap\) \/ 2\)\}/,
+    "with the left gutter the column's margins cannot reach, since the app sets the width"
+  )
+  assert.match(
+    css,
+    /\[data-glass-fullscreen\]\{--gm-sheen:calc\(var\(--gm-panel-right-sheen\) \* var\(--gm-panel-right-rim,1\)\)\}/,
+    'with the right panel\'s own sheen — scaled by how much glass there is to catch it on'
+  )
+
+  /* Edge light belongs to glass. The rim is a `--gm-rim-band` wide gradient along each
+     edge with `border-radius: inherit`, so on a pane set to alpha 0 it is the ONLY thing
+     still drawing — and its rounded ends read as a second pane inside the first, which is
+     the reported "two corners on the left". It now fades with the fill. Anyone who sets a
+     normal tint keeps the sheen exactly as before (the weight is 1 from 12% up). */
+  assert.match(
+    css,
+    /opacity:calc\(var\(--gm-sheen\) \* var\(--gm-sheen-mood,1\) \* var\(--gm-sheen-edge,1\)\)/,
+    'the rim still takes its opacity from the sheen'
+  )
+
+  // The ghosting on that corner. The app gives the pane inside a fullscreen panel its
+  // own top-left radius (16px on Windows) against this theme's 12px, so the corner drew
+  // two arcs of different radii — and clipping cannot reach it, because the pane sits
+  // INSIDE the panel. The pane follows the glass instead of the reverse, so the radius
+  // knob stays in charge.
+  /* ... and it has to actually WIN. The app's own rule for this pane is
+       [data-windows-titlebar] .OUqwTW_panel[data-sidebar-right-panel=fullscreen]
+         [data-dockkit-column="0"][data-dockkit-pane]                 → (0,5,0)
+     The first attempt wrote the same rule without that prefix, which is only (0,4,1),
+     so it lost while a test that merely checked the text was present stayed green.
+     Specificity is part of this rule, not a detail of it. */
+  assert.match(
+    css,
+    /\[data-windows-titlebar\] body\[data-glass-panels\] \[data-glass-fullscreen\] \[data-dockkit-column="0"\]\[data-dockkit-pane\]\{border-radius:0\}/,
+    "the pane inside owns NO radius — only the glass draws a contour, and this outranks the app's (0,5,0)"
+  )
+  assert.ok(
+    !/(^|\})\s*body\[data-glass-panels\] \[data-glass-fullscreen\] \[data-dockkit-column="0"\]/.test(css),
+    'and no weaker (0,4,1) twin of it is left behind to quietly lose'
+  )
+  // One surface, not two: the pane paints a pale layer of its own, and since only one of
+  // the two stacked rects is transparent it is the pane's edge a person sees — the last
+  // sliver of the ghosting, and a white wash the opacity knob could not reach.
+  assert.match(
+    css,
+    /\[data-windows-titlebar\] body\[data-glass-panels\] \[data-glass-fullscreen\] \[data-dockkit-pane\]\{background-color:transparent\}/,
+    "the pane stops painting a second surface under the glass"
+  )
+
+  /* The title bar is a pseudo-element with an opaque fill spanning the whole window.
+     It never joined the glass system, so it stayed a solid band above every panel —
+     and its bottom edge being dead straight is what makes a panel's rounded corner just
+     below it read as a right-angled shadow pressed onto the corner. `describeNode` can
+     never see a pseudo-element, which is why no report ever caught it. */
+  assert.match(
+    css,
+    /\[data-windows-titlebar\] body\[data-glass-panels\] \[data-glass-frame\]::before\{background:transparent\}/,
+    'the title bar stops painting an opaque band above every panel'
+  )
+
+  // The ghosting itself. The rim's catch light was a FIXED 90x70 ellipse; laid over a
+  // 12px corner its curvature matches nothing, so the corner drew a second arc — always
+  // the top-left, because that is the only corner carrying a catch light. With the panes
+  // this transparent the rim is most of what a person sees. It now follows the radius.
+  assert.match(
+    css,
+    /radial-gradient\(calc\(var\(--gm-radius,20px\) \* 2\.6\) calc\(var\(--gm-radius,20px\) \* 2\.1\) at 0% 0%/,
+    'the catch light scales with the panel radius instead of being a fixed ellipse'
+  )
+
+  // Collapsing hands everything back: the material, the marker, and the position.
+  layer.setAttribute('data-sidebar-right-panel', 'push')
   m.shell.frame.removeAttribute('data-rightbar-fullscreen')
   m.engine.retag(true)
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'collapsing returns the panel to its column')
-  assert.equal(layer.getAttribute('data-glass-presentation'), undefined, 'and the presentation layer is released')
+  assert.equal(layer.getAttribute('data-glass-surface'), undefined, 'collapsing takes the material off the layer')
+  assert.equal(layer.getAttribute('data-glass-fullscreen'), undefined, 'and the marker, so its position goes back to the app')
+  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, 'with the column painting for itself again')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'and keeping the panel')
   m.dispose()
-  console.log('ok  the presentation host must cover the frame and live outside the panels')
+  console.log('ok  a fullscreen right panel is hosted by the layer the app itself renders')
 }
 //#endregion
 
 //#region overlay
 {
-  // The real shape of the reported bug, which the app's own code explains: an expanded
-  // right panel is NOT the wider column. The frame's grid is untouched for that mode
-  // (`rightbarFullscreen` only suppresses transitions and hides the drag handle), and
-  // the panel is presented over the frame in the shell's overlay layer. So the plugin
-  // used to keep the material on the column — the panel's old position — while the
-  // overlay rendered the panel with no material at all, letting the transparent main
-  // panel show through it.
+  // The reported bug, in the shape the app's own code gives it. The frame's grid keeps
+  // the right column at its normal track in that mode (`data-rightbar-fullscreen`
+  // suppresses a transition and hides the drag handle, nothing more), so the column is
+  // only the panel's OLD position: 576px of a 2280px panel. Painting the material there
+  // is why the transparency and the blur appeared to stop at the sidebar's old edge
+  // while the rest of the expanded panel showed the app's own paint.
+  //
+  // Nothing in the shell's overlay slot is the panel — that slot holds toasts — so a
+  // frame-spanning child of it must never be handed the material, however large it is.
   const m = mount()
   const layer = m.document.createElement('div')
   layer.setAttribute('data-shell-overlay', '')
   const panel = m.document.createElement('div')
   panel.setAttribute('class', 'PlanFull_root')
   panel.computed = { backgroundColor: 'rgba(255, 255, 255, 0.6)' }
-  panel.box = { width: 1000, height: 780, left: 0, top: 0 }
+  panel.box = { width: 2000, height: 1200, left: 0, top: 0 }
   layer.appendChild(panel)
   m.shell.frame.appendChild(layer)
 
-  // Not expanded yet: the right panel is its column.
-  m.engine.retag(true)
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'the column is the right panel normally')
-  assert.equal(panel.getAttribute('data-glass-panel'), undefined, 'and the overlay is left alone')
-
-  // Expanded: the panel moves to the overlay, and the column gives its hooks back, so
-  // no pane is left behind at the old geometry.
   m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
   m.engine.retag(true)
-  assert.equal(panel.getAttribute('data-glass-panel'), 'right', 'an expanded panel is the overlay, not the column')
-  assert.equal(panel.getAttribute('data-glass-overlay-panel'), '', 'and is marked as living there')
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), undefined, 'while the column gives its hooks back')
-  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, 'including any delegation it held')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'an expanded right panel is still its column')
+  assert.equal(panel.getAttribute('data-glass-panel'), undefined, "a frame-spanning child of the overlay slot is not the panel")
+  assert.equal(panel.getAttribute('data-glass-surface'), undefined, 'and is never handed its material')
   assert.equal(m.engine.panelStatus().found.right, true, 'and the panel is still reported as found')
-  assert.match(
-    m.engine.layoutReport().lines.join(' '),
-    /右侧栏：.*覆盖层/,
-    'with the row saying where the panel is rendered'
-  )
-  // The material follows the panel: the overlay panel paints, so it hosts the pane.
-  const css = m.document.getElementById('dsh-glass-mood-style').textContent
-  assert.match(css, /\[data-glass-panel=right\]\{--gm-panel-blur:var\(--gm-panel-right-blur\)/, 'and it takes the right panel material')
-
-  // Collapsed again: everything goes back to the column, and the overlay is released.
-  m.shell.frame.removeAttribute('data-rightbar-fullscreen')
-  m.engine.retag(true)
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'collapsing returns the panel to its column')
-  assert.equal(panel.getAttribute('data-glass-panel'), undefined, 'and the overlay host is released')
-  assert.equal(panel.getAttribute('data-glass-overlay-panel'), undefined, 'marker included')
   m.dispose()
-  console.log('ok  an expanded right panel is hosted by the overlay it is rendered in')
+  console.log('ok  the overlay slot is never mistaken for the expanded right panel')
 }
 //#endregion
-
 //#region expanded
 {
-  // Reported again after the first fix: with the right panel expanded, the extra width
-  // stayed bare while the panel's own content kept a narrower box. The app caps that
-  // column at 70% of the viewport and squeezes the centre to 400px, so the content can
-  // be much narrower than the column it now sits in — which means the material belongs
-  // on the column itself in that mode, whatever the probe found before it.
+  // The fallback, with no layer from the app to host the material: a wrapper that
+  // stopped covering the column must be released and the material must land on the
+  // column rather than stay on a pane that no longer spans anything.
+  //
+  // Note what this is NOT: the real fullscreen case. There the app renders its own
+  // layer (`data-sidebar-right-panel="fullscreen"`) and the material goes to that —
+  // locked in the `presentation` region above. This region only covers the shape the
+  // plugin falls back to when no such layer is found, so nothing is left floating on a
+  // stale surface.
   const m = mount()
   // Give the right panel a painting wrapper, so it starts delegated like the sidebar.
   m.shell.rightWrapper.computed = { backgroundColor: 'rgba(255, 255, 255, 0.5)' }
@@ -1492,7 +1673,27 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   const m = mount()
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   assert.ok(!/isolation:isolate/.test(css), 'no frost host isolates — that would kill backdrop-filter')
-  assert.match(css, /\[data-glass-surface\]\{position:relative;z-index:0\}/, 'the delegated surface forms a stacking context the other way')
+  assert.match(css, /\[data-glass-surface\]\{position:relative;z-index:0;/, 'the delegated surface forms a stacking context the other way')
+  /* The contour belongs on the surface too. A delegated panel paints nothing of its own,
+     so a radius on the column draws nothing — and the inner surface, which is the element
+     that DOES paint, had radius 0 while sitting inside the column at exactly its size, so
+     the column had nothing to clip. The panel measured `border-radius: 12px` and showed
+     square corners: the radius was being asked of the element that paints nothing. */
+  assert.match(
+    css,
+    /\[data-glass-surface\]\{position:relative;z-index:0;border-radius:var\(--gm-radius\);overflow:hidden\}/,
+    'and carries the radius and the clip, because it is the element that actually paints'
+  )
+  /* EXCEPT the sidebar's. The app sizes that surface from the track (measured: 269px
+     inside a 260px column, because this theme insets the column with a gutter), so its
+     corner sits 9px outside the column and `overflow:hidden` cuts it to a short remnant.
+     Both measured 12px, yet the sidebar's corner read smaller than the centre's. A
+     surface that OVERLAYS its column must not round; one that matches it exactly may. */
+  assert.match(
+    css,
+    /\[data-glass-surface=left\]\{[^}]*border-radius:0\}/,
+    'the sidebar surface paints but does not round — its own corner would be clipped to a remnant'
+  )
   assert.match(css, /\[data-glass-panel\]\{position:relative;z-index:0;/, 'and so does a column that paints itself')
   // Both arrangements are declared: the element-hosted one (measured to be the one
   // this browser honours) and the pseudo fallback, which stays for panels that hold a
@@ -1872,11 +2073,40 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.engine.setPanels({ left: { opacity: 1 } })
   assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 1, 'so fully opaque really is opaque')
   assert.equal(bodyVar(m, '--gm-panel-left-alpha'), '1', 'and the readout prints the effective alpha')
+
+  /* Edge light belongs to glass: a nearly clear pane has none for it to catch on, and the
+     rim — a 10px gradient along each edge with rounded ends — would otherwise be the only
+     thing still drawing, reading as a second pane inside the first. */
+  m.engine.setPanels({ left: { opacity: 0 } })
+  // ZERO, not "nearly zero". The rim's edge is a 1px inset shadow whose inner radius is
+  // 12 - 1 = 11px against the glass's 12px — two concentric arcs 1px apart — and a
+  // hairline like that is still visible at 5% on a pale pane.
+  assert.equal(
+    bodyVar(m, '--gm-panel-left-rim'),
+    '0',
+    'a fully clear pane drops its rim entirely: no glass, no edge light'
+  )
+  m.engine.setPanels({ left: { opacity: 0.5 } })
+  assert.equal(bodyVar(m, '--gm-panel-left-rim'), '1', 'while a normal tint keeps it exactly as it was')
+  m.engine.setPanels({ left: { opacity: 1 } })
   m.engine.setPanels({ left: { opacity: 0 } })
   assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0, 'while 0 really is fully clear')
 
-  // The highlight also carries a contact shadow, which a white-on-white rim cannot.
-  assert.match(bodyVar(m, '--gm-panel-main-shadow'), /^0 10px 28px -14px rgba\(84,94,124,0\.0[0-9]+\)$/, 'the highlight publishes a contact shadow')
+  /* The highlight also carries a contact shadow, which a white-on-white rim cannot.
+     Its SPREAD has to follow the radius, not sit at a flat -14px: a negative spread
+     shrinks the shadow's shape and the corner shrinks with it, so at the panel's 12px
+     the effective radius was max(0, 12 - 14) = 0 — a square block sitting INSIDE the
+     panel, which through a pane this transparent reads as a hard right-angled shadow
+     in the corner rather than a halo beneath the card. */
+  assert.match(
+    bodyVar(m, '--gm-panel-main-shadow'),
+    /^0 10px 28px calc\(var\(--gm-radius, 20px\) \* -0\.35\) rgba\(84,94,124,0\.0[0-9]+\)$/,
+    'the highlight publishes a contact shadow whose spread follows the radius'
+  )
+  assert.ok(
+    !/-14px/.test(bodyVar(m, '--gm-panel-main-shadow')),
+    'and no flat spread is left that could flatten the corner away'
+  )
   const dimShadow = Number(/rgba\([^)]*,([0-9.]+)\)$/.exec(bodyVar(m, '--gm-panel-main-shadow'))[1])
   m.engine.setPanels({ main: { sheen: 1 } })
   const fullShadow = Number(/rgba\([^)]*,([0-9.]+)\)$/.exec(bodyVar(m, '--gm-panel-main-shadow'))[1])
