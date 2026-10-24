@@ -207,6 +207,12 @@ function loadBundle(document, storage, requireImpl) {
   const captured = []
   /** Every observer the engine creates, so a test can drive a column resize. */
   const observers = []
+  /**
+   * How many computed-style reads the engine has paid for. A probe is one read
+   * per descendant, so this is the number that says whether a cheap timer is
+   * quietly doing measured work.
+   */
+  let styleReads = 0
   const window = {
     __ModuleLoader__: { load: (entry) => captured.push(entry) },
     /** A desktop viewport, which the page-versus-popover size gate measures against. */
@@ -216,13 +222,16 @@ function loadBundle(document, storage, requireImpl) {
     clearTimeout: (handle) => globalThis.clearTimeout(handle),
     setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
     clearInterval: (handle) => globalThis.clearInterval(handle),
-    getComputedStyle: (el) => ({
-      backgroundColor: 'rgba(0, 0, 0, 0)',
-      backgroundImage: 'none',
-      backdropFilter: 'none',
-      getPropertyValue: () => '',
-      ...el.computed
-    }),
+    getComputedStyle: (el) => {
+      styleReads += 1
+      return {
+        backgroundColor: 'rgba(0, 0, 0, 0)',
+        backgroundImage: 'none',
+        backdropFilter: 'none',
+        getPropertyValue: () => '',
+        ...el.computed
+      }
+    },
     /**
      * A resize observer the shell drives by hand. A column that changes size has to
      * be re-tagged in the same frame, not on the next 2.5s pass — that delay is what
@@ -241,6 +250,8 @@ function loadBundle(document, storage, requireImpl) {
     }
   }
   window.observers = observers
+  /** @returns how many computed-style reads the engine has paid for so far. */
+  window.__styleReads = () => styleReads
   const factory = new Function('window', 'document', 'localStorage', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', source)
   factory(window, document, storage, window.setTimeout, window.clearTimeout, window.setInterval, window.clearInterval)
   assert.equal(captured.length, 1, 'the bundle registers exactly one loader entry')
@@ -898,11 +909,13 @@ const alphaOf = (color) => {
   assert.equal(clipOf(m, 'idle'), 'both', 'a file without IndexedDB still shows')
   assert.equal(videoEl(m, 'idle').getAttribute('src'), m.objectUrls.created[0].value, 'it plays from the object URL')
   assert.equal(m.engine.getWallpaper().clips.idle.source, 'file', 'the choice is kept rather than cleared')
+  assert.match(m.engine.getWallpaper().notice, /仅在本次会话生效/, 'and the row is told it will not survive')
   m.dispose()
 
   const reopened = mount({ storage: m.storage, idb: false })
   await settle()
   assert.equal(reopened.engine.getWallpaper().clips.idle.source, 'file', 'and it survives a reload in memory terms')
+  assert.match(reopened.engine.getWallpaper().notice, /无法恢复/, 'with the reason said out loud, not swallowed')
   reopened.dispose()
   console.log('ok  wallpaper without IndexedDB')
 }
@@ -1312,6 +1325,28 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(m.engine.panelStatus().found.main, true, 'collapsing brings the centre panel back')
   m.dispose()
   console.log('ok  an expanded right panel keeps its own material, and the centre panel stops showing through')
+}
+
+{
+  // The diagnostic report is off unless a person asks for it. It used to fire on
+  // its own — once per session for the ordinary layout, every 2.5s while the
+  // right panel was expanded, once per collapse — posting to a local port and
+  // storing a DOM snapshot nobody had requested.
+  const m = mount()
+  m.engine.retag(true)
+  m.clock.advance(2000)
+  assert.equal(m.storage.getItem('dsh-glass-mood:last-report'), null, 'no report is taken while the switch is off')
+  assert.equal(m.engine.setReports(true), true, 'the switch turns the automatic reports on')
+  m.engine.retag(true)
+  m.clock.advance(2000)
+  assert.ok(m.storage.getItem('dsh-glass-mood:last-report') !== null, 'and then the ordinary layout is measured')
+  // The manual entry point works either way: that is the difference the switch marks.
+  m.engine.setReports(false)
+  m.engine.postReport()
+  const manual = JSON.parse(m.storage.getItem('dsh-glass-mood:last-report'))
+  assert.equal(manual.reason, 'manual', 'postReport sends one on request, with the switch off')
+  m.dispose()
+  console.log('ok  the diagnostic report is off unless asked for')
 }
 //#endregion
 
@@ -2229,11 +2264,29 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(second.shell.left.getAttribute('data-glass-panel'), undefined, 'dispose un-tags the columns')
   assert.equal(bodyVar(second, '--gm-gap'), '', 'and removes its variables')
   assert.equal(bodyVar(second, '--gm-panel-left-shadow'), '', 'and the per-panel contact shadow')
+  assert.equal(bodyVar(second, '--gm-panel-left-rim'), '', 'and the per-panel rim weight')
   assert.equal(bodyVar(second, '--gm-rim-edge'), '', 'and the rim edge tone')
   assert.equal(bodyVar(second, '--gm-sheen-edge'), '', 'and the edge weight')
   assert.equal(second.document.body.dataset.glassPanels, undefined, 'and its body attributes')
   assert.equal(second.document.querySelector('[data-glass-refraction]'), null, 'and the refraction filter')
   console.log('ok  panel config persists + columns re-tag')
+}
+
+{
+  // The poll is cheap on purpose. It re-tints the panes and re-reads the clips,
+  // and it never re-decides where the frost lives: that decision is one computed-
+  // style read per descendant, and it used to run on the 1.5s poll — about 800
+  // reads a second, forever, with nothing on screen having moved. (The 2.5s deep
+  // re-tag is a different animal: it is a layout event by another name, and it
+  // still pays for the probe.)
+  const m = mount()
+  const baseline = m.window.__styleReads()
+  m.clock.advance(1500)
+  assert.equal(m.window.__styleReads(), baseline, 'one poll tick costs no computed-style read at all')
+  m.engine.retag(true)
+  assert.ok(m.window.__styleReads() > baseline, 'a layout event is what pays for the probe')
+  m.dispose()
+  console.log('ok  the poll never pays for the blur-host decision')
 }
 
 {
@@ -2243,6 +2296,30 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.match(PANEL_SELECTOR.main, /_centerCol/, 'the centre column is found by its shell local name')
   assert.match(PANEL_SELECTOR.right, /data-rightbar-col/, 'the right column prefers the shell\'s own data hook')
   console.log('ok  panel selector contract')
+}
+
+{
+  // A comma selector list hands back the first match in DOCUMENT order, so the
+  // right column is asked twice: the app's data hook first and alone. A hashed
+  // class name that merely sits earlier in the tree must not win over it.
+  const m = mount({ shell: false })
+  const frame = m.document.createElement('div')
+  frame.setAttribute('class', 'AppFrame_frame_1a2b3')
+  const decoy = m.document.createElement('div')
+  decoy.setAttribute('class', 'Other_rightbarCol_decoy')
+  decoy.box = { width: 320, height: 780, left: 0, top: 0 }
+  const real = m.document.createElement('div')
+  real.setAttribute('class', 'Other_rightbarCol_real')
+  real.setAttribute('data-rightbar-col', '')
+  real.box = { width: 320, height: 780, left: 0, top: 0 }
+  frame.appendChild(decoy)
+  frame.appendChild(real)
+  m.document.body.appendChild(frame)
+  m.engine.retag(true)
+  assert.equal(real.getAttribute('data-glass-panel'), 'right', "the app's own hook picks the right column")
+  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, 'an earlier class-name match does not')
+  m.dispose()
+  console.log('ok  the right column is found by the app\'s own hook, not by document order')
 }
 //#endregion
 

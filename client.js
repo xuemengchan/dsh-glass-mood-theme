@@ -85,10 +85,19 @@ window.__ModuleLoader__.load({
 		/** Bounds for the presentation-layer search. */
 		var PRESENT_MAX_NODES = 400;
 		var PRESENT_MAX_DEPTH = 10;
-		/** Where a diagnostic build sends one report; nothing listens in normal use. */
-		var REPORT_URL = "http://127.0.0.1:8791/glass-report";
-		var REPORT_KEY = "dsh-glass-mood:last-report";
-		var REPORT_MAX_POSTS = 14;
+	/** Where a diagnostic build sends one report; nothing listens in normal use. */
+	var REPORT_URL = "http://127.0.0.1:8791/glass-report";
+	var REPORT_KEY = "dsh-glass-mood:last-report";
+	var REPORT_MAX_POSTS = 14;
+	/**
+	 * The report is a debugging instrument, so it is OFF until a person turns it
+	 * on: with this key unset, no layout event posts anything and nothing is
+	 * stored. The manual entry point (`__dshGlassMood.postReport()`, or
+	 * `setReports(true)` for the automatic ones) is the difference this switch
+	 * exists to mark — an instrument nobody asked for is not diagnostics, it is
+	 * an undocumented network call plus a 200KB DOM snapshot in storage.
+	 */
+	var REPORT_ENABLE_KEY = "dsh-glass-mood:report";
 		/** How long the one-shot surface cross-fade window stays open (slowest fade + slack). */
 		var FADE_WINDOW_MS = 1100;
 		/**
@@ -96,7 +105,7 @@ window.__ModuleLoader__.load({
 		 * be confused with "the new build never loaded": which one is on screen is visible
 		 * in the UI, and a test keeps this in step with package.json.
 		 */
-		var BUILD = "1.52.0";
+		var BUILD = "1.53.0";
 		/** A turn parked on a user interaction is still work (the turn has not ended). */
 		var COUNT_PENDING_AS_WORK = true;
 		/** How much of a mood wash survives at full clarity (0 = none). */
@@ -109,8 +118,15 @@ window.__ModuleLoader__.load({
 		/** Above this the IndexedDB write is worth warning about. */
 		var VIDEO_WARN_BYTES = 400 * 1024 * 1024;
 		var PANEL_KEY = "dsh-glass-mood:panels";
-		/** The three shell columns, in DOM order, with the token each one paints. */
-		var PANEL_KEYS = ["left", "main", "right"];
+	/** The three shell columns, in DOM order, with the token each one paints. */
+	var PANEL_KEYS = ["left", "main", "right"];
+	/**
+	 * Every per-panel variable suffix, in one list, so the writer and the two
+	 * cleaners (sweep and dispose) can never disagree about what exists. The
+	 * `rim` entry is the one that used to be written and then forgotten by both
+	 * cleaners — harmless in effect, but a variable audit could not trust it.
+	 */
+	var PANEL_VAR_SUFFIXES = ["blur", "sheen", "fill", "alpha", "shadow", "rim"];
 		/**
 		 * Which official alias each column's surface is derived from. The left
 		 * column paints `--dsw-specific-sidebar-fill`; the frame paints
@@ -1600,8 +1616,15 @@ window.__ModuleLoader__.load({
 			var videos = {};
 			/** Object URLs this plugin created, one per slot. */
 			var clipUrls = {};
-			var wallpaper = normalizeVideo(null);
-			var wallpaperListeners = [];
+		var wallpaper = normalizeVideo(null);
+		var wallpaperListeners = [];
+		/**
+		 * What the last storage attempt could not do, in the row's own words. A
+		 * picked file whose bytes are gone, or a store that refused the write, used
+		 * to pass silently — the person only found out when the next restart
+		 * dropped a choice they remember making.
+		 */
+		var wallpaperNotice = "";
 			var panels = normalizePanels(null);
 			var panelListeners = [];
 			/** The alpha each panel currently paints, for the row's readout. */
@@ -1692,16 +1715,20 @@ window.__ModuleLoader__.load({
 			 * @param force - ignore the throttle (a new clip deserves a fresh reading).
 			 * @returns whether a frame was read.
 			 */
-			function sampleMedia(force) {
-				if (disposed) return false;
-				var read = false;
-				for (var i = 0; i < SLOTS.length; i++) {
-					if (readSlot(SLOTS[i], force)) read = true;
-				}
-				publishMedia();
-				syncPanels();
-				return read;
+		function sampleMedia(force) {
+			if (disposed) return false;
+			var read = false;
+			for (var i = 0; i < SLOTS.length; i++) {
+				if (readSlot(SLOTS[i], force)) read = true;
 			}
+			publishMedia();
+			// A fresh reading only re-tints the panes. The full republish also
+			// re-decides where each panel's frost lives, and that decision is a
+			// measured probe (one computed-style read per descendant): it belongs to
+			// layout events, never to a timer that runs while nothing has moved.
+			if (read) publishPanelColors();
+			return read;
+		}
 
 			/**
 			 * Read one frame of one slot into that slot's own reading.
@@ -1855,13 +1882,11 @@ window.__ModuleLoader__.load({
 				"--gm-divider", "--gm-wall-fit", "--gm-wall-opacity", "--gm-wall-blur",
 				"--gm-wall-scale", "--gm-tint"];
 				for (var v = 0; v < vars.length; v++) doc.body.style.removeProperty(vars[v]);
-				for (var k = 0; k < PANEL_KEYS.length; k++) {
-					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-blur");
-					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-sheen");
-					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-fill");
-					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-alpha");
-					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-shadow");
+			for (var k = 0; k < PANEL_KEYS.length; k++) {
+				for (var s = 0; s < PANEL_VAR_SUFFIXES.length; s++) {
+					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-" + PANEL_VAR_SUFFIXES[s]);
 				}
+			}
 				delete doc.body.dataset.glassPanels;
 				delete doc.body.dataset.glassGap;
 				delete doc.body.dataset.glassMood;
@@ -1967,8 +1992,16 @@ window.__ModuleLoader__.load({
 			var retagTimer = 0;
 			var disposed = false;
 
-			/** A guarded read: storage throws in private mode and off loopback. */
-			function readKey(key) {
+		/**
+		 * @returns whether the diagnostic report was switched on. Read live, so
+		 * flipping the key takes effect on the next layout event without a restart.
+		 */
+		function reportsEnabled() {
+			return readKey(REPORT_ENABLE_KEY) === "1";
+		}
+
+		/** A guarded read: storage throws in private mode and off loopback. */
+		function readKey(key) {
 				try {
 					return storage === undefined || storage === null ? null : storage.getItem(key);
 				} catch (error) {
@@ -2117,17 +2150,29 @@ window.__ModuleLoader__.load({
 				pending = null;
 			}
 
-			/**
-			 * Publish the token layer for the current mood, thinning the panes when a
-			 * wallpaper is on. One funnel for both the mood machine and the sliders.
-			 */
-			function applyTokens() {
-				var pair = pairFor(mood === null ? "idle" : mood);
-				if (hasWallpaperConfig(wallpaper)) pair = dimPair(pair, wallpaper.clarity);
-				if (prefers.reducedTransparency) pair = solidifySurfaces(pair);
-				if (prefers.moreContrast) pair = boostContrast(pair);
-				layerDispose = theme.overrideTokens(SOURCE, pair);
+		/**
+		 * Publish the token layer for the current mood, thinning the panes when a
+		 * wallpaper is on. One funnel for both the mood machine and the sliders.
+		 *
+		 * The previous layer is retracted before the new one is stacked. The host
+		 * documents one layer per source, restacked on every change; if that ever
+		 * turns out to mean "stacked" rather than "replaced", the retract is what
+		 * keeps the old values from surviving underneath — and a disposed engine
+		 * must never re-add a layer, which is what the guard is for (a settings
+		 * row outliving `off()` would otherwise resurrect half a theme).
+		 */
+		function applyTokens() {
+			if (disposed) return;
+			var pair = pairFor(mood === null ? "idle" : mood);
+			if (hasWallpaperConfig(wallpaper)) pair = dimPair(pair, wallpaper.clarity);
+			if (prefers.reducedTransparency) pair = solidifySurfaces(pair);
+			if (prefers.moreContrast) pair = boostContrast(pair);
+			if (layerDispose !== null) {
+				try { layerDispose(); } catch (error) { /* the registry may already be gone */ }
+				layerDispose = null;
 			}
+			layerDispose = theme.overrideTokens(SOURCE, pair);
+		}
 
 			/** Adopt a mood: attribute, token layer, one-shot fade window. */
 			function commit(next) {
@@ -2334,8 +2379,7 @@ window.__ModuleLoader__.load({
 		function observeColumns() {
 			if (resizeObserver === null || typeof doc.querySelector !== "function") return;
 			for (var i = 0; i < PANEL_KEYS.length; i++) {
-				var node = null;
-				try { node = doc.querySelector(PANEL_SELECTOR[PANEL_KEYS[i]]); } catch (error) { node = null; }
+				var node = findColumn(PANEL_KEYS[i]);
 				if (node === null || node === undefined) continue;
 				if (observedNodes.indexOf(node) !== -1) continue;
 				try {
@@ -2421,10 +2465,11 @@ window.__ModuleLoader__.load({
 					opacity: wallpaper.opacity,
 					blur: wallpaper.blur,
 					tint: wallpaper.tint,
-					clarity: wallpaper.clarity,
-					autoDim: wallpaper.autoDim
-				};
-			}
+				clarity: wallpaper.clarity,
+				autoDim: wallpaper.autoDim,
+				notice: wallpaperNotice
+			};
+		}
 
 			/**
 			 * Which clip each element plays. A slot with its own clip owns it; a lone
@@ -2649,8 +2694,14 @@ window.__ModuleLoader__.load({
 				renderWallpaper();
 				applyTokens();
 				syncPanels();
-				if (clip.source !== "file" || blob === undefined || blob === null) return Promise.resolve(videoConfig());
-				return writeStoredClip(slot, blob).then(function () { return videoConfig(); }, function () { return videoConfig(); });
+			if (clip.source !== "file" || blob === undefined || blob === null) return Promise.resolve(videoConfig());
+			return writeStoredClip(slot, blob).then(function () { return videoConfig(); }, function () {
+				// Quota, private mode, a store that refuses the write: the clip plays
+				// from its object URL for this session, and the row says so instead of
+				// letting the next restart silently drop the choice.
+				wallpaperNotice = "文件仅在本次会话生效：浏览器存储不可用或空间不足";
+				return videoConfig();
+			});
 			}
 
 			/**
@@ -2706,9 +2757,12 @@ window.__ModuleLoader__.load({
 			 * @param slot - 'idle' (default) or 'work'.
 			 * @returns a promise resolving to the resulting config.
 			 */
-			function setWallpaperFile(file, name, slot) {
-				var target = slot === "work" ? "work" : "idle";
-				return installClip(target, {
+		function setWallpaperFile(file, name, slot) {
+			var target = slot === "work" ? "work" : "idle";
+			// A fresh pick is a fresh attempt: whatever the last one could not keep
+			// is no longer what the row should be saying.
+			wallpaperNotice = "";
+			return installClip(target, {
 					source: "file",
 					url: "",
 					name: name === undefined || name === null ? "" : String(name)
@@ -2754,8 +2808,9 @@ window.__ModuleLoader__.load({
 			 * bare `wallpaper` IndexedDB key) is migrated into the idle slot.
 			 * @returns a promise that settles when the restore attempt is done.
 			 */
-			function restoreWallpaper() {
-				var raw = readKey(VIDEO_KEY);
+		function restoreWallpaper() {
+			wallpaperNotice = "";
+			var raw = readKey(VIDEO_KEY);
 				var parsed = null;
 				if (raw !== null && raw !== "") {
 					try { parsed = JSON.parse(raw); } catch (error) { parsed = null; }
@@ -2773,11 +2828,14 @@ window.__ModuleLoader__.load({
 					if (wallpaper.clips[slot].source !== "file") continue;
 					jobs.push((function (target, useLegacy) {
 						var read = useLegacy && target === "idle" ? readLegacyClip() : readStoredClip(target);
-						return read.then(function (result) {
-							if (disposed) return undefined;
-							// The store itself is unavailable: keep the config and let the
-							// stage show the gradient rather than deleting a valid choice.
-							if (result.available !== true) return undefined;
+					return read.then(function (result) {
+						if (disposed) return undefined;
+						// The store itself is unavailable: keep the config and let the
+						// stage show the gradient rather than deleting a valid choice.
+						if (result.available !== true) {
+							wallpaperNotice = "浏览器存储不可用：已保存的壁纸文件无法恢复，可重新选择文件";
+							return undefined;
+						}
 							if (result.blob === null) return dropSlot(target);
 							return installClip(target, wallpaper.clips[target], result.blob).then(function (config) {
 								if (useLegacy && target === "idle") return dropLegacyClip().then(function () { return config; });
@@ -2789,9 +2847,10 @@ window.__ModuleLoader__.load({
 				return Promise.all(jobs).then(function () { return videoConfig(); });
 			}
 
-			/** Clear one slot whose stored bytes are missing. */
-			function dropSlot(slot) {
-				var clips = {
+		/** Clear one slot whose stored bytes are missing. */
+		function dropSlot(slot) {
+			wallpaperNotice = "有状态的壁纸文件已丢失（可能在别处被清理），该状态已重置";
+			var clips = {
 					idle: { source: wallpaper.clips.idle.source, url: wallpaper.clips.idle.url, name: wallpaper.clips.idle.name },
 					work: { source: wallpaper.clips.work.source, url: wallpaper.clips.work.url, name: wallpaper.clips.work.name }
 				};
@@ -3401,14 +3460,32 @@ window.__ModuleLoader__.load({
 				} catch (error) { /* nothing listening */ }
 			}
 
-			/**
-			 * Find the three shell columns and stamp our own hooks on them. The
-			 * shell's class local names are the lookup, our attributes are the contract:
-			 * every style rule then reads a name this plugin owns.
-			 * @param deep - also probe for an inner surface and mount the light sweep.
-			 * @returns the found map.
-			 */
-			function tagPanels(deep) {
+	/**
+	 * Find one shell column. The right column is asked twice on purpose: a comma
+	 * list hands back whichever match comes first in DOCUMENT order, so the app's
+	 * own data hook can lose to a hashed class name that merely sits earlier in
+	 * the tree. The data hook is the app's word for this column, so it is asked
+	 * first and alone; the class name is the fallback.
+	 * @param key - panel key.
+	 * @returns the column element, or null.
+	 */
+	function findColumn(key) {
+		if (key === "right") {
+			var marked = null;
+			try { marked = doc.querySelector("[data-rightbar-col]"); } catch (error) { marked = null; }
+			if (marked !== null && marked !== undefined) return marked;
+		}
+		try { return doc.querySelector(PANEL_SELECTOR[key]); } catch (error) { return null; }
+	}
+
+	/**
+	 * Find the three shell columns and stamp our own hooks on them. The
+	 * shell's class local names are the lookup, our attributes are the contract:
+	 * every style rule then reads a name this plugin owns.
+	 * @param deep - also probe for an inner surface and mount the light sweep.
+	 * @returns the found map.
+	 */
+	function tagPanels(deep) {
 				if (disposed) return panelFound;
 				var frame = doc.querySelector('[class*="_frame"]');
 				if (frame !== null && frame !== undefined) frame.setAttribute("data-glass-frame", "");
@@ -3424,6 +3501,12 @@ window.__ModuleLoader__.load({
 				   underneath a fullscreen panel — so nothing is reassigned here. What
 				   changes in that mode is only WHERE THE MATERIAL IS PAINTED, and that is
 				   decided in `discoverSurfaces()` from the app's own marker. */
+			/* Every automatic report sits behind the switch. The ordinary-layout
+			   snapshot in particular used to fire once per session with no way to
+			   say no — a debugging instrument had become part of the default cost
+			   of running the theme. `wasExpanded` still tracks the mode either
+			   way, so switching the report on mid-session catches the next one. */
+			if (reportsEnabled()) {
 				// The mode that keeps being reported as broken gets measured once, on entry
 				// and again a moment later so a late layout is included.
 				if (rightbarExpanded() === true && deep === true && reportTimer === 0) {
@@ -3440,11 +3523,12 @@ window.__ModuleLoader__.load({
 				if (deep === true && wasExpanded === true && rightbarExpanded() !== true) {
 					setTimer(function () { postDomReport("collapse", true); }, 400);
 				}
+			}
 				wasExpanded = rightbarExpanded();
 				var rebuilt = false;
-				for (var i = 0; i < PANEL_KEYS.length; i++) {
-					var key = PANEL_KEYS[i];
-					var node = doc.querySelector(PANEL_SELECTOR[key]);
+			for (var i = 0; i < PANEL_KEYS.length; i++) {
+				var key = PANEL_KEYS[i];
+				var node = findColumn(key);
 					// Whoever held this panel before gives the hooks back: a stale host must
 					// not keep a pane painted where the panel no longer is.
 					var previous = panelNodes[key];
@@ -3709,22 +3793,37 @@ window.__ModuleLoader__.load({
 				}
 			}
 
-			/**
-			 * Publish everything the panel CSS reads. Called on start, on every panel
-			 * change, on every mood commit and on every scheme flip, so the variables
-			 * are always the current truth rather than a snapshot of boot time.
-			 */
-			function syncPanels() {
-				if (disposed) return;
-				var style = doc.body.style;
-				var scheme = currentScheme();
-				var moodNow = mood === null ? "idle" : mood;
-				var wallpaperOn = hasWallpaperConfig(wallpaper);
-				doc.body.dataset.glassPanels = "on";
-				doc.body.dataset.glassGap = panels.gap > 0 ? "on" : "off";
-				doc.body.dataset.glassPress = panels.press ? "on" : "off";
-				for (var bk = 0; bk < PANEL_KEYS.length; bk++) aimBlur(PANEL_KEYS[bk]);
-				style.setProperty("--gm-gap", panels.gap + "px");
+		/**
+		 * Republish the panel material: first decide where each panel's frost
+		 * lives (the one measured step), then publish every variable the CSS
+		 * reads. Called on start, on every panel change, on every mood commit and
+		 * on every scheme flip, so the variables are always the current truth
+		 * rather than a snapshot of boot time.
+		 */
+		function syncPanels() {
+			if (disposed) return;
+			doc.body.dataset.glassPanels = "on";
+			doc.body.dataset.glassGap = panels.gap > 0 ? "on" : "off";
+			doc.body.dataset.glassPress = panels.press ? "on" : "off";
+			// One computed-style read per descendant, per panel: the whole cost of
+			// this function lives in this line, which is why the poll path calls
+			// publishPanelColors instead.
+			for (var bk = 0; bk < PANEL_KEYS.length; bk++) aimBlur(PANEL_KEYS[bk]);
+			publishPanelColors();
+		}
+
+		/**
+		 * The variables only, no probing. A fresh frame reading re-tints the panes
+		 * through here: the 1.5s poll must never pay for a blur-host decision that
+		 * only a layout event can change.
+		 */
+		function publishPanelColors() {
+			if (disposed) return;
+			var style = doc.body.style;
+			var scheme = currentScheme();
+			var moodNow = mood === null ? "idle" : mood;
+			var wallpaperOn = hasWallpaperConfig(wallpaper);
+			style.setProperty("--gm-gap", panels.gap + "px");
 				style.setProperty("--gm-frame-radius", panels.frameRadius + "px");
 				style.setProperty("--gm-radius", panels.panelRadius + "px");
 				style.setProperty("--gm-refract", panels.refraction ? "url(#" + REFRACTION_ID + "-filter)" : "none");
@@ -3799,21 +3898,8 @@ window.__ModuleLoader__.load({
 			style.setProperty("--gm-divider", rim.divider(panels.divider));
 			}
 
-			/**
-			 * Whether a subtree holds a `position: fixed` element. An element carrying a
-			 * backdrop-filter becomes the containing block of exactly those descendants, so
-			 * this is the one condition under which the blur has to stay on a pseudo (which
-			 * has no descendants) rather than on the element.
-			 * @param node - the subtree root.
-			 * @returns true when a fixed descendant exists, or when the browser cannot be
-			 *   asked (the conservative answer).
-			 */
-			function hasFixedDescendant(node) {
-				return fixedDescendants(node).length > 0;
-			}
-
-			/**
-			 * Name the fixed descendants, not just count them: putting the blur on an
+		/**
+		 * Name the fixed descendants, not just count them: putting the blur on an
 			 * element re-anchors exactly these, so if one is ever displaced the report has
 			 * to say which one it was.
 			 * @param node - the subtree root.
@@ -4109,11 +4195,9 @@ window.__ModuleLoader__.load({
 					if (refraction !== null && refraction !== undefined) refraction.remove();
 					refractionMounted = false;
 					for (var p = 0; p < PANEL_KEYS.length; p++) {
-						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-blur");
-						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-sheen");
-						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-fill");
-						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-alpha");
-						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-shadow");
+						for (var s = 0; s < PANEL_VAR_SUFFIXES.length; s++) {
+							doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-" + PANEL_VAR_SUFFIXES[s]);
+						}
 					}
 					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge", "--gm-divider"].forEach(function (name) {
 						doc.body.style.removeProperty(name);
@@ -4235,8 +4319,22 @@ window.__ModuleLoader__.load({
 				},
 				/** The DOM report a diagnostic build sends; also readable on demand. */
 				domReport: domReport,
-				/** Send one now (used by the row while the panel is expanded). */
-				postReport: function () { postDomReport("manual"); return reportPosts; },
+			/** Send one now (used by the row while the panel is expanded). */
+			postReport: function () { postDomReport("manual"); return reportPosts; },
+			/**
+			 * Switch the automatic diagnostic report on or off. Off is the default;
+			 * `postReport()` sends one either way, because that is the explicit
+			 * request this switch exists to tell apart from an automatic one.
+			 * @param on - true to enable the automatic reports.
+			 * @returns whether it is on now.
+			 */
+			setReports: function (on) {
+				try {
+					if (on === true) storage.setItem(REPORT_ENABLE_KEY, "1");
+					else storage.removeItem(REPORT_ENABLE_KEY);
+				} catch (error) { /* storage unavailable: the switch is simply not persisted */ }
+				return reportsEnabled();
+			},
 				/** The build the settings row prints. */
 				build: function () { return BUILD; },
 				/**
@@ -4447,6 +4545,9 @@ window.__ModuleLoader__.load({
 						h("div", { className: "gm-row-title" }, "玻璃主题 · 动态壁纸"),
 						h("div", { className: "gm-row-hint" }, "两个状态可各用一段视频，切换时交叉淡入；可见度是唯一的“看得清”旋钮（它同时调整视频强度与面板通透度）")
 					),
+					// What the storage could not keep, when it could not keep something:
+					// a silent failure here used to resurface as a vanished wallpaper.
+					config.notice ? h("div", { className: "gm-row-hint" }, config.notice) : null,
 					clipRow("idle"),
 					clipRow("work"),
 					h("div", { className: "gm-fields" },
@@ -4661,16 +4762,19 @@ window.__ModuleLoader__.load({
 				indexedDB: typeof indexedDB === "undefined" ? null : indexedDB,
 				URL: typeof URL === "undefined" ? null : URL
 			});
-			ctx.effect(function () {
-				var dispose = engine.start();
-				window.__dshGlassMoodTeardown = dispose;
-				return function () {
-					dispose();
-					if (window.__dshGlassMoodTeardown === dispose) delete window.__dshGlassMoodTeardown;
-				};
-			}, "glass-mood: mood engine");
+		ctx.effect(function () {
+			var dispose = engine.start();
+			window.__dshGlassMoodTeardown = dispose;
+			// The settings rows belong to this effect's scope, so an unload — or the
+			// next live-reload mount — takes them down with the engine instead of
+			// leaving rows behind that talk to a disposed one.
 			registerWallpaperRow(ctx, engine);
 			registerPanelsRow(ctx, engine);
+			return function () {
+				dispose();
+				if (window.__dshGlassMoodTeardown === dispose) delete window.__dshGlassMoodTeardown;
+			};
+		}, "glass-mood: mood engine");
 		}
 
 		exports.apply = apply;
