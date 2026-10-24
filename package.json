@@ -1,7 +1,7 @@
 {
   "name": "dsh-glass-mood-theme",
   "version": "1.53.0",
-  "description": "Glassmorphism theme for the DeepSeek Harness web GUI: mood-driven palette, per-state MP4/WebM wallpapers, per-panel glass, opaque content surfaces, content-adaptive light and dimming, press deformation, and answers to reduced transparency / increased contrast / reduced motion.",
+  "description": "DeepSeek Harness 网页界面的玻璃拟态主题：随情绪切换的调色板、每状态一段 MP4/WebM 壁纸、逐面板玻璃、不透明的内容表面、随内容变化的光线与压暗、按压形变，并应答减弱透明 / 增强对比度 / 减弱动效。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -23,7 +23,8 @@
     "client.js",
     "cordis.patch.yml",
     "README.md",
-    "安装说明.md"
+    "安装说明.md",
+    "test"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

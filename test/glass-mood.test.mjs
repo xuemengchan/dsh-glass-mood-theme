@@ -1,15 +1,13 @@
 /**
- * dsh-glass-mood-theme test suite — no dependencies, runs on plain Node.
+ * dsh-glass-mood-theme 测试套件——零依赖，普通 Node 直接跑。
  *
  *   node test/glass-mood.test.mjs
  *
- * Covers the three things a theme plugin can get wrong silently:
- *   1. the mood state machine (initial paint, work cut, idle linger, dwell,
- *      forced mode, dispose),
- *   2. token legality (every name exists in the shipped ui-theme token set,
- *      every value is a light/dark pair, nothing owned by the menu material or
- *      by a semantic state is touched),
- *   3. legibility (WCAG contrast of labels and brand over the composited glass).
+ * 覆盖一个主题插件可能悄悄弄错的三件事：
+ *   1. 情绪状态机（首次作画、切入工作、空闲逗留、停留门槛、强制模式、卸载），
+ *   2. token 合法性（每个名字都存在于官方 ui-theme 的 token 集，每个值都是
+ *      明/暗一对，菜单材质或语义状态拥有的东西一概不碰），
+ *   3. 可读性（标签与品牌色在合成玻璃上的 WCAG 对比度）。
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -20,7 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, '..', 'client.js'), 'utf8')
 
 //#region harness
-/** Minimal DOM good enough for the plugin's mount / dispose path. */
+/** 刚够插件走完挂载 / 卸载路径的最小 DOM。 */
 function createDocument(fixture = {}) {
   const makeStyle = () => {
     const values = new Map()
@@ -39,11 +37,11 @@ function createDocument(fixture = {}) {
     attributes: {},
     children: [],
     removed: false,
-    /** Geometry and computed paint, which the surface probe reads. */
+    /** 几何与计算出的颜料，表面探测读它们。 */
     box: { width: 1200, height: 800, left: 0, top: 0 },
     computed: { backgroundColor: 'rgba(0, 0, 0, 0)' },
     getBoundingClientRect() { return this.box },
-    /** Media surface: enough for the engine's muted-autoplay path. */
+    /** 媒体表面：刚够引擎的静音自动播放路径。 */
     played: 0,
     paused: true,
     play() {
@@ -75,8 +73,8 @@ function createDocument(fixture = {}) {
       this.removed = true
       const index = this.parent?.children.indexOf(this) ?? -1
       if (index >= 0) this.parent.children.splice(index, 1)
-      // A detached node has no parent and is no longer connected, like the real DOM:
-      // the surface probe relies on both to notice that its element is gone.
+      // 一个被摘下的节点没有父节点、也不再连着，和真实 DOM 一样：表面探测同时靠这两点
+      // 察觉它的元素没了。
       this.parent = null
     }
   })
@@ -85,8 +83,8 @@ function createDocument(fixture = {}) {
   const head = make('head')
   const all = [head, body]
   /**
-   * Just enough selector support for the shell lookup the engine performs:
-   * `[class*="x"]`, `[attr]`, `[attr=value]` and comma lists of those.
+   * 刚够引擎所做的外壳查找的选择器支持：
+   * `[class*="x"]`、`[attr]`、`[attr=value]`，以及它们的逗号列表。
    */
   const matches = (el, selector) => {
     const part = selector.trim()
@@ -112,15 +110,14 @@ function createDocument(fixture = {}) {
     body,
     createElement(tag) {
       const el = make(tag)
-      // A canvas the engine can draw a frame into. `throws` models a cross-origin
-      // clip tainting it, which a theme must survive without guessing.
+      // 一块引擎能往里面画帧的画布。`throws` 模拟一条跨源片子把它污染，而主题必须
+      // 不靠猜地幸存。
       if (tag === 'canvas' && fixture.canvas) {
         el.width = 0
         el.height = 0
         el.getContext = () => ({
-          // Which element was sampled is part of the contract: each slot has to be
-          // read into its OWN reading, or a mood switch wears the other clip's
-          // colour. `perSlot` lets a test give the two clips different frames.
+          // 取样到哪个元素是契约的一部分：每个槽都必须读进它自己的读数，否则一次
+          // 心情切换会穿上另一条片子的颜色。`perSlot` 让一个测试给两条片子不同的帧。
           drawImage(video) {
             fixture.canvas.drawCalls += 1
             fixture.canvas.drawnSlots.push(video.getAttribute('data-glass-slot'))
@@ -140,7 +137,7 @@ function createDocument(fixture = {}) {
       return el
     },
     getElementById(id) { return all.find((el) => el.id === id && !el.removed) ?? null },
-    /** Pointer listeners are real enough to drive, so the light is testable. */
+    /** 指针监听器真到足以驱动，所以光是可以测试的。 */
     addEventListener(type, listener) {
       listeners[type] = listeners[type] ?? []
       listeners[type].push(listener)
@@ -153,8 +150,8 @@ function createDocument(fixture = {}) {
     querySelector: query,
     querySelectorAll(selector) { return all.filter((el) => !el.removed && selector.split(',').some((one) => matches(el, one))) }
   }
-  // A page that already carries a previous instance's stage and style sheet: this is
-  // what a live reload leaves behind, and what the next mount has to sweep.
+  // 一个已经带着上一个实例的舞台和样式表的页面：这就是热重载留下的东西，也是下一次
+  // 挂载必须清扫的东西。
   if (fixture.strayStage) {
     const strayStage = document.createElement('div')
     strayStage.id = 'dsh-glass-mood-bg'
@@ -167,10 +164,9 @@ function createDocument(fixture = {}) {
 }
 
 /**
- * Build the three shell columns the way ui-layout does, with its class names.
- * The left column gets a nested painted surface (as ui-sidebar does), the centre
- * gets none (the column itself is the surface), and the right gets a transparent
- * full-bleed wrapper (which must NOT be mistaken for a surface).
+ * 按 ui-layout 的方式搭出三个外壳列，用它的类名。左列得到一个嵌套的已画表面
+ * （正如 ui-sidebar 所为），中间列没有（列自己就是表面），右列得到一个透明的
+ * 全出血包装（绝不能被误当成表面）。
  */
 function mountShellColumns(document) {
   const frame = document.createElement('div')
@@ -202,20 +198,19 @@ function mountShellColumns(document) {
   return { frame, left, center, right, leftSurface, rightWrapper }
 }
 
-/** The module is a plain __ModuleLoader__ bundle: run it with injected globals. */
+/** 这个模块是一个朴素的 __ModuleLoader__ bundle：用注入的全局变量跑它。 */
 function loadBundle(document, storage, requireImpl) {
   const captured = []
-  /** Every observer the engine creates, so a test can drive a column resize. */
+  /** 引擎创建的每个观察者，好让一个测试能驱动一次列缩放。 */
   const observers = []
   /**
-   * How many computed-style reads the engine has paid for. A probe is one read
-   * per descendant, so this is the number that says whether a cheap timer is
-   * quietly doing measured work.
+   * 引擎已经付过多少次计算样式读取。一次探测是每个后代一次读取，所以这个数字说的
+   * 正是一个廉价计时器有没有在悄悄做有测量的工作。
    */
   let styleReads = 0
   const window = {
     __ModuleLoader__: { load: (entry) => captured.push(entry) },
-    /** A desktop viewport, which the page-versus-popover size gate measures against. */
+    /** 一个桌面视口，页面级与弹出层的尺寸门对着它量。 */
     innerWidth: 1280,
     innerHeight: 800,
     setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
@@ -233,9 +228,8 @@ function loadBundle(document, storage, requireImpl) {
       }
     },
     /**
-     * A resize observer the shell drives by hand. A column that changes size has to
-     * be re-tagged in the same frame, not on the next 2.5s pass — that delay is what
-     * made an opening sidebar sit there as a plain column for a second.
+     * 一个由外壳手动驱动的缩放观察者。一列改了尺寸，必须在同一帧被重新打标签，而不是
+     * 等下一趟 2.5s——那个延迟正是让一条正在展开的侧边栏干坐一秒钟素列的东西。
      */
     ResizeObserver: class {
       constructor(callback) {
@@ -245,23 +239,23 @@ function loadBundle(document, storage, requireImpl) {
       }
       observe(node) { this.targets.push(node) }
       disconnect() { this.targets = [] }
-      /** Fire the way the browser would: once, with every entry. */
+      /** 照浏览器的样子发：一次，带齐每个条目。 */
       emit() { this.callback(this.targets.map((target) => ({ target })), this) }
     }
   }
   window.observers = observers
-  /** @returns how many computed-style reads the engine has paid for so far. */
+  /** @returns 引擎至今付过多少次计算样式读取。 */
   window.__styleReads = () => styleReads
   const factory = new Function('window', 'document', 'localStorage', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', source)
   factory(window, document, storage, window.setTimeout, window.clearTimeout, window.setInterval, window.clearInterval)
-  assert.equal(captured.length, 1, 'the bundle registers exactly one loader entry')
+  assert.equal(captured.length, 1, 'bundle 恰好注册一个加载器条目')
   const entry = captured[0]
-  assert.equal(entry.id, 'dsh-glass-mood-theme', 'loader id matches the package name')
+  assert.equal(entry.id, 'dsh-glass-mood-theme', '加载器 id 与包名一致')
   const loaded = entry.factory(requireImpl ?? (() => { throw new Error('this bundle must not require anything') }))
   return { loaded, window }
 }
 
-/** Virtual clock so the hysteresis is testable without waiting. */
+/** 虚拟时钟，好让滞回不必真等就可测。 */
 function createClock() {
   let now = 1000
   let seq = 1
@@ -280,7 +274,7 @@ function createClock() {
       return id
     },
     clearInterval(id) { timers.delete(id) },
-    /** Advance time, firing due timers in order. */
+    /** 推进时间，按顺序发到期的计时器。 */
     advance(ms) {
       const target = now + ms
       for (;;) {
@@ -300,7 +294,7 @@ function createClock() {
   }
 }
 
-/** Observable snapshot, the shape the plugin subscribes to. */
+/** 可观察快照，插件订阅的就是这个形状。 */
 function createObservable(initial) {
   let value = initial
   const listeners = new Set()
@@ -312,7 +306,7 @@ function createObservable(initial) {
   }
 }
 
-/** A tiny IndexedDB stand-in: one object store, promise-free request objects. */
+/** 一个小小的 IndexedDB 替身：一个对象存储，无 promise 的请求对象。 */
 function createIndexedDB() {
   const rows = new Map()
   const request = (run) => {
@@ -347,7 +341,7 @@ function createIndexedDB() {
   }
 }
 
-/** One mount with a controllable activity source. */
+/** 一次挂载，带一个可控的活动源。 */
 function mount(options = {}) {
   const document = createDocument(options)
   const storage = options.storage ?? {
@@ -369,8 +363,8 @@ function mount(options = {}) {
   const sessionList = createObservable({ byId: {} })
   const services = {
     theme,
-    // `noStatus` models a build without the ui-session status map, which is the
-    // only case where the session-list fallback is consulted at all.
+    // `noStatus` 模拟一个没有 ui-session 状态图的构建——那是唯一会去咨询会话列表
+    // 兜底的情况。
     uiSession: options.noStatus === true ? undefined : { sessionStatus },
     sessions: {
       list: sessionList,
@@ -397,7 +391,7 @@ function mount(options = {}) {
   }
   const idb = options.idb === false ? null : (options.idb ?? createIndexedDB())
   const clock = createClock()
-  // The accessibility preferences, off unless a test seeds them.
+  // 无障碍偏好，除非一个测试播下它们，否则关着。
   const preferenceState = {
     '(prefers-reduced-transparency: reduce)': options.prefers?.reducedTransparency === true,
     '(prefers-contrast: more)': options.prefers?.moreContrast === true
@@ -420,21 +414,21 @@ function mount(options = {}) {
     }
   })
   /**
-   * The media-query stand-in the engine reads. A test can turn the whole API off with
-   * `matchMedia: false`, which models a browser that does not have it.
+   * 引擎读的媒体查询替身。一个测试可以用 `matchMedia: false` 把整个 API 关掉，
+   * 模拟一个没有它的浏览器。
    */
   const matchMediaStub = (query) => {
     const entry = preferenceLists.find((candidate) => candidate.query === query)
     if (entry === undefined) return { matches: false, addEventListener() {}, removeEventListener() {} }
     return entry.list
   }
-  /** Flip a system preference and deliver the change, as the OS would. */
+  /** 翻一个系统偏好并把变化送达，像操作系统那样。 */
   const setPreference = (name, value) => {
     const query = name === 'reducedTransparency' ? '(prefers-reduced-transparency: reduce)' : '(prefers-contrast: more)'
     preferenceState[query] = value === true
     for (const entry of preferenceLists) if (entry.query === query) entry.emit()
   }
-  // The shell columns exist before the engine mounts, the way the real frame does.
+  // 外壳列在引擎挂载前就存在，和真实的外框一样。
   const shell = options.shell === false ? null : mountShellColumns(document)
   const engine = loaded.createEngine({
     document,
@@ -455,24 +449,24 @@ function mount(options = {}) {
   return {
     document, window, loaded, storage, layers, sessionStatus, sessionList, engine, dispose, clock, disposers,
     objectUrls, idb, theme, services, shell, setPreference, preferenceLists,
-    /** Deliver a theme/change the way the real service does. */
+    /** 照真实服务的样子送达一次 theme/change。 */
     emitThemeChange: () => { for (const listener of themeListeners) listener({}) }
   }
 }
 
 const currentMood = (m) => m.document.body.dataset.glassMood
-/** A published CSS variable on the live body. */
+/** 活 body 上一个已发布的 CSS 变量。 */
 const bodyVar = (m, name) => m.document.body.style.getPropertyValue(name)
-/** Alpha of an rgba() colour, for reading the published fills. */
+/** 一个 rgba() 颜色的 alpha，供读已发布的填充。 */
 const panelAlpha = (color) => Number(/rgba\([^)]*,\s*([0-9.]+)\s*\)$/.exec(color)[1])
 //#endregion
 
 //#region shipped token inventory
 /**
- * Every `--dsw-*` alias the shipped ui-theme exposes, read out of the installed
- * `@deepseek-ai/dsh-client-ui-theme` client bundle (DSH 0.2.0-rc.2, 107 alias +
- * 11 specific). A theme may only name tokens that exist: a typo would otherwise
- * fail silently, styling nothing.
+ * 官方 ui-theme 暴露的每个 `--dsw-*` 别名，从安装着的
+ * `@deepseek-ai/dsh-client-ui-theme` 客户端 bundle 里读出来（DSH 0.2.0-rc.2，107 个
+ * alias + 11 个 specific）。一个主题只可点名存在的 token：否则一个拼写错误会静默
+ * 失败，什么都没样式化。
  */
 const SHIPPED_TOKENS = [
   "--dsw-alias-bg-base", "--dsw-alias-bg-document-preview", "--dsw-alias-bg-document-selection",
@@ -521,122 +515,122 @@ const SHIPPED_TOKENS = [
 //#region state machine
 {
   const m = mount()
-  assert.equal(currentMood(m), 'idle', 'first paint with nothing running is the warm mood')
-  assert.equal(m.layers.length, 1, 'exactly one token layer at mount')
-  assert.equal(m.layers[0].source, 'dsh-glass-mood', 'the override layer is named')
-  assert.equal(m.document.body.dataset.glassBlur, 'on', 'frosted surfaces are on by default')
-  assert.ok(m.document.getElementById('dsh-glass-mood-style'), 'the stylesheet is mounted')
-  assert.ok(m.document.getElementById('dsh-glass-mood-bg'), 'the gradient stage is mounted')
+  assert.equal(currentMood(m), 'idle', '什么都不跑时首次作画是暖心情')
+  assert.equal(m.layers.length, 1, '挂载时恰好一层 token')
+  assert.equal(m.layers[0].source, 'dsh-glass-mood', '覆盖层有名字')
+  assert.equal(m.document.body.dataset.glassBlur, 'on', '磨砂表面默认开')
+  assert.ok(m.document.getElementById('dsh-glass-mood-style'), '样式表已挂载')
+  assert.ok(m.document.getElementById('dsh-glass-mood-bg'), '渐变舞台已挂载')
   m.dispose()
-  assert.equal(m.document.getElementById('dsh-glass-mood-style'), null, 'dispose removes the stylesheet')
-  assert.equal(m.document.getElementById('dsh-glass-mood-bg'), null, 'dispose removes the stage')
-  assert.equal(m.document.body.dataset.glassMood, undefined, 'dispose clears the mood attribute')
-  assert.equal(m.layers[m.layers.length - 1].disposed, true, 'dispose retracts the token layer')
-  assert.equal(m.clock.pending, 0, 'dispose leaves no timer or interval behind')
-  console.log('ok  mount / dispose')
+  assert.equal(m.document.getElementById('dsh-glass-mood-style'), null, '卸载移除样式表')
+  assert.equal(m.document.getElementById('dsh-glass-mood-bg'), null, '卸载移除舞台')
+  assert.equal(m.document.body.dataset.glassMood, undefined, '卸载清掉心情属性')
+  assert.equal(m.layers[m.layers.length - 1].disposed, true, '卸载收回 token 层')
+  assert.equal(m.clock.pending, 0, '卸载不留计时器或间隔')
+  console.log('ok  挂载 / 卸载')
 }
 
 {
   const m = mount()
-  // A turn starts: the cool mood lands after the short work debounce.
+  // 一轮开始：短去抖后冷心情落地。
   m.sessionStatus.set(new Map([['s1', { running: true }]]))
-  assert.equal(currentMood(m), 'idle', 'work is debounced, not instant')
+  assert.equal(currentMood(m), 'idle', '工作是去抖的，不是即时的')
   m.clock.advance(120)
-  assert.equal(currentMood(m), 'work', 'a running turn cuts to the cool mood')
-  assert.equal(m.document.body.dataset.glassFading, 'work', 'the cross-fade window opens')
-  // The turn ends, but the idle linger keeps the decisive mood a moment longer.
+  assert.equal(currentMood(m), 'work', '一轮进行中的对话切到冷心情')
+  assert.equal(m.document.body.dataset.glassFading, 'work', '交叉淡变窗口打开')
+  // 一轮结束，但空闲逗留让果断的心情多留一会儿。
   m.sessionStatus.set(new Map([['s1', { running: false }]]))
   m.clock.advance(300)
-  assert.equal(currentMood(m), 'work', 'the warm mood waits out the antara linger')
+  assert.equal(currentMood(m), 'work', '暖心情等完整段逗留')
   m.clock.advance(1600)
-  assert.equal(currentMood(m), 'idle', 'idle returns after the linger')
-  console.log('ok  work cut / idle linger')
+  assert.equal(currentMood(m), 'idle', '逗留后空闲归来')
+  console.log('ok  切入工作 / 空闲逗留')
 }
 
 {
   const m = mount()
-  // Between two tool steps: a sub-second idle gap must not flip the mood.
+  // 两个工具步骤之间：亚秒级的空闲空隙绝不能翻心情。
   m.sessionStatus.set(new Map([['s1', { running: true }]]))
   m.clock.advance(120)
   m.sessionStatus.set(new Map([['s1', { running: false }]]))
   m.clock.advance(400)
   m.sessionStatus.set(new Map([['s1', { running: true }]]))
   m.clock.advance(2000)
-  assert.equal(currentMood(m), 'work', 'a between-step gap does not flash the warm mood')
+  assert.equal(currentMood(m), 'work', '步骤之间的短空隙不会闪一下暖心情')
   const workCommits = m.layers.filter(
     (l) => l.tokens !== null && l.tokens !== undefined && l.tokens['--dsw-alias-brand-primary'].dark === '#58A6FF'
   ).length
-  assert.equal(workCommits, 1, 'the mood is never re-committed while it is already correct')
-  console.log('ok  between-step gap')
+  assert.equal(workCommits, 1, '心情已经正确时绝不重复提交')
+  console.log('ok  步骤之间的空隙')
 }
 
 {
   const m = mount()
-  // A turn parked on a user interaction still counts as work.
+  // 停在用户交互上的一轮仍然算工作。
   m.sessionStatus.set(new Map([['s1', { running: false, pendingInteraction: { kind: 'approval' } }]]))
   m.clock.advance(200)
-  assert.equal(currentMood(m), 'work', 'waiting on the user keeps the decisive mood')
+  assert.equal(currentMood(m), 'work', '等用户期间保持果断的心情')
   m.dispose()
-  console.log('ok  pending interaction counts as work')
+  console.log('ok  待定的用户交互算工作')
 }
 
 {
-  // Only the fallback source available (no ui-session status map).
+  // 只有兜底源可用（没有 ui-session 状态图）。
   const m = mount({ noStatus: true, bindings: { s9: { running: true } } })
   m.sessionList.set({ byId: { s9: { running: true } } })
   m.clock.advance(200)
-  assert.equal(currentMood(m), 'work', 'a running row drives the mood')
-  // The row itself carries no flag: the per-session face is the remaining source.
+  assert.equal(currentMood(m), 'work', '一个在跑的行驱动心情')
+  // 行自己不带标志：逐个会话的面孔是剩下的唯一数据源。
   m.sessionList.set({ byId: { s9: {} } })
   m.clock.advance(50)
-  assert.equal(m.engine.readActivity(), true, 'the session face is read when the row is silent')
-  assert.equal(currentMood(m), 'work', 'the face keeps the decisive mood')
+  assert.equal(m.engine.readActivity(), true, '行沉默时读会话面孔')
+  assert.equal(currentMood(m), 'work', '面孔保住果断的心情')
   m.sessionList.set({ byId: {} })
   m.clock.advance(2000)
-  assert.equal(currentMood(m), 'idle', 'the fallback source releases the mood too')
-  assert.equal(typeof m.engine.readActivity, 'function', 'the engine exposes its reader for debugging')
+  assert.equal(currentMood(m), 'idle', '兜底源也释放心情')
+  assert.equal(typeof m.engine.readActivity, 'function', '引擎把它的读取器暴露出来供调试')
   m.dispose()
-  console.log('ok  session-list fallback')
+  console.log('ok  会话列表兜底')
 }
 
 {
   const m = mount()
-  // Forced mood wins over the live signal, and is written to storage.
+  // 强制心情压过实时信号，并被写进存储。
   m.window.__dshGlassMood.force('work')
-  assert.equal(currentMood(m), 'work', 'a forced mood applies immediately')
-  assert.equal(m.storage.getItem('dsh-glass-mood:force'), 'work', 'the pin is persisted')
+  assert.equal(currentMood(m), 'work', '强制心情立刻生效')
+  assert.equal(m.storage.getItem('dsh-glass-mood:force'), 'work', '钉被持久化')
   m.sessionStatus.set(new Map([['s1', { running: true }]]))
   m.clock.advance(5000)
-  assert.equal(currentMood(m), 'work', 'the forced mood stays pinned')
+  assert.equal(currentMood(m), 'work', '强制心情保持钉住')
   m.sessionStatus.set(new Map())
   m.window.__dshGlassMood.force('')
-  assert.equal(currentMood(m), 'idle', 'clearing the pin returns to the derived mood')
-  assert.equal(m.window.__dshGlassMood.current(), 'idle', 'the debug handle reports the live mood')
-  assert.equal(m.storage.getItem('dsh-glass-mood:force'), null, 'the pin is removed from storage')
+  assert.equal(currentMood(m), 'idle', '清掉钉回到推导的心情')
+  assert.equal(m.window.__dshGlassMood.current(), 'idle', '调试句柄报告活的心情')
+  assert.equal(m.storage.getItem('dsh-glass-mood:force'), null, '钉从存储里移除')
   m.dispose()
-  assert.equal(m.window.__dshGlassMood, undefined, 'dispose removes the debug handle')
-  console.log('ok  forced mood')
+  assert.equal(m.window.__dshGlassMood, undefined, '卸载移除调试句柄')
+  console.log('ok  强制心情')
 }
 
 {
   const m = mount()
-  // Subscribers registered on the sources are released on dispose.
-  assert.equal(m.sessionStatus.listenerCount, 1, 'the status map is subscribed once')
-  assert.equal(m.sessionList.listenerCount, 1, 'the session list is subscribed once')
+  // 注册在数据源上的订阅者在 dispose 时被释放。
+  assert.equal(m.sessionStatus.listenerCount, 1, '状态图被订阅一次')
+  assert.equal(m.sessionList.listenerCount, 1, '会话列表被订阅一次')
   m.dispose()
-  assert.equal(m.sessionStatus.listenerCount, 0, 'dispose unsubscribes the status map')
-  assert.equal(m.sessionList.listenerCount, 0, 'dispose unsubscribes the session list')
-  console.log('ok  subscriptions released')
+  assert.equal(m.sessionStatus.listenerCount, 0, '卸载退订状态图')
+  assert.equal(m.sessionList.listenerCount, 0, '卸载退订会话列表')
+  console.log('ok  订阅被释放')
 }
 //#endregion
 
 //#region wallpaper
-/** Let the engine's IndexedDB microtasks and restore promise settle. */
+/** 让引擎的 IndexedDB 微任务和恢复 promise 落定。 */
 const settle = async () => { for (let i = 0; i < 6; i++) await new Promise((resolve) => setImmediate(resolve)) }
 const stageEl = (m) => m.document.getElementById('dsh-glass-mood-bg')
 const videoEl = (m, slot) => stageEl(m).children.find((c) => c.tagName === 'video' && c.getAttribute('data-glass-slot') === slot) ?? null
 const clipOf = (m, slot) => videoEl(m, slot).getAttribute('data-glass-clip')
-/** Alpha of an rgba() color; opaque forms (hex) count as 1. */
+/** rgba() 颜色的 alpha；不透明形式（十六进制）算 1。 */
 const alphaOf = (color) => {
   const match = /rgba\([^)]*,\s*([0-9.]+)\s*\)$/.exec(color)
   return match === null ? 1 : Number(match[1])
@@ -644,164 +638,162 @@ const alphaOf = (color) => {
 
 {
   const m = mount()
-  assert.equal(stageEl(m).children.filter((c) => c.tagName === 'video').length, 2, 'one clip element per mood slot')
-  assert.equal(clipOf(m, 'idle'), 'none', 'the idle clip is inactive with nothing configured')
-  assert.equal(clipOf(m, 'work'), 'none', 'the work clip is inactive with nothing configured')
-  assert.equal(m.document.body.dataset.glassWallpaper, 'off', 'no wallpaper configured at mount')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), undefined, 'no source before a wallpaper is set')
-  // tint 0.35 faded by clarity 0.45 down to 30% => 0.24
-  assert.equal(m.document.body.style.getPropertyValue('--gm-tint'), '0.24', 'the mood wash has its default')
+  assert.equal(stageEl(m).children.filter((c) => c.tagName === 'video').length, 2, '每心情槽一个片子元素')
+  assert.equal(clipOf(m, 'idle'), 'none', '什么都没配时空闲片子不活跃')
+  assert.equal(clipOf(m, 'work'), 'none', '什么都没配时工作片子不活跃')
+  assert.equal(m.document.body.dataset.glassWallpaper, 'off', '挂载时没配壁纸')
+  assert.equal(videoEl(m, 'idle').getAttribute('src'), undefined, '设壁纸前没有源')
+  // tint 0.35 被 clarity 0.45 淡出到 30% => 0.24
+  assert.equal(m.document.body.style.getPropertyValue('--gm-tint'), '0.24', '情绪染色有它的默认值')
   m.dispose()
-  console.log('ok  wallpaper idle state')
+  console.log('ok  壁纸空闲状态')
 }
 
 {
   const m = mount()
   const applied = m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
-  assert.equal(applied.clips.idle.source, 'url', 'the url lands in the idle slot')
-  assert.equal(applied.clips.work.source, '', 'the work slot stays empty')
-  assert.equal(m.document.body.dataset.glassWallpaper, 'on', 'a configured wallpaper turns the stage on')
-  assert.equal(clipOf(m, 'idle'), 'both', 'a single clip serves both moods')
-  assert.equal(clipOf(m, 'work'), 'none', 'the empty slot stays dark')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), 'https://cdn.example.com/loop.mp4', 'the clip plays the url')
-  assert.ok(videoEl(m, 'idle').played >= 1, 'the clip is playing (and muted by force)')
-  assert.equal(videoEl(m, 'idle').attributes.muted, '', 'autoplay is legal only because it is muted')
+  assert.equal(applied.clips.idle.source, 'url', '链接落进空闲槽')
+  assert.equal(applied.clips.work.source, '', '工作槽保持空')
+  assert.equal(m.document.body.dataset.glassWallpaper, 'on', '配置了壁纸就点亮舞台')
+  assert.equal(clipOf(m, 'idle'), 'both', '一条片子服务两个心情')
+  assert.equal(clipOf(m, 'work'), 'none', '空槽保持暗')
+  assert.equal(videoEl(m, 'idle').getAttribute('src'), 'https://cdn.example.com/loop.mp4', '片子播链接')
+  assert.ok(videoEl(m, 'idle').played >= 1, '片子正在播放（且被强制静音）')
+  assert.equal(videoEl(m, 'idle').attributes.muted, '', '自动播放合法只因它静音')
   const stored = JSON.parse(m.storage.getItem('dsh-glass-mood:video'))
-  assert.equal(stored.clips.idle.url, 'https://cdn.example.com/loop.mp4', 'the config is persisted')
-  assert.equal(stored.fit, 'cover', 'fit defaults to cover')
+  assert.equal(stored.clips.idle.url, 'https://cdn.example.com/loop.mp4', '配置被持久化')
+  assert.equal(stored.fit, 'cover', '适配默认裁切铺满')
 
-  // Live knobs drive CSS variables on body, which is what the stage reads.
+  // 活旋钮驱动 body 上的 CSS 变量，舞台读的就是这些。
   m.engine.setWallpaper({ fit: 'contain', opacity: 0.3, blur: 16, tint: 0.6, clarity: 0 })
-  assert.equal(m.document.body.style.getPropertyValue('--gm-wall-fit'), 'contain', 'fit reaches the stage')
-  assert.equal(m.document.body.style.getPropertyValue('--gm-wall-opacity'), '0.3', 'opacity reaches the stage')
-  assert.equal(m.document.body.style.getPropertyValue('--gm-wall-blur'), '16px', 'blur reaches the stage')
-  assert.ok(Number(m.document.body.style.getPropertyValue('--gm-wall-scale')) > 1, 'blur overscans to hide the seam')
-  assert.equal(m.document.body.style.getPropertyValue('--gm-tint'), '0.6', 'at zero clarity the mood wash is unfaded')
+  assert.equal(m.document.body.style.getPropertyValue('--gm-wall-fit'), 'contain', '适配到达舞台')
+  assert.equal(m.document.body.style.getPropertyValue('--gm-wall-opacity'), '0.3', '不透明度到达舞台')
+  assert.equal(m.document.body.style.getPropertyValue('--gm-wall-blur'), '16px', '模糊到达舞台')
+  assert.ok(Number(m.document.body.style.getPropertyValue('--gm-wall-scale')) > 1, '模糊过扫描把缝藏掉')
+  assert.equal(m.document.body.style.getPropertyValue('--gm-tint'), '0.6', '通透度为零时情绪染色不淡出')
 
-  // Out-of-range input is clamped, never trusted.
+  // 越界输入被夹住，绝不被信任。
   const clamped = m.engine.setWallpaper({ opacity: 4, blur: 999, tint: 2, clarity: 7, fit: 'nope' })
-  assert.equal(clamped.opacity, 1, 'opacity is clamped')
-  assert.equal(clamped.blur, 32, 'blur is clamped')
-  assert.equal(clamped.tint, 0.9, 'tint is clamped')
-  assert.equal(clamped.clarity, 1, 'clarity is clamped')
-  assert.equal(clamped.fit, 'cover', 'an unknown fit falls back to cover')
+  assert.equal(clamped.opacity, 1, '不透明度被夹住')
+  assert.equal(clamped.blur, 32, '模糊被夹住')
+  assert.equal(clamped.tint, 0.9, '染色被夹住')
+  assert.equal(clamped.clarity, 1, '通透度被夹住')
+  assert.equal(clamped.fit, 'cover', '未知的适配回退到裁切铺满')
 
-  // Full clarity fades the mood wash down to its residual share.
-  assert.equal(m.document.body.style.getPropertyValue('--gm-tint'), '0.27', 'clarity fades the wash, never to zero')
+  // 满通透度把情绪染色淡出到它的残余份额。
+  assert.equal(m.document.body.style.getPropertyValue('--gm-tint'), '0.27', '通透度淡出染色，但绝不归零')
   m.dispose()
-  console.log('ok  wallpaper url + live knobs')
+  console.log('ok  壁纸链接 + 活旋钮')
 }
 
 {
-  // One knob, one perception: visibility drives the clip strength AND the pane
-  // thinning together, so the two halves can never read as duplicates.
+  // 一个旋钮，一种感知：可见度同时驱动片子强度和面板削薄，所以两半永远不可能
+  // 读起来像重复的。
   const m = mount()
   m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
   const dim = m.engine.setWallpaper({ visibility: 0 })
-  assert.equal(dim.clarity, 0, 'visibility 0 means no thinning')
-  assert.equal(dim.opacity, 0.35, 'and the faintest clip')
-  assert.equal(bodyVar(m, '--gm-wall-opacity'), '0.35', 'the stage follows')
+  assert.equal(dim.clarity, 0, '可见度 0 意味着不削薄')
+  assert.equal(dim.opacity, 0.35, '以及最弱的片子')
+  assert.equal(bodyVar(m, '--gm-wall-opacity'), '0.35', '舞台跟随')
   const full = m.engine.setWallpaper({ visibility: 1 })
-  assert.equal(full.clarity, 1, 'visibility 1 means full thinning')
-  assert.equal(full.opacity, 1, 'and the strongest clip')
-  assert.equal(bodyVar(m, '--gm-wall-opacity'), '1', 'the stage follows the other way too')
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-main-fill')), 0.096, 'and the panels are fully uncovered at 1')
+  assert.equal(full.clarity, 1, '可见度 1 意味着满削薄')
+  assert.equal(full.opacity, 1, '以及最强的片子')
+  assert.equal(bodyVar(m, '--gm-wall-opacity'), '1', '舞台反方向也跟随')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-main-fill')), 0.096, '可见度 1 时面板被完全揭开')
   m.dispose()
-  console.log('ok  wallpaper visibility is one axis')
+  console.log('ok  壁纸可见度是一条轴')
 }
 
 {
-  // Clarity is what actually uncovers the clip: the theme's own panes get thin.
+  // 通透度才是真正揭开片子的东西：主题自己的面板变薄。
   const m = mount()
   const raw = m.loaded.pairFor('idle')
-  assert.equal(alphaOf(raw['--dsw-alias-bg-base'].light), 0.64, 'the palette base pane is full strength')
+  assert.equal(alphaOf(raw['--dsw-alias-bg-base'].light), 0.64, '调色板基础面板是满强度')
   m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4', clarity: 0 })
   const before = m.layers[m.layers.length - 1].tokens
-  assert.equal(alphaOf(before['--dsw-alias-bg-base'].light), 0.64, 'a wallpaper alone does not thin the panes')
-  // Content surfaces are lifted to a readable alpha the moment a wallpaper is on,
-  // even before any thinning: the clip's brightness is unknown, and the shipped
-  // theme keeps every one of them opaque.
-  assert.equal(alphaOf(raw['--dsw-specific-bubble'].light), 0.62, 'without a wallpaper the bubble keeps its palette alpha')
-  assert.equal(alphaOf(before['--dsw-specific-bubble'].light), 0.72, 'a wallpaper lifts it to the protection floor')
+  assert.equal(alphaOf(before['--dsw-alias-bg-base'].light), 0.64, '单有壁纸不削薄面板')
+  // 壁纸一开，内容表面立刻被抬到可读的 alpha，在任何削薄之前：片子的亮度未知，
+  // 而官方主题把它们每一个都画成不透明。
+  assert.equal(alphaOf(raw['--dsw-specific-bubble'].light), 0.62, '没有壁纸时气泡保住调色板 alpha')
+  assert.equal(alphaOf(before['--dsw-specific-bubble'].light), 0.72, '壁纸把它抬到保护地板')
 
-  // No invented ambient motion: the theme's light is static (rim, depth, contact
-  // shadow, mood-responsive temperature). The sweep was removed on user feedback.
-  assert.equal(bodyVar(m, '--gm-sweep'), '', 'no sweep colour is published')
-  assert.equal(Object.prototype.hasOwnProperty.call(m.engine.getPanels(), 'glow'), false, 'the sweep toggle is gone from the config')
+  // 没有发明出来的环境动作：主题的光是静态的（镜边、纵深、接触阴影、随心情变化的
+  // 色温）。扫光是应用户反馈去掉的。
+  assert.equal(bodyVar(m, '--gm-sweep'), '', '不发布扫光颜色')
+  assert.equal(Object.prototype.hasOwnProperty.call(m.engine.getPanels(), 'glow'), false, '扫光开关从配置里没了')
 
   m.engine.setWallpaper({ clarity: 1 })
   const after = m.layers[m.layers.length - 1].tokens
-  assert.ok(alphaOf(after['--dsw-alias-bg-base'].light) <= 0.1, 'at full clarity the canvas pane nearly vanishes')
-  assert.ok(alphaOf(after['--dsw-specific-sidebar-fill'].light) <= 0.25, 'the sidebar column uncovers the clip too')
-  // Text containers keep a high floor: the clip's brightness is unknown, so the
-  // theme refuses to make readability a slider. The shipped theme paints every one
-  // of these opaque, so protecting them is restoring stock behaviour.
-  assert.ok(alphaOf(after['--dsw-specific-bubble'].light) >= 0.72, 'message bubbles keep their backing')
-  assert.ok(alphaOf(after['--dsw-specific-input-major'].light) >= 0.8, 'the composer keeps its backing')
-  assert.ok(alphaOf(after['--dsw-alias-settings-card-fill'].light) >= 0.86, 'settings cards keep their backing')
-  assert.ok(alphaOf(after['--dsw-alias-bg-overlay'].light) >= 0.9, 'popovers stay solid')
-  assert.ok(alphaOf(after['--dsw-alias-bg-document-preview'].light) >= 0.94, 'the diff/document preview container stays solid')
-  assert.ok(alphaOf(after['--dsw-alias-bg-layer-1'].light) >= 0.88, 'raised cards stay solid')
-  assert.ok(alphaOf(after['--dsw-alias-bg-layer-2'].light) >= 0.86, 'and so does the layer beneath them')
-  assert.ok(alphaOf(after['--dsw-alias-bg-layer-3'].light) >= 0.84, 'and the deepest layer')
-  assert.ok(alphaOf(after['--dsw-alias-markdown-code-block'].light) >= 0.86, 'code blocks keep their backing')
-  assert.equal(after['--dsw-alias-label-primary'].light, before['--dsw-alias-label-primary'].light, 'text colors are never dimmed')
-  assert.equal(after['--dsw-alias-border-l2'].light, before['--dsw-alias-border-l2'].light, 'borders keep their exact value')
-  // Thinning may only ever remove alpha. Protection may only ever add it — and only
-  // to the declared content surfaces, never to a colour or a border.
+  assert.ok(alphaOf(after['--dsw-alias-bg-base'].light) <= 0.1, '通透度拉满时画布面板近乎消失')
+  assert.ok(alphaOf(after['--dsw-specific-sidebar-fill'].light) <= 0.25, '侧边栏列也揭开片子')
+  // 文字容器保有一个高地板：片子的亮度未知，所以主题拒绝把可读性做成滑杆。官方主题
+  // 把这些每一个都画成不透明，所以保护它们是在恢复原厂行为。
+  assert.ok(alphaOf(after['--dsw-specific-bubble'].light) >= 0.72, '消息气泡保住底色')
+  assert.ok(alphaOf(after['--dsw-specific-input-major'].light) >= 0.8, '输入卡保住底色')
+  assert.ok(alphaOf(after['--dsw-alias-settings-card-fill'].light) >= 0.86, '设置卡保住底色')
+  assert.ok(alphaOf(after['--dsw-alias-bg-overlay'].light) >= 0.9, '弹出层保持实心')
+  assert.ok(alphaOf(after['--dsw-alias-bg-document-preview'].light) >= 0.94, 'diff/文档预览容器保持实心')
+  assert.ok(alphaOf(after['--dsw-alias-bg-layer-1'].light) >= 0.88, '抬起的卡保持实心')
+  assert.ok(alphaOf(after['--dsw-alias-bg-layer-2'].light) >= 0.86, '它们下面的层同样')
+  assert.ok(alphaOf(after['--dsw-alias-bg-layer-3'].light) >= 0.84, '以及最深那层')
+  assert.ok(alphaOf(after['--dsw-alias-markdown-code-block'].light) >= 0.86, '代码块保住底色')
+  assert.equal(after['--dsw-alias-label-primary'].light, before['--dsw-alias-label-primary'].light, '文字色从不被压暗')
+  assert.equal(after['--dsw-alias-border-l2'].light, before['--dsw-alias-border-l2'].light, '边界保持原值')
+  // 削薄只许拿走 alpha。保护只许加回它——而且只加给声明过的内容表面，绝不加给
+  // 颜色或边界。
   const protectedNames = new Set(m.loaded.WALL_PROTECT.map((rule) => rule[0]))
   for (const name of Object.keys(after)) {
     const raised = alphaOf(after[name].light) > alphaOf(before[name].light) + 1e-9
     if (protectedNames.has(name)) {
-      assert.ok(alphaOf(after[name].light) >= Math.min(1, alphaOf(before[name].light)), `${name}: protection never lowers`)
+      assert.ok(alphaOf(after[name].light) >= Math.min(1, alphaOf(before[name].light)), `${name}: 保护绝不降低`)
     } else {
-      assert.ok(!raised, `${name}: only declared content surfaces may gain alpha`)
+      assert.ok(!raised, `${name}: 只有声明过的内容表面可以涨 alpha`)
     }
   }
 
-  // Nothing configured means nothing to uncover: the palettes stay untouched.
+  // 什么都没配就意味着没什么要揭开：调色板原样不动。
   m.engine.clearWallpaper()
   const cleared = m.layers[m.layers.length - 1].tokens
-  assert.equal(alphaOf(cleared['--dsw-alias-bg-base'].light), 0.64, 'clearing restores the full-strength panes')
+  assert.equal(alphaOf(cleared['--dsw-alias-bg-base'].light), 0.64, '清除恢复满强度面板')
   m.dispose()
-  console.log('ok  clarity thins the panes but never the text')
+  console.log('ok  通透度削薄面板但绝不削薄文字')
 }
 
 {
   const m = mount()
   const blob = { size: 1024, kind: 'video/mp4' }
   await m.engine.setWallpaperFile(blob, 'loop.mp4')
-  assert.equal(clipOf(m, 'idle'), 'both', 'a picked idle file serves both moods')
-  assert.equal(m.objectUrls.created.length, 1, 'the file is played through an object URL')
+  assert.equal(clipOf(m, 'idle'), 'both', '选中的空闲文件服务两个心情')
+  assert.equal(m.objectUrls.created.length, 1, '文件通过对象 URL 播放')
   const url = m.objectUrls.created[0].value
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), url, 'the clip plays the object URL')
-  assert.equal(m.engine.getWallpaper().clips.idle.source, 'file', 'the config records a local file')
-  assert.equal(m.engine.getWallpaper().clips.idle.name, 'loop.mp4', 'the display name is kept')
+  assert.equal(videoEl(m, 'idle').getAttribute('src'), url, '片子播对象 URL')
+  assert.equal(m.engine.getWallpaper().clips.idle.source, 'file', '配置记录一个本地文件')
+  assert.equal(m.engine.getWallpaper().clips.idle.name, 'loop.mp4', '显示名被保留')
   await settle()
-  assert.equal(m.idb.rows.get('wallpaper:idle'), blob, 'the blob is stored under the slot key')
-  assert.equal(JSON.parse(m.storage.getItem('dsh-glass-mood:video')).clips.idle.source, 'file', 'the file source is persisted')
+  assert.equal(m.idb.rows.get('wallpaper:idle'), blob, 'blob 存在槽键下')
+  assert.equal(JSON.parse(m.storage.getItem('dsh-glass-mood:video')).clips.idle.source, 'file', '文件来源被持久化')
 
   await m.engine.clearWallpaper('idle')
-  assert.equal(clipOf(m, 'idle'), 'none', 'clearing the only clip deactivates the stage')
-  assert.equal(m.document.body.dataset.glassWallpaper, 'off', 'and turns the wallpaper off')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), undefined, 'clearing drops the source')
-  assert.deepEqual(m.objectUrls.revoked, [url], 'the object URL is revoked')
-  assert.equal(m.idb.rows.has('wallpaper:idle'), false, 'the stored blob is removed')
-  assert.equal(m.engine.getWallpaper().clips.idle.source, '', 'the slot is reset')
+  assert.equal(clipOf(m, 'idle'), 'none', '清除唯一的片子停用舞台')
+  assert.equal(m.document.body.dataset.glassWallpaper, 'off', '并关掉壁纸')
+  assert.equal(videoEl(m, 'idle').getAttribute('src'), undefined, '清除丢掉源')
+  assert.deepEqual(m.objectUrls.revoked, [url], '对象 URL 被放开')
+  assert.equal(m.idb.rows.has('wallpaper:idle'), false, '存下的 blob 被移除')
+  assert.equal(m.engine.getWallpaper().clips.idle.source, '', '槽被重置')
   m.dispose()
-  console.log('ok  wallpaper local file + per-slot clear')
+  console.log('ok  壁纸本地文件 + 逐槽清除')
 }
 
 {
-  // Two clips, two slots: the switch must crossfade without reloading either.
+  // 两条片子，两个槽：切换必须交叉淡变，不重载任何一条。
   const m = mount()
   m.engine.setWallpaper({ url: 'https://cdn.example.com/calm.mp4', slot: 'idle' })
   m.engine.setWallpaper({ url: 'https://cdn.example.com/focus.mp4', slot: 'work' })
-  assert.equal(clipOf(m, 'idle'), 'idle', 'the idle slot owns its own clip')
-  assert.equal(clipOf(m, 'work'), 'work', 'the work slot owns its own clip')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), 'https://cdn.example.com/calm.mp4', 'idle plays its clip')
-  assert.equal(videoEl(m, 'work').getAttribute('src'), 'https://cdn.example.com/focus.mp4', 'work plays its clip')
-  assert.ok(videoEl(m, 'work').played >= 1, 'the hidden clip is already playing, so the switch is a crossfade')
+  assert.equal(clipOf(m, 'idle'), 'idle', '空闲槽拥有自己的片子')
+  assert.equal(clipOf(m, 'work'), 'work', '工作槽拥有自己的片子')
+  assert.equal(videoEl(m, 'idle').getAttribute('src'), 'https://cdn.example.com/calm.mp4', '空闲播它的片子')
+  assert.equal(videoEl(m, 'work').getAttribute('src'), 'https://cdn.example.com/focus.mp4', '工作播它的片子')
+  assert.ok(videoEl(m, 'work').played >= 1, '隐藏的片子已在播放，所以切换是交叉淡变')
 
   const idleSrc = videoEl(m, 'idle').getAttribute('src')
   const workSrc = videoEl(m, 'work').getAttribute('src')
@@ -809,30 +801,30 @@ const alphaOf = (color) => {
 
   m.sessionStatus.set(new Map([['s1', { running: true }]]))
   m.clock.advance(120)
-  assert.equal(m.document.body.dataset.glassMood, 'work', 'the mood switched')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), idleSrc, 'the idle clip was not reloaded')
-  assert.equal(videoEl(m, 'work').getAttribute('src'), workSrc, 'the work clip was not reloaded')
-  assert.equal(videoEl(m, 'idle').loaded ?? 0, loadsBefore, 'no decoder reset happened on the switch')
+  assert.equal(m.document.body.dataset.glassMood, 'work', '心情切换了')
+  assert.equal(videoEl(m, 'idle').getAttribute('src'), idleSrc, '空闲片子没有被重载')
+  assert.equal(videoEl(m, 'work').getAttribute('src'), workSrc, '工作片子没有被重载')
+  assert.equal(videoEl(m, 'idle').loaded ?? 0, loadsBefore, '切换时没有发生解码器重置')
   m.dispose()
-  console.log('ok  two clips crossfade without a reload')
+  console.log('ok  两条片子交叉淡变不重载')
 }
 
 {
-  // Removing one slot hands the survivor back to both moods.
+  // 移除一个槽，把幸存者交还给两个心情。
   const m = mount()
   m.engine.setWallpaper({ url: 'https://cdn.example.com/calm.mp4', slot: 'idle' })
   m.engine.setWallpaper({ url: 'https://cdn.example.com/focus.mp4', slot: 'work' })
   m.engine.clearWallpaper('work')
-  assert.equal(clipOf(m, 'work'), 'none', 'the cleared slot goes dark')
-  assert.equal(clipOf(m, 'idle'), 'both', 'the survivor covers both moods again')
-  assert.equal(videoEl(m, 'work').getAttribute('src'), undefined, 'the cleared slot released its source')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), 'https://cdn.example.com/calm.mp4', 'the survivor keeps playing')
+  assert.equal(clipOf(m, 'work'), 'none', '清掉的槽变暗')
+  assert.equal(clipOf(m, 'idle'), 'both', '幸存者重新覆盖两个心情')
+  assert.equal(videoEl(m, 'work').getAttribute('src'), undefined, '清掉的槽释放了它的源')
+  assert.equal(videoEl(m, 'idle').getAttribute('src'), 'https://cdn.example.com/calm.mp4', '幸存者继续播放')
   m.dispose()
-  console.log('ok  solo clip falls back to both moods')
+  console.log('ok  单独一条片子回退到两个心情')
 }
 
 {
-  // A stored pair survives a remount: config from localStorage, bytes from IndexedDB.
+  // 存好的一对在重新挂载后幸存：配置来自 localStorage，字节来自 IndexedDB。
   const first = mount()
   const blob = { size: 2048, kind: 'video/webm' }
   await first.engine.setWallpaperFile(blob, 'dawn.webm', 'work')
@@ -843,18 +835,18 @@ const alphaOf = (color) => {
   const second = mount({ storage: first.storage, idb: first.idb })
   await settle()
   const config = second.engine.getWallpaper()
-  assert.equal(config.clips.idle.source, 'url', 'the linked clip is restored')
-  assert.equal(config.clips.work.source, 'file', 'the file clip is restored')
-  assert.equal(config.clips.work.name, 'dawn.webm', 'the name is restored')
-  assert.equal(clipOf(second, 'work'), 'work', 'the restored file is live')
-  assert.equal(second.objectUrls.created.length, 1, 'a fresh object URL is created for the stored blob')
-  assert.equal(videoEl(second, 'work').getAttribute('src'), second.objectUrls.created[0].value, 'the restored clip plays')
+  assert.equal(config.clips.idle.source, 'url', '链接片子被恢复')
+  assert.equal(config.clips.work.source, 'file', '文件片子被恢复')
+  assert.equal(config.clips.work.name, 'dawn.webm', '名字被恢复')
+  assert.equal(clipOf(second, 'work'), 'work', '恢复的文件是活的')
+  assert.equal(second.objectUrls.created.length, 1, '为存下的 blob 创建了新的对象 URL')
+  assert.equal(videoEl(second, 'work').getAttribute('src'), second.objectUrls.created[0].value, '恢复的片子播放')
   second.dispose()
-  console.log('ok  wallpaper survives a remount')
+  console.log('ok  壁纸在重新挂载后幸存')
 }
 
 {
-  // Config that outlived its blob must degrade honestly, slot by slot.
+  // 比自己的 blob 活得久的配置必须逐槽诚实降级。
   const seed = mount()
   await seed.engine.setWallpaperFile({ size: 16 }, 'gone.mp4', 'work')
   seed.engine.setWallpaper({ url: 'https://cdn.example.com/calm.mp4', slot: 'idle' })
@@ -865,16 +857,16 @@ const alphaOf = (color) => {
   const next = mount({ storage: seed.storage, idb: seed.idb })
   await settle()
   const config = next.engine.getWallpaper()
-  assert.equal(config.clips.work.source, '', 'the slot whose bytes vanished is cleared')
-  assert.equal(config.clips.idle.source, 'url', 'the healthy slot is left alone')
-  assert.equal(clipOf(next, 'idle'), 'both', 'the survivor now serves both moods')
-  assert.equal(JSON.parse(next.storage.getItem('dsh-glass-mood:video')).clips.work.source, '', 'the stale slot is rewritten')
+  assert.equal(config.clips.work.source, '', '字节丢了的槽被清掉')
+  assert.equal(config.clips.idle.source, 'url', '健康的槽不碰')
+  assert.equal(clipOf(next, 'idle'), 'both', '幸存者现在服务两个心情')
+  assert.equal(JSON.parse(next.storage.getItem('dsh-glass-mood:video')).clips.work.source, '', '陈旧的槽被重写')
   next.dispose()
-  console.log('ok  stale wallpaper config degrades per slot')
+  console.log('ok  陈旧的壁纸配置逐槽降级')
 }
 
 {
-  // v1 (one top-level video, bare IndexedDB key) migrates into the idle slot.
+  // v1（顶层一个视频、光秃的 IndexedDB 键）迁移进空闲槽。
   const storage = {
     data: new Map([['dsh-glass-mood:video', JSON.stringify({ source: 'file', url: '', name: 'old.mp4', fit: 'contain', opacity: 0.4, blur: 4, tint: 0.5 })]]),
     getItem(key) { return this.data.has(key) ? this.data.get(key) : null },
@@ -887,48 +879,48 @@ const alphaOf = (color) => {
   const m = mount({ storage, idb })
   await settle()
   const config = m.engine.getWallpaper()
-  assert.equal(config.clips.idle.source, 'file', 'the v1 video lands in the idle slot')
-  assert.equal(config.clips.idle.name, 'old.mp4', 'its name survives')
-  assert.equal(config.clips.work.source, '', 'the work slot starts empty')
-  assert.equal(config.fit, 'contain', 'the v1 knobs are kept')
-  assert.equal(m.idb.rows.get('wallpaper:idle'), legacyBlob, 'the bytes are copied to the slot key')
-  assert.equal(m.idb.rows.has('wallpaper'), false, 'the legacy key is released')
-  assert.equal(m.objectUrls.created.length, 1, 'the migrated file plays')
+  assert.equal(config.clips.idle.source, 'file', 'v1 的视频落进空闲槽')
+  assert.equal(config.clips.idle.name, 'old.mp4', '它的名字幸存')
+  assert.equal(config.clips.work.source, '', '工作槽起步为空')
+  assert.equal(config.fit, 'contain', 'v1 的旋钮被保留')
+  assert.equal(m.idb.rows.get('wallpaper:idle'), legacyBlob, '字节被复制到槽键')
+  assert.equal(m.idb.rows.has('wallpaper'), false, '遗留键被释放')
+  assert.equal(m.objectUrls.created.length, 1, '迁移来的文件播放')
   assert.equal(JSON.parse(storage.getItem('dsh-glass-mood:video')).clips.idle.source, 'file', 'the config is rewritten in the v2 shape')
   m.dispose()
-  console.log('ok  v1 wallpaper migrates')
+  console.log('ok  v1 壁纸迁移')
 }
 
 {
-  // Without IndexedDB a picked file still shows, and the choice is never wiped:
-  // "the store is unavailable" is not "the file is gone".
+  // 没有 IndexedDB，选中的文件照样显示，而选择绝不被抹掉：
+  // "存储不可用"不是"文件没了"。
   const m = mount({ idb: false })
   const blob = { size: 32 }
   await m.engine.setWallpaperFile(blob, 'nodb.mp4', 'idle')
   await settle()
-  assert.equal(clipOf(m, 'idle'), 'both', 'a file without IndexedDB still shows')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), m.objectUrls.created[0].value, 'it plays from the object URL')
-  assert.equal(m.engine.getWallpaper().clips.idle.source, 'file', 'the choice is kept rather than cleared')
-  assert.match(m.engine.getWallpaper().notice, /仅在本次会话生效/, 'and the row is told it will not survive')
+  assert.equal(clipOf(m, 'idle'), 'both', '没有 IndexedDB 的文件照样显示')
+  assert.equal(videoEl(m, 'idle').getAttribute('src'), m.objectUrls.created[0].value, '它从对象 URL 播放')
+  assert.equal(m.engine.getWallpaper().clips.idle.source, 'file', '选择被保住，而不是清掉')
+  assert.match(m.engine.getWallpaper().notice, /仅在本次会话生效/, '且设置行被告知它活不过重启')
   m.dispose()
 
   const reopened = mount({ storage: m.storage, idb: false })
   await settle()
-  assert.equal(reopened.engine.getWallpaper().clips.idle.source, 'file', 'and it survives a reload in memory terms')
-  assert.match(reopened.engine.getWallpaper().notice, /无法恢复/, 'with the reason said out loud, not swallowed')
+  assert.equal(reopened.engine.getWallpaper().clips.idle.source, 'file', '且按内存的说法它在重载后幸存')
+  assert.match(reopened.engine.getWallpaper().notice, /无法恢复/, '连同被大声说出的原因，而不是被吞掉')
   reopened.dispose()
-  console.log('ok  wallpaper without IndexedDB')
+  console.log('ok  没有 IndexedDB 的壁纸')
 }
 //#endregion
 
 //#region media sampling
-/** A frame of one flat colour, the way the sampler would average it. */
+/** 一帧单色画面，取样器会把它平均掉的那种。 */
 function flatFrame(canvas, r, g, b) {
   canvas.pixels = framePixels(r, g, b)
   return canvas
 }
 const newCanvas = () => ({ pixels: [], throws: false, drawCalls: 0, drawnSlots: [], lastSlot: null })
-/** A flat frame of one colour, as the sampler would see it. */
+/** 一帧单色的扁平画面，取样器看到的样子。 */
 const framePixels = (r, g, b) => {
   const pixels = []
   for (let i = 0; i < 24 * 14; i++) pixels.push(r, g, b, 255)
@@ -937,131 +929,123 @@ const framePixels = (r, g, b) => {
 const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Number)
 
 {
-  // What the sampler reads has to be the clip on screen. Taking the first slot
-  // instead meant that with both clips configured the work mood kept the idle
-  // footage's hue (and its dimming) while a cold clip played behind the glass.
-  // Both clips get their own frame here: a warm one and a cold one, so "which
-  // reading is this pane wearing?" is answerable by looking at the pane.
+  // 取样器读到的必须是屏幕上的那条。取而取排在前面的那个槽，意味着两条片子都配了时，
+  // 工作态会保住空闲片子的色相（和它的压暗），而一条冷片子在玻璃背后播放。这里给两条
+  // 片子各自的帧：一暖一冷，所以"这块窗格正穿着哪个读数"看着窗格就能答。
   const canvas = newCanvas()
   canvas.perSlot = { idle: framePixels(250, 140, 40), work: framePixels(90, 140, 220) }
   const m = mount({ canvas })
   m.engine.setWallpaper({ url: 'https://cdn.example.com/calm.mp4', slot: 'idle' })
   m.engine.setWallpaper({ url: 'https://cdn.example.com/focus.mp4', slot: 'work' })
   m.clock.advance(4500)
-  assert.ok(canvas.drawnSlots.includes('idle'), 'the calm slot is read into its own reading')
-  assert.ok(canvas.drawnSlots.includes('work'), 'and so is the cold one, ahead of time')
-  assert.equal(m.engine.media().ready, true, 'the reading the calm mood paints comes from the calm clip')
+  assert.ok(canvas.drawnSlots.includes('idle'), '平静槽读进它自己的读数')
+  assert.ok(canvas.drawnSlots.includes('work'), '冷的那条也一样，提前读')
+  assert.equal(m.engine.media().ready, true, '平静心情画上去的读数来自平静的片子')
 
-  // The switch must land on the colour it already has: no sampling interval is due
-  // yet, and the pane still turns cold in the same tick. (Reading only the clip on
-  // screen is what made it wear the warm hue for another four seconds.)
+  // 切换必须落在它已经有的颜色上：还没有取样间隔到期，而窗格仍在同一跳变冷。
+  // （只读屏幕上的那条，正是让它多穿四秒暖色相的东西。）
   const warm = rgbOf(bodyVar(m, '--gm-panel-main-fill'))
   const drawsBefore = canvas.drawCalls
   m.sessionStatus.set(new Map([['s1', { running: true }]]))
   m.clock.advance(120)
-  assert.equal(m.document.body.dataset.glassMood, 'work', 'the mood switched')
+  assert.equal(m.document.body.dataset.glassMood, 'work', '心情切换了')
   const cold = rgbOf(bodyVar(m, '--gm-panel-main-fill'))
-  assert.equal(canvas.drawCalls, drawsBefore, 'and no new frame was read to do it')
-  assert.ok(cold[2] - cold[0] > warm[2] - warm[0], `the pane turns cold at once (${warm} -> ${cold})`)
+  assert.equal(canvas.drawCalls, drawsBefore, '且没有为它读新帧')
+  assert.ok(cold[2] - cold[0] > warm[2] - cold[0], `窗格立刻变冷（${warm} -> ${cold}）`)
 
-  // One decoder, not two: once the crossfade is over, the slot that is not showing
-  // is parked, and it comes back the moment it is needed again.
+  // 一个解码器，不是两个：交叉淡变一结束，不在显示的那个槽就停下，而需要时立刻回来。
   m.clock.advance(1200)
-  assert.equal(videoEl(m, 'work').paused, false, 'the clip on screen is playing')
-  assert.equal(videoEl(m, 'idle').paused, true, 'the clip that is not showing is parked')
+  assert.equal(videoEl(m, 'work').paused, false, '屏幕上的片子正在播放')
+  assert.equal(videoEl(m, 'idle').paused, true, '不在显示的片子已停下')
   assert.equal(
     videoEl(m, 'idle').getAttribute('src'),
     'https://cdn.example.com/calm.mp4',
-    'parked, not released: the switch is still a crossfade'
+    '停下而非释放：切换仍是交叉淡变'
   )
 
   m.sessionStatus.set(new Map())
   m.clock.advance(1700)
-  assert.equal(m.document.body.dataset.glassMood, 'idle', 'the mood came back')
-  assert.equal(videoEl(m, 'idle').paused, false, 'and the calm clip is playing again')
+  assert.equal(m.document.body.dataset.glassMood, 'idle', '心情回来了')
+  assert.equal(videoEl(m, 'idle').paused, false, '且平静的片子重新播放')
   m.clock.advance(1200)
-  assert.equal(videoEl(m, 'work').paused, true, 'with the cold one parked in turn')
+  assert.equal(videoEl(m, 'work').paused, true, '冷的那条随之停下')
   m.dispose()
-  console.log('ok  the reading follows the clip on screen, one decoder at a time')
+  console.log('ok  读数跟随屏幕上的片子，一次一个解码器')
 }
 
 {
-  // Bright saturated footage: the glass picks up its hue at the rim, and the media
-  // earns a legibility scrim — capped at 35%, the published guidance for glass over
-  // bright media.
+  // 明亮饱和的片子：玻璃在镜边拾起它的色相，媒体挣得一层可读性遮挡——封顶 35%，
+  // 这是明亮媒体上玻璃的公开指引。
   const canvas = flatFrame(newCanvas(), 250, 140, 40)
   const m = mount({ canvas })
   const plainRim = bodyVar(m, '--gm-rim-b')
   m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
   const media = m.engine.media()
-  assert.equal(media.ready, true, 'a frame was read')
-  assert.ok(media.brightness > 0.55, `bright footage reads as bright (${media.brightness})`)
-  assert.ok(Math.abs(media.hue - 28) < 14, `and keeps its own hue (${media.hue})`)
-  assert.ok(media.dim > 0 && media.dim <= 0.35, `and earns a scrim within the cap (${media.dim})`)
-  assert.equal(Number(bodyVar(m, '--gm-media-dim')), media.dim, 'the scrim is published for the layer')
+  assert.equal(media.ready, true, '读到了一帧')
+  assert.ok(media.brightness > 0.55, `明亮的片子读作亮（${media.brightness}）`)
+  assert.ok(Math.abs(media.hue - 28) < 14, `并保住它自己的色相（${media.hue}）`)
+  assert.ok(media.dim > 0 && media.dim <= 0.35, `并在封顶内挣得一层遮挡（${media.dim}）`)
+  assert.equal(Number(bodyVar(m, '--gm-media-dim')), media.dim, '遮挡层为那一层发布')
 
-  // The rim moved toward the warm content by a real amount, without travelling
-  // through magenta: rotating the hue wheel the short way from 220° to 29° passes
-  // through violet, which is the purple cast this theme had to remove.
+  // 镜边朝暖内容移了实实在在的一段，且不穿过品红：在色轮上从 220° 旋转到 29° 的短路
+  // 穿过紫，那正是本主题不得不去掉的紫 cast。
   const before = rgbOf(plainRim)
   const after = rgbOf(bodyVar(m, '--gm-rim-b'))
-  assert.ok(after[0] - after[2] > before[0] - before[2], `the rim warms toward the footage (${plainRim} -> ${bodyVar(m, '--gm-rim-b')})`)
+  assert.ok(after[0] - after[2] > before[0] - before[2], `镜边朝片子变暖（${plainRim} -> ${bodyVar(m, '--gm-rim-b')}）`)
   assert.ok(
     (after[2] - after[0]) <= (before[2] - before[0]) - 5,
-    `and warms for real, not by drifting into violet (${before[2] - before[0]} -> ${after[2] - after[0]})`
+    `且是真暖，不是漂进紫（${before[2] - before[0]} -> ${after[2] - after[0]}）`
   )
-  // The pane itself takes the content's colour — a hue rotation alone could not show
-  // on a pane that is within a couple of percent of neutral, so the tint aims at the
-  // content's hue at a usable saturation and steps a light pane down to make room.
+  // 窗格自己沾上内容的颜色——单旋转色相在一块离中性只差几个百分点的窗格上显示不出来，
+  // 所以染色瞄准内容的色相在一个可用饱和度上，并把浅色窗格往下挪腾地方。
   const paneWarm = rgbOf(bodyVar(m, '--gm-panel-main-fill'))
-  assert.ok(paneWarm[0] > paneWarm[2], `the pane takes on the warm content (${bodyVar(m, '--gm-panel-main-fill')})`)
+  assert.ok(paneWarm[0] > paneWarm[2], `窗格沾上暖内容（${bodyVar(m, '--gm-panel-main-fill')}）`)
 
-  // Both switches turn their own effect off, live, without touching the reading.
+  // 两个开关各自关掉自己的效果，实时生效，不碰读数。
   m.engine.setWallpaper({ autoDim: false })
-  assert.equal(Number(bodyVar(m, '--gm-media-dim')), 0, 'the scrim switch zeroes the scrim')
-  assert.equal(m.engine.media().ready, true, 'while the sampler keeps reading')
+  assert.equal(Number(bodyVar(m, '--gm-media-dim')), 0, '遮挡开关把遮挡归零')
+  assert.equal(m.engine.media().ready, true, '而取样器持续读取')
   m.engine.setWallpaper({ autoDim: true })
-  assert.ok(Number(bodyVar(m, '--gm-media-dim')) > 0, 'and back on again')
+  assert.ok(Number(bodyVar(m, '--gm-media-dim')) > 0, '并再次打开')
   m.engine.setPanels({ rimSpill: false })
-  assert.equal(bodyVar(m, '--gm-rim-b'), plainRim, 'the content-tint switch restores the authored rim')
-  // The pane goes back to the mood's own cast, not to the footage's hue: the cast
-  // is a few units off neutral by design (it is what makes the pane read warm or
-  // cool with no wallpaper at all), while the content's hue moves it much further.
+  assert.equal(bodyVar(m, '--gm-rim-b'), plainRim, '内容染色开关恢复镜边本色')
+  // 窗格回到心情自己的底色，而不是片子的色相：底色按设计只离中性几个单位（正是它让
+  // 窗格在完全没有壁纸时也读得出暖或冷），而内容的色相把它推得远得多。
   const panePlain = rgbOf(bodyVar(m, '--gm-panel-main-fill'))
   assert.ok(
     panePlain[0] - panePlain[2] < paneWarm[0] - paneWarm[2],
-    `and the pane gives the content's hue back (${bodyVar(m, '--gm-panel-main-fill')})`
+    `并且窗格把内容的色相还了回去（${bodyVar(m, '--gm-panel-main-fill')}）`
   )
-  assert.ok(panePlain[0] - panePlain[2] <= 6, `leaving only the mood's own cast (${bodyVar(m, '--gm-panel-main-fill')})`)
+  assert.ok(panePlain[0] - panePlain[2] <= 6, `只留下心情自己的底色（${bodyVar(m, '--gm-panel-main-fill')}）`)
   m.engine.setPanels({ rimSpill: true })
-  assert.notEqual(bodyVar(m, '--gm-rim-b'), plainRim, 'and back on again')
+  assert.notEqual(bodyVar(m, '--gm-rim-b'), plainRim, '并再次打开')
 
-  // Sampling is throttled well below the poll.
+  // 取样节流得远比轮询稀疏。
   const draws = canvas.drawCalls
   m.clock.advance(1500)
-  assert.equal(canvas.drawCalls, draws, 'a second read inside the window does not touch the canvas')
+  assert.equal(canvas.drawCalls, draws, '窗口内的第二次读取不碰画布')
   m.clock.advance(4000)
-  assert.ok(canvas.drawCalls > draws, 'and it resumes after the interval')
+  assert.ok(canvas.drawCalls > draws, '且间隔后恢复')
   m.dispose()
-  console.log('ok  the footage drives the rim hue and the dim layer')
+  console.log('ok  片子驱动镜边色相与压暗层')
 }
 
 {
-  // Dark footage is left alone, grey footage has no hue to spill, and an unreadable
-  // clip (a cross-origin URL taints the canvas) falls back instead of guessing.
+  // 暗片子放任不管，灰片子没有色相可溢，而一条读不到的片子（跨源 URL 会污染画布）
+  // 回退而不是猜。
   const dark = flatFrame(newCanvas(), 10, 12, 16)
   const m = mount({ canvas: dark })
   m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
-  assert.equal(m.engine.media().dim, 0, 'dark footage earns no scrim')
-  assert.equal(m.engine.media().hue, null, 'and a near-black frame has no hue')
+  assert.equal(m.engine.media().dim, 0, '暗片子挣不到遮挡层')
+  assert.equal(m.engine.media().hue, null, '而近黑的帧没有色相')
   m.dispose()
 
   const grey = flatFrame(newCanvas(), 128, 128, 128)
   const m2 = mount({ canvas: grey })
   const coolRim = bodyVar(m2, '--gm-rim-b')
   m2.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
-  assert.equal(m2.engine.media().hue, null, 'grey footage has no hue to spill')
-  assert.equal(bodyVar(m2, '--gm-rim-b'), coolRim, 'so the rim keeps its authored colour')
+  assert.equal(m2.engine.media().hue, null, '灰片子没有色相可溢')
+  assert.equal(bodyVar(m2, '--gm-rim-b'), coolRim, '所以镜边保住它的本色')
   m2.dispose()
 
   const tainted = newCanvas()
@@ -1069,221 +1053,206 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   const m3 = mount({ canvas: tainted })
   m3.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
   const media = m3.engine.media()
-  assert.equal(media.ready, false, 'a tainted canvas reads as unreadable')
-  assert.equal(media.dim, 0, 'and earns no scrim')
-  assert.equal(media.hue, null, 'and no hue')
+  assert.equal(media.ready, false, '被污染的画布读作不可读')
+  assert.equal(media.dim, 0, '且挣不到遮挡层')
+  assert.equal(media.hue, null, '且没有色相')
   m3.dispose()
 
-  // No clip at all: nothing to read, and no scrim.
+  // 完全没有片子：没什么可读，也没有遮挡层。
   const m4 = mount({ canvas: newCanvas() })
-  assert.equal(m4.engine.media().ready, false, 'without a clip nothing is sampled')
-  assert.equal(Number(bodyVar(m4, '--gm-media-dim')), 0, 'and the scrim stays off')
+  assert.equal(m4.engine.media().ready, false, '没有片子就什么都不取样')
+  assert.equal(Number(bodyVar(m4, '--gm-media-dim')), 0, '遮挡层保持关着')
   m4.dispose()
-  console.log('ok  dark, grey, tainted and clipless media all fall back')
+  console.log('ok  暗、灰、污染、无片子的媒体全部回退')
 }
 
 {
-  // The dim layer lives in the stage, above the clips and the mood wash, and it stays
-  // inside the negative layer with the rest of the stage.
+  // 压暗层住在舞台里，在片子和情绪染色之上，并和舞台其余部分一起留在负层内。
   const m = mount()
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
-  assert.match(css, /\[data-glass-layer=dim\]\{inset:0;background:rgba\(0,0,0,var\(--gm-media-dim,0\)\)/, 'a neutral black scrim is the layer')
+  assert.match(css, /\[data-glass-layer=dim\]\{inset:0;background:rgba\(0,0,0,var\(--gm-media-dim,0\)\)/, '一层中性黑遮挡')
   const stage = m.document.getElementById('dsh-glass-mood-bg')
   const names = stage.children.map((child) => child.getAttribute('data-glass-layer')).filter(Boolean)
-  assert.deepEqual(names, ['idle', 'work', 'pulse', 'dim'], 'and it is the last layer, so it dims the whole stack')
+  assert.deepEqual(names, ['idle', 'work', 'pulse', 'dim'], '且它是最后一层，所以压暗整个栈')
   m.dispose()
-  console.log('ok  the dim layer is a scrim over the media stack')
+  console.log('ok  压暗层是罩在媒体栈上的一层遮挡')
 }
 //#endregion
 
 {
-  // Interaction feedback: a press that deforms the control, from the immersive
-  // material spec (`interactive`). The pointer light that briefly lived here was
-  // removed — the person using it called it meaningless, and a feature nobody wants
-  // should not keep three elements and a pointer listener alive.
+  // 交互反馈：一次让控件变形的按压，来自沉浸材质规范（`interactive`）。曾短暂住在
+  // 这里的指针光被去掉了——用它的人说它没有意义，而一个没人要的功能不该让三个元素和
+  // 一个指针监听器继续活着。
   const m = mount()
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
-  assert.ok(!/data-glass-light/.test(css), 'the pointer light is gone from the CSS')
-  assert.equal(m.document.querySelectorAll('[data-glass-light]').length, 0, 'and from the DOM')
-  assert.match(css, /@keyframes gm-press\{from\{scale:1\}to\{scale:\.972\}\}/, 'the press animation is declared')
-  assert.match(css, /body\[data-glass-press=on\] button:active/, 'and gated on the switch')
-  assert.match(css, /body\[data-glass-press=on\] \[role=menuitem\]:active\{animation:gm-press/, 'for genuinely pressable controls')
-  // It scales rather than transforms, so an app transform is never clobbered.
-  assert.ok(!/button:active\{[^}]*transform:/.test(css), 'the press does not touch transform')
-  assert.match(css, /prefers-reduced-motion[^}]*button:active[^}]*animation:none/, 'and reduced motion cancels it')
-  // Reduced motion must cut the mood crossfade as well, and the override has to come
-  // after the rules it overrides: equal specificity means the last one wins, so an
-  // override placed first would be silently cancelled.
+  assert.ok(!/data-glass-light/.test(css), '指针光从 CSS 里消失')
+  assert.equal(m.document.querySelectorAll('[data-glass-light]').length, 0, '以及从 DOM 里')
+  assert.match(css, /@keyframes gm-press\{from\{scale:1\}to\{scale:\.972\}\}/, '按压动画被声明')
+  assert.match(css, /body\[data-glass-press=on\] button:active/, '并挂在开关上')
+  assert.match(css, /body\[data-glass-press=on\] \[role=menuitem\]:active\{animation:gm-press/, '只给真正可按的控件')
+  // 它缩放而不变换，所以 app 的 transform 永远不会被砸掉。
+  assert.ok(!/button:active\{[^}]*transform:/.test(css), '按压不碰 transform')
+  assert.match(css, /prefers-reduced-motion[^}]*button:active[^}]*animation:none/, '且减弱动效取消它')
+  // 减弱动效也必须砍掉心情交叉淡变，而覆盖必须写在它所覆盖的规则之后：特异性相等时
+  // 最后一个赢，所以放在前面的覆盖会被悄悄取消。
   const fadeAt = css.indexOf('prefers-reduced-motion: reduce){body[data-glass-mood]{--gm-fade:1ms}')
   const baseAt = css.indexOf('body[data-glass-mood]{--gm-fade:520ms;')
-  assert.ok(fadeAt > 0, 'reduced motion shortens the mood crossfade')
-  assert.ok(baseAt > 0 && fadeAt > baseAt, 'and the override is declared after the rule it overrides')
+  assert.ok(fadeAt > 0, '减弱动效缩短心情交叉淡变')
+  assert.ok(baseAt > 0 && fadeAt > baseAt, '且覆盖声明在所覆盖规则之后')
 
-  // The switch is live and reaches the body.
-  assert.equal(m.document.body.dataset.glassPress, 'on', 'press deformation is on by default')
+  // 开关是活的，并到达 body。
+  assert.equal(m.document.body.dataset.glassPress, 'on', '按压形变默认开')
   m.engine.setPanels({ press: false })
-  assert.equal(m.document.body.dataset.glassPress, 'off', 'and the switch reaches the body')
+  assert.equal(m.document.body.dataset.glassPress, 'off', '且开关到达 body')
   m.engine.setPanels({ press: true })
-  assert.equal(m.document.body.dataset.glassPress, 'on', 'and back on')
+  assert.equal(m.document.body.dataset.glassPress, 'on', '并重新打开')
   m.engine.off()
-  assert.equal(m.document.body.dataset.glassPress, undefined, 'off() clears the attribute')
-  console.log('ok  press deformation, with no pointer light left behind')
+  assert.equal(m.document.body.dataset.glassPress, undefined, 'off() 清掉属性')
+  console.log('ok  按压形变，指针光不留')
 }
 
 //#region accessibility
 {
-  // Reported: with the right panel expanded to fullscreen, that panel's opacity and
-  // blur stopped covering it and a seam showed against the main panel. The app does
-  // not move any DOM for that mode — it only rewrites the frame's grid columns — so
-  // the column widens while the inner surface the material was delegated to keeps its
-  // old width. The delegation was measured once and never re-checked, which is what
-  // this locks down.
+  // 报上来的现象：右栏展开到全屏时，那个面板的不透明度和模糊不再覆盖它，对着中间面板
+  // 露出一道缝。app 不为那个模式移动任何 DOM——它只重写外框的网格列——所以列变宽，而
+  // 接过材质的内层表面保持旧宽度。授权是从一次测量发出去的、从不复查，这就是这里要锁死
+  // 的东西。
   const m = mount()
-  assert.equal(m.engine.blurReport().left.delegated, true, 'the left panel starts delegated to its inner surface')
+  assert.equal(m.engine.blurReport().left.delegated, true, '左面板起步时授权给内层表面')
   const observer = m.window.observers.at(-1)
-  assert.ok(observer, 'the columns are observed, which is how an expansion is noticed')
+  assert.ok(observer, '列被观察，展开就是这样被察觉的')
 
-  // Fullscreen: the column doubles, the inner surface does not (260 of 520 < 85%).
+  // 全屏：列翻倍，内层表面不（520 里的 260 < 85%）。
   m.shell.left.box = { width: 520, height: 780, left: 0, top: 0 }
   observer.emit()
   m.clock.advance(200)
 
-  assert.equal(m.engine.blurReport().left.delegated, false, 'a surface that stopped covering gives the material back')
-  assert.equal(m.shell.leftSurface.getAttribute('data-glass-surface'), undefined, 'the stale surface is released')
-  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, 'and the column stops deferring to it')
+  assert.equal(m.engine.blurReport().left.delegated, false, '不再覆盖的表面把材质还回来')
+  assert.equal(m.shell.leftSurface.getAttribute('data-glass-surface'), undefined, '陈旧的表面被释放')
+  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, '且列不再礼让它')
   assert.equal(
     m.engine.blurSummary().every((line) => !/未识别|fixed|降级/.test(line)),
     true,
-    'and a healthy panel reports nothing'
+    '健康的面板没什么要报'
   )
 
-  // The knobs move what is actually on screen again.
+  // 旋钮再次移动屏幕上真正的东西。
   m.engine.setPanels({ left: { opacity: 0.42 } })
   assert.equal(
     panelAlpha(bodyVar(m, '--gm-panel-left-fill')),
     0.42,
-    'the panel the material fell back to takes the new opacity'
+    '材质回退到的那个面板接住新的不透明度'
   )
 
-  // Shrinking back re-delegates: it is a measurement, not a one-way door.
+  // 缩回去重新授权：那是一次测量，不是一扇单向门。
   m.shell.left.box = { width: 260, height: 780, left: 0, top: 0 }
   observer.emit()
   m.clock.advance(200)
-  assert.equal(m.engine.blurReport().left.delegated, true, 'and a column that fits its surface again delegates once more')
+  assert.equal(m.engine.blurReport().left.delegated, true, '而一个重新合上表面的列再次授权')
 
-  // The seam: the pane that used to show through is the centre panel's, and hiding it
-  // is what closes the gap. The right column must NOT lose its own gutter though — an
-  // earlier version cleared its margins and the expanded panel ended up flush against
-  // the title bar while still holding off the bottom (top gap gone, bottom gap left).
+  // 那道缝：过去透出来的是中间面板的窗格，而藏掉它才合上口子。但右列绝不能丢自己的
+  // 沟槽——早先的版本清掉了它的 margin，展开的面板于是贴到标题栏上，同时仍被托离底部
+  // （上面的间隙没了，下面的还在）。
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   assert.match(
     css,
     /\[data-rightbar-fullscreen\] \[data-glass-panel=right\]\{overflow:visible;box-shadow:none\}/,
-    'an expanded right panel keeps its gutter and only gives up its own card'
+    '展开的右栏保住沟槽，只放弃自己的卡'
   )
-  // The column's radius must NOT change between the two modes. Every panel carries
-  // `transition: border-radius 220ms`, so setting it to 0 in the expanded mode made
-  // collapsing animate from square back to 12px — and the material returns to the column
-  // at that same moment, so the switch played as "square first, then it rounds off".
+  // 列的圆角在两种模式之间绝不能变。每个面板都带 `transition: border-radius 220ms`，
+  // 所以在展开模式里把它设成 0，会让收起时从方形动画回 12px——而材质在同一刻回到列上，
+  // 于是切换播放成"先方，再圆回去"。
   assert.ok(
     !/\[data-rightbar-fullscreen\] \[data-glass-panel=right\]\{[^}]*border-radius/.test(css),
-    'and its border-radius never changes, so collapsing has nothing to animate'
+    '且它的圆角从不改变，所以收起时没有东西可动画'
   )
   assert.match(
     css,
     /\[data-rightbar-fullscreen\] \[data-glass-panel=main\]\{margin-right:0;visibility:hidden\}/,
-    'and the main panel drops its half of the gutter while being hidden, so nothing of it shows through the expanded panel'
+    '且中间面板被隐藏时让出自己那半条沟槽，展开的面板后什么都透不出来'
   )
   m.dispose()
-  console.log('ok  an expanded panel re-validates the surface it delegated to, and closes the seam')
+  console.log('ok  展开的面板重新验证它授权给的表面，并合上那条缝')
 }
 
 //#region accessibility
 {
-  // Accessibility, which Apple's HIG names explicitly for Liquid Glass: Reduced
-  // Transparency and Increased Contrast. Both are read from media queries, both
-  // change the tokens, and both are answered again when the system flips.
+  // 无障碍，Apple 的 HIG 为液态玻璃明确点名的两项：减弱透明与增强对比度。两者都从
+  // 媒体查询读，都改 token，都在系统翻转时再次应答。
   const m = mount({ prefers: { reducedTransparency: true } })
   assert.deepEqual(
     m.engine.preferences(),
     { reducedTransparency: true, moreContrast: false },
-    'the preference is read at mount'
+    '偏好在挂载时读取'
   )
-  assert.equal(m.document.body.dataset.glassTransparency, 'reduced', 'and reaches the body for the CSS')
+  assert.equal(m.document.body.dataset.glassTransparency, 'reduced', '并到达 body 供 CSS 用')
   const prefCss = m.document.getElementById('dsh-glass-mood-style').textContent
-  // Both blur arrangements exist, and neither is gated on a preference reading: one
-  // reading must never be able to silently disable the blur knob.
+  // 两种模糊排布都在，且都不挂在偏好读取上：一次读取绝不能有能力悄悄禁用模糊旋钮。
   assert.match(
     prefCss,
     /\[data-glass-blur=on\] \[data-glass-blur-host=element\]\{[^}]*backdrop-filter/,
-    'the element-hosted blur is declared'
+    '元素承载的模糊被声明'
   )
   assert.match(
     prefCss,
     /\[data-glass-blur=on\] \[data-glass-surface\]:not\(\[data-glass-blur-host=element\]\)::before\{[^}]*backdrop-filter/,
-    'and so is the pseudo fallback'
+    '伪元素降级也一样'
   )
-  assert.ok(!/data-glass-transparency=reduced/.test(prefCss), 'with neither of them gated on reduced transparency')
+  assert.ok(!/data-glass-transparency=reduced/.test(prefCss), '两者都不挂在减弱透明上')
   m.dispose()
 
-  // Every text-bearing surface becomes opaque, and the visibility knob can no longer
-  // thin a pane you have to read through.
+  // 每个承载文字的表面变成不透明，可见度旋钮再也削不薄一块你必须透过它读的面板。
   const solid = mount({ prefers: { reducedTransparency: true } })
   solid.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4', visibility: 1 })
-  assert.equal(panelAlpha(bodyVar(solid, '--gm-panel-main-fill')), 1, 'the pane is solid whatever the visibility knob says')
-  assert.equal(panelAlpha(bodyVar(solid, '--gm-panel-left-fill')), 1, 'and so is the sidebar')
+  assert.equal(panelAlpha(bodyVar(solid, '--gm-panel-main-fill')), 1, '可见度旋钮说什么，窗板都是实的')
+  assert.equal(panelAlpha(bodyVar(solid, '--gm-panel-left-fill')), 1, '侧边栏也是')
   const tokens = solid.layers[solid.layers.length - 1].tokens
-  assert.equal(alphaOf(tokens['--dsw-specific-bubble'].light), 1, 'message bubbles are solid')
-  assert.equal(alphaOf(tokens['--dsw-alias-bg-document-preview'].light), 1, 'and so is the diff preview')
-  // The canvas is deliberately left alone: the wallpaper is the person's own choice
-  // and it only shows where nothing has to be read.
-  assert.ok(alphaOf(tokens['--dsw-alias-bg-base'].light) < 1, 'the wallpaper still shows between the panels')
+  assert.equal(alphaOf(tokens['--dsw-specific-bubble'].light), 1, '消息气泡是实的')
+  assert.equal(alphaOf(tokens['--dsw-alias-bg-document-preview'].light), 1, 'diff 预览也一样')
+  // 画布刻意放过：壁纸是人自己的选择，且它只在没有东西要读的地方显示。
+  assert.ok(alphaOf(tokens['--dsw-alias-bg-base'].light) < 1, '壁纸仍在面板之间显示')
   solid.dispose()
 
-  // Increased contrast unifies the label tiers, so hierarchy comes from size and
-  // weight rather than from fading text toward the background.
+  // 增强对比度统一标签层级，所以层级来自字号和字重，而不是把文字淡向背景。
   const contrast = mount({ prefers: { moreContrast: true } })
-  assert.equal(contrast.document.body.dataset.glassContrast, 'more', 'the preference reaches the body')
+  assert.equal(contrast.document.body.dataset.glassContrast, 'more', '偏好到达 body')
   const boosted = contrast.layers[contrast.layers.length - 1].tokens
   const primary = boosted['--dsw-alias-label-primary']
   for (const tier of contrast.loaded.LABEL_TIERS) {
-    assert.deepEqual(boosted[tier], primary, `${tier} takes the primary colour`)
+    assert.deepEqual(boosted[tier], primary, `${tier} 取主色`)
   }
-  assert.equal(alphaOf(boosted['--dsw-alias-bg-overlay'].light), 1, 'and popovers become solid')
+  assert.equal(alphaOf(boosted['--dsw-alias-bg-overlay'].light), 1, '且弹出层变实')
   contrast.dispose()
 
-  // A system change lands without a reload, and the listeners are released.
+  // 一次系统变化不重载就落地，监听者被释放。
   const live = mount()
-  assert.equal(live.document.body.dataset.glassContrast, undefined, 'nothing is assumed at first')
-  assert.ok(live.preferenceLists.every((entry) => entry.listenerCount() === 1), 'both preferences are watched')
+  assert.equal(live.document.body.dataset.glassContrast, undefined, '起初什么都不假定')
+  assert.ok(live.preferenceLists.every((entry) => entry.listenerCount() === 1), '两个偏好都被观察')
   live.setPreference('moreContrast', true)
-  assert.equal(live.document.body.dataset.glassContrast, 'more', 'flipping the system setting repaints')
-  assert.equal(live.document.body.dataset.glassTransparency, undefined, 'and only what changed')
+  assert.equal(live.document.body.dataset.glassContrast, 'more', '翻系统设置触发重绘')
+  assert.equal(live.document.body.dataset.glassTransparency, undefined, '且只发布变了的')
   live.setPreference('reducedTransparency', true)
-  assert.equal(live.document.body.dataset.glassTransparency, 'reduced', 'the other one too')
+  assert.equal(live.document.body.dataset.glassTransparency, 'reduced', '另一个也是')
   live.setPreference('moreContrast', false)
-  assert.equal(live.document.body.dataset.glassContrast, undefined, 'and turning one off is answered as well')
+  assert.equal(live.document.body.dataset.glassContrast, undefined, '关掉一个也同样被应答')
   live.dispose()
-  assert.ok(live.preferenceLists.every((entry) => entry.listenerCount() === 0), 'teardown releases the listeners')
-  console.log('ok  reduced transparency and increased contrast are answered, live')
+  assert.ok(live.preferenceLists.every((entry) => entry.listenerCount() === 0), '拆卸释放监听者')
+  console.log('ok  减弱透明与增强对比度被实时应答')
 }
 //#endregion
 
 //#region fullscreen
 {
-  // The live page's shape, from a report of the real thing: in the expanded mode the
-  // grid is untouched (sidebar 271, centre 1701, right 576) and the presentation layer
-  // is the app's own, in the right column. A "deepest element that covers the frame"
-  // search was tried here and it picked the CENTRE panel's content root — same box as
-  // the centre column, so it qualified — which put the right panel's material on the
-  // centre panel: the blur seen through the expanded panel was the centre panel's own.
-  // So the rule now is: the material stays on the right column, and the centre panel
-  // stops showing through the presentation.
+  // 真实页面的形状，来自一份对实物的报告：展开模式下网格没动（侧边栏 271、中间
+  // 1701、右 576），呈现层是 app 自己的，在右列里。这里试过"盖住框的最深元素"搜索，
+  // 它选中了中间面板自己的内容根——和中间列同一个盒子，所以够格——这把右栏的材质放到了
+  // 中间面板上：透过展开面板看到的模糊是中间面板自己的。所以现在的规则是：材质留在
+  // 右列上，中间面板停止透过呈现显形。
   const m = mount()
   m.shell.frame.box = { width: 2560, height: 1552, left: 0, top: 0 }
   m.shell.center.box = { width: 1701, height: 1500, left: 283, top: 46 }
   m.shell.right.box = { width: 576, height: 1506, left: 1984, top: 40 }
-  // A centre-panel element big enough to satisfy any frame-covering test.
+  // 一个够大的中间面板元素，满足任何盖框测试。
   const centreSurface = m.document.createElement('div')
   centreSurface.setAttribute('class', 'Dc7zOa_root')
   centreSurface.computed = { backgroundColor: 'rgba(243, 235, 231, 0.1)', position: 'relative', backgroundImage: 'none' }
@@ -1293,11 +1262,11 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.engine.retag(true)
 
   const report = m.engine.domReport()
-  assert.equal(m.engine.panelStatus().found.right, true, 'the right panel is reported as found')
+  assert.equal(m.engine.panelStatus().found.right, true, '右面板报成找到')
   assert.equal(
     m.shell.right.getAttribute('data-glass-panel'),
     'right',
-    'and stays on its own column'
+    '且留在自己的列上'
   )
   assert.equal(
     centreSurface.getAttribute('data-glass-panel'),
@@ -1307,73 +1276,69 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(
     m.shell.center.getAttribute('data-glass-panel'),
     'main',
-    'the centre panel keeps its own material'
+    '中间面板保住自己的材质'
   )
 
-  // The centre panel is hidden (not unmounted) while the panel is presented full.
+  // 面板全屏呈现期间，中间面板被隐藏（不是卸载）。
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   assert.match(
     css,
     /\[data-rightbar-fullscreen\] \[data-glass-panel=main\]\{margin-right:0;visibility:hidden\}/,
-    'and it is hidden while the presentation is up, so it cannot show through it'
+    '且呈现期间它被隐藏，所以没法透过它显形'
   )
-  assert.ok(!/display:none/.test(css), 'with visibility rather than display: the grid keeps its columns and nothing reflows')
+  assert.ok(!/display:none/.test(css), '用 visibility 而不是 display：网格保住列，什么都不回流')
 
-  // Collapsing restores everything.
+  // 收起恢复一切。
   m.shell.frame.removeAttribute('data-rightbar-fullscreen')
   m.engine.retag(true)
-  assert.equal(m.engine.panelStatus().found.main, true, 'collapsing brings the centre panel back')
+  assert.equal(m.engine.panelStatus().found.main, true, '把中间面板收回来')
   m.dispose()
-  console.log('ok  an expanded right panel keeps its own material, and the centre panel stops showing through')
+  console.log('ok  展开的右栏保住自己的材质，中间面板不再透过它显形')
 }
 
 {
-  // The diagnostic report is off unless a person asks for it. It used to fire on
-  // its own — once per session for the ordinary layout, every 2.5s while the
-  // right panel was expanded, once per collapse — posting to a local port and
-  // storing a DOM snapshot nobody had requested.
+  // 诊断报告没有人要就不发。它过去自己发火——普通布局每会话一份、右栏展开期间每
+  // 2.5s 一份、每次收起一份——往一个本地端口发东西，并存一份没人要过的 DOM 快照。
   const m = mount()
   m.engine.retag(true)
   m.clock.advance(2000)
-  assert.equal(m.storage.getItem('dsh-glass-mood:last-report'), null, 'no report is taken while the switch is off')
-  assert.equal(m.engine.setReports(true), true, 'the switch turns the automatic reports on')
+  assert.equal(m.storage.getItem('dsh-glass-mood:last-report'), null, '开关关着时不取报告')
+  assert.equal(m.engine.setReports(true), true, '开关打开自动报告')
   m.engine.retag(true)
   m.clock.advance(2000)
-  assert.ok(m.storage.getItem('dsh-glass-mood:last-report') !== null, 'and then the ordinary layout is measured')
-  // The manual entry point works either way: that is the difference the switch marks.
+  assert.ok(m.storage.getItem('dsh-glass-mood:last-report') !== null, '然后普通布局被测量')
+  // 手动入口两种状态都能用：那正是这个开关标出的差别。
   m.engine.setReports(false)
   m.engine.postReport()
   const manual = JSON.parse(m.storage.getItem('dsh-glass-mood:last-report'))
-  assert.equal(manual.reason, 'manual', 'postReport sends one on request, with the switch off')
+  assert.equal(manual.reason, 'manual', 'postReport 应请求发一份，开关关着也发')
   m.dispose()
-  console.log('ok  the diagnostic report is off unless asked for')
+  console.log('ok  诊断报告不要就不发')
 }
 //#endregion
 
 //#region presentation
 {
-  // The real contract, read out of the app's own bundle instead of guessed from
-  // geometry. `ui-sidebar-right` renders the panel as
+  // 真正的契约，从 app 自己的 bundle 里读出来，而不是从几何猜。`ui-sidebar-right` 这样
+  // 渲染面板：
   //   <div class="..._panel" data-sidebar-right-panel={fullscreen ? "fullscreen" : "push"}
   //        style={{ width: fullscreen ? "100vw" : width }}>
-  // and its stylesheet pins it `position:absolute; top:0; bottom:0; right:0` inside the
-  // right column (`.rightbarCol{min-width:0;position:relative;overflow:visible}`).
-  // So a fullscreen right panel is NOT the column: the column keeps its own grid track
-  // underneath ("fullscreen covers the viewport while retaining the wide-screen columns
-  // underneath", the same package's README) and the panel hangs left across the centre.
+  // 而它的样式表把它钉在右列内部：`position:absolute; top:0; bottom:0; right:0`
+  // （`.rightbarCol{min-width:0;position:relative;overflow:visible}`）。
+  // 所以全屏的右栏不是列：列在下面保留自己的网格轨道（"fullscreen covers the viewport
+  // while retaining the wide-screen columns underneath"，同一个包的 README），面板向左
+  // 搭过中间列。
   //
-  // Three geometry guesses were tried here first and all three were wrong — a
-  // "deepest frame-covering element" picked the centre panel's content root, a
-  // "frame-spanning child of the overlay layer" found nothing, and a "presentation
-  // band" rule found nothing. The lookup is now the app's own marker.
+  // 三种几何猜测先在这里试过，三个全错——"盖住框的最深元素"选中了中间面板自己的内容根，
+  // "覆盖层里跨满框的子元素"什么都没找到，"呈现带"规则也什么都没找到。查找现在是 app
+  // 自己的标记。
   const m = mount()
   m.shell.frame.box = { width: 2560, height: 1552, left: 0, top: 0 }
   m.shell.center.box = { width: 1701, height: 1500, left: 283, top: 46 }
   m.shell.right.box = { width: 576, height: 1506, left: 1984, top: 40 }
 
-  // Decoys, one per rule that failed: the centre panel's own content root (same box as
-  // the centre column), a frame-covering whole-app wrapper, and the shell's overlay
-  // slot, which carries toasts and notices rather than this panel.
+  // 诱饵，每个失败规则一个：中间面板自己的内容根（和中间列同一个盒子）、一个盖住框的
+  // 整 app 包装，以及外壳的覆盖层槽——它载的是 toast 和通知，不是这个面板。
   const decoy = m.document.createElement('div')
   decoy.setAttribute('class', 'Dc7zOa_root')
   decoy.computed = { backgroundColor: 'rgba(243, 235, 231, 0.1)', position: 'relative', backgroundImage: 'none' }
@@ -1395,10 +1360,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   overlay.appendChild(toast)
   m.shell.frame.appendChild(overlay)
 
-  // What the app actually renders: the fullscreen layer, inside the right column,
-  // running from the sidebar's edge to the frame's right edge. It paints nothing of
-  // its own — its children do the drawing — which is exactly why a probe that looks
-  // for an element that already paints could never find it.
+  // app 实际渲染的东西：全屏那一层，在右列内部，从侧边栏的边缘一直伸到框的右缘。它自己
+  // 什么都不画——画的是它的子元素——这正是找一个"已经在画"的元素的探测永远找不到它的原因。
   const layer = m.document.createElement('div')
   layer.setAttribute('class', 'SidebarRight_panel_ab12c')
   layer.setAttribute('data-sidebar-right-panel', 'fullscreen')
@@ -1406,9 +1369,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   layer.box = { width: 2280, height: 1552, left: 280, top: 0 }
   m.shell.right.appendChild(layer)
 
-  // A second session subtree stays mounted but hidden ("other subtrees stay hidden
-  // without deleting tab state"), and it carries the same marker. It collapses to 0x0,
-  // so it must never win the material.
+  // 第二个会话子树保持挂载但隐藏（"其他子树保持隐藏而不删除标签页状态"），带着同一个
+  // 标记。它塌成 0x0，所以绝不能赢走材质。
   const hidden = m.document.createElement('div')
   hidden.setAttribute('class', 'SidebarRight_panel_ab12c')
   hidden.setAttribute('data-sidebar-right-panel', 'fullscreen')
@@ -1419,101 +1381,91 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
   m.engine.retag(true)
 
-  assert.equal(hidden.getAttribute('data-glass-surface'), undefined, 'a hidden session subtree is never handed the material')
+  assert.equal(hidden.getAttribute('data-glass-surface'), undefined, '隐藏的会话子树永远接不到材质')
 
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'the column stays the right panel in every mode')
-  assert.equal(layer.getAttribute('data-glass-surface'), 'right', "the app's own fullscreen layer takes the material")
-  assert.equal(layer.getAttribute('data-glass-fullscreen'), '', 'and is marked as the fullscreen host')
-  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), 'on', 'so the column steps aside instead of painting at the old geometry')
-  assert.equal(m.engine.blurReport().right.delegated, true, 'the row reports the delegation')
-  assert.equal(m.engine.blurReport().right.blurHost, 'element', 'with the blur on the layer that spans the mode')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', '列在任何模式下都是右栏')
+  assert.equal(layer.getAttribute('data-glass-surface'), 'right', 'app 自己的全屏层接走材质')
+  assert.equal(layer.getAttribute('data-glass-fullscreen'), '', '且被标为全屏宿主')
+  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), 'on', '所以列退到一边，不在旧几何上画')
+  assert.equal(m.engine.blurReport().right.delegated, true, '行报出授权')
+  assert.equal(m.engine.blurReport().right.blurHost, 'element', '模糊在跨满模式的那一层上')
 
-  /* The frost must live on ONE element of a panel, and this is the bug that was
-     actually reported. An element with a `backdrop-filter` becomes a BACKDROP ROOT:
-     a descendant's own frost can then only sample what is painted INSIDE that
-     ancestor. The layer is inside the column, and the column paints nothing once it
-     delegates — so a column that kept its own frost left the layer sampling an empty
-     backdrop. Measured on the live page: the column's 447px strip blurred, the 1183px
-     layer covering the frame blurred nothing.
-     `aimBlur` only ever touched the current host, so the marker the column had earned
-     before the delegation was never taken off it. */
+  /* 磨砂必须住在一个面板的唯一一个元素上，而这就是当年真正被报出来的 bug。一个带
+     `backdrop-filter` 的元素成为一个背景根：后代自己的磨砂从此只能取样画在那个祖先
+     内部的东西。那一层在列里面，而列一旦授权就什么都不画——所以一个保住自己磨砂的列，
+     会让那一层取样一片空背景。在真实页面上实测：列那条 447px 模糊了，盖住框的 1183px
+     那一层什么都没模糊。
+     `aimBlur` 从前只碰当前宿主，所以列在授权之前挣到的标记从来没被摘掉过。 */
   assert.equal(
     m.shell.right.getAttribute('data-glass-blur-host'),
     undefined,
-    'the column gives up its own frost once the material moves to a layer inside it'
+    '材质一移到里面那一层，列就交出自己对磨砂'
   )
-  assert.equal(layer.getAttribute('data-glass-blur-host'), 'element', 'and only the layer carries it')
+  assert.equal(layer.getAttribute('data-glass-blur-host'), 'element', '且只有那一层扛它')
 
-  for (const [name, node] of [['a whole-app wrapper', wrapper], ['the shell overlay slot', toast]]) {
-    assert.equal(node.getAttribute('data-glass-panel'), undefined, `${name} is never handed a panel`)
-    assert.equal(node.getAttribute('data-glass-surface'), undefined, `${name} is never handed any material`)
+  for (const [name, node] of [['整 app 包装', wrapper], ['外壳覆盖层槽', toast]]) {
+    assert.equal(node.getAttribute('data-glass-panel'), undefined, `${name} 永远接不到面板`)
+    assert.equal(node.getAttribute('data-glass-surface'), undefined, `${name} 永远接不到任何材质`)
   }
-  // The centre panel's element legitimately carries the CENTRE panel's material — it is
-  // that panel's own surface. What it must never be given is the right panel's.
-  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, 'the centre panel element is never handed the right panel')
-  assert.equal(decoy.getAttribute('data-glass-surface'), 'main', 'and keeps only its own panel material')
+  // 中间面板的元素名正言顺地带着中间面板的材质——那是它自己的表面。它绝不能被给的是
+  // 右栏的。
+  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, '中间面板元素永远接不到右栏')
+  assert.equal(decoy.getAttribute('data-glass-surface'), 'main', '且只保住自己的面板材质')
 
-  // The material now spans the panel, not the track it used to sit in.
+  // 材质现在跨满面板，而不是它过去所在的那条轨道。
   const layout = m.engine.layoutReport()
-  assert.equal(layout.expanded, true, 'the layout report knows the mode is on')
+  assert.equal(layout.expanded, true, '布局报告知道模式开着')
   assert.ok(
     layout.lines.some((line) => /右侧栏：列 x=\d+ 宽 576/.test(line)),
-    `and still gives the column's geometry (${JSON.stringify(layout.lines)})`
+    `并且仍然给出列的几何（${JSON.stringify(layout.lines)}）`
   )
   assert.ok(
     layout.lines.some((line) => /右侧栏：.*材质在 全屏层 x=\d+ 宽 2280/.test(line)),
-    `with the material measured on the fullscreen layer, not on the 576px track (${JSON.stringify(layout.lines)})`
+    `材质量在全屏层上，而不是 576px 的轨道上（${JSON.stringify(layout.lines)}）`
   )
 
-  // The layer keeps the position the app anchors it with: the generic surface rule
-  // answers `position:relative`, which would drop it back into the column's flow and
-  // undo the presentation itself.
+  // 那一层保留 app 锚定它的定位：通用表面规则会答 `position:relative`，那会把它掉回列的
+  // 流里，撤销呈现本身。
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   assert.match(
     css,
     /\[data-glass-surface\]\[data-glass-fullscreen\]\{position:absolute\}/,
-    'a fullscreen host keeps the absolute position the app gave it'
+    '全屏宿主保留 app 给它的绝对定位'
   )
 
-  // The seam that survived into the expanded mode: the column's rim and divider are a
-  // positioned `::after` — the last child, so it paints ABOVE the layer the app
-  // presents — and the column is still only 447px wide. Left alone it drew its left
-  // edge as a bright vertical line down the middle of the expanded panel, which is
-  // exactly "the old gap between the centre panel and the right panel is still there".
+  // 活进展开模式的那道缝：列的镜边和分隔线是一个定位的 `::after`——最后一个子元素，
+  // 所以它画在 app 呈现的那一层之上——而列仍然只有 447px 宽。放任不管，它会把左缘画成
+  // 一条亮直线直穿展开面板的中线，那正是"中间面板和右面板之间的旧缝还在"。
   assert.match(
     css,
     /\[data-glass-panel=right\]::after\{content:none\}/,
-    "the column stops drawing its rim and divider, which is the seam that survived"
+    '列停止画自己的镜边和分隔线，那就是幸存下来的那道缝'
   )
-  // The hidden centre panel stops drawing its rim too, not just its fill: `visibility`
-  // alone was trusted to take a positioned child carrying a shadow and a corner
-  // gradient with it, and "the old centre panel's shadow is still there" is what it
-  // looks like when it does not.
+  // 隐藏的中间面板也停止画镜边，不只是填充：过去只信 `visibility` 能带走一个带着阴影和
+  // 角落渐变的定位子元素，而带不走时，看起来就是"旧中间面板的阴影还在那里"。
   assert.match(
     css,
     /\[data-glass-panel=main\]::after\{content:none\}/,
-    'and the hidden centre panel stops drawing its rim, not merely its fill'
+    '且隐藏的中间面板停止画镜边，不只是填充'
   )
   assert.match(
     css,
     /\[data-glass-panel=right\]\{overflow:visible;box-shadow:none\}/,
-    'and drops its own card, contact shadow included, while keeping its gutter'
+    '并丢掉自己的卡（含接触阴影），同时保住沟槽'
   )
 
-  // The contour moves with the material, and it must read as ONE card. The column keeps
-  // its gutter in that mode on purpose: the layer is positioned `top:0; right:0;
-  // bottom:0` against the column's box, so the column's margins are what hold the
-  // expanded panel to the same rhythm as every other card — top and right from the
-  // column, bottom from the frame's padding. Clearing them all (what this rule used to
-  // do) left the top flush against the title bar while the bottom kept its gap.
+  // 外形跟着材质走，且必须读起来是一张卡。列在那个模式下刻意保沟槽：那一层贴着列的盒子
+  // 定位 `top:0; right:0; bottom:0`，所以列的 margin 正是把展开的面板按在其他每张卡同一
+  // 节奏上的东西——上和右来自列，底来自外框的 padding。把它们全清掉（这条规则过去的做法）
+  // 会让顶部贴死标题栏，而底部仍保着自己的间隙。
   assert.ok(
     !/\[data-glass-panel=right\]\{margin/.test(css),
-    'the column keeps its gutter untouched, so the panel keeps its rhythm in both modes'
+    '列的沟槽原样不动，所以面板在两种模式下保持同一节奏'
   )
   assert.match(
     css,
     /\[data-glass-surface\]\[data-glass-fullscreen\]\{border-radius:var\(--gm-radius\);overflow:hidden\}/,
-    'and the layer rounds ALL FOUR corners and CLIPS, so the pane inside cannot show a second arc'
+    '且那一层把四个角全圆并裁剪，里面的窗格显不出第二弧'
   )
   assert.match(
     css,
@@ -1526,91 +1478,81 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
     'with the right panel\'s own sheen — scaled by how much glass there is to catch it on'
   )
 
-  /* Edge light belongs to glass. The rim is a `--gm-rim-band` wide gradient along each
-     edge with `border-radius: inherit`, so on a pane set to alpha 0 it is the ONLY thing
-     still drawing — and its rounded ends read as a second pane inside the first, which is
-     the reported "two corners on the left". It now fades with the fill. Anyone who sets a
-     normal tint keeps the sheen exactly as before (the weight is 1 from 12% up). */
+  /* 边缘光属于玻璃。镜边是一条沿每边、宽 `--gm-rim-band`、带 `border-radius: inherit`
+     的渐变，所以在一块设成 alpha 0 的窗格上它是唯一还在画的东西——而它的圆角末端读起来
+     是第一块里面嵌着第二块，那就是报上来的"左边两个角"。它现在随填充一起淡。设普通染色的
+     人，高光保持和以前一模一样（权重从 12% 起就是 1）。 */
   assert.match(
     css,
     /opacity:calc\(var\(--gm-sheen\) \* var\(--gm-sheen-mood,1\) \* var\(--gm-sheen-edge,1\)\)/,
-    'the rim still takes its opacity from the sheen'
+    '镜边仍从高光取它的不透明度'
   )
 
-  // The ghosting on that corner. The app gives the pane inside a fullscreen panel its
-  // own top-left radius (16px on Windows) against this theme's 12px, so the corner drew
-  // two arcs of different radii — and clipping cannot reach it, because the pane sits
-  // INSIDE the panel. The pane follows the glass instead of the reverse, so the radius
-  // knob stays in charge.
-  /* ... and it has to actually WIN. The app's own rule for this pane is
+  // 那个角上的重影。app 给全屏面板里面的窗格自己的左上半径（Windows 上 16px），对着本
+  // 主题的 12px，于是那个角画出两道不同半径的弧——而裁剪够不到它，因为窗格坐在面板内部。
+  // 窗格跟玻璃，而不是反过来，所以圆角旋钮继续当家。
+  /* ……而且它必须真的赢。app 自己给这个窗格的规则是
        [data-windows-titlebar] .OUqwTW_panel[data-sidebar-right-panel=fullscreen]
          [data-dockkit-column="0"][data-dockkit-pane]                 → (0,5,0)
-     The first attempt wrote the same rule without that prefix, which is only (0,4,1),
-     so it lost while a test that merely checked the text was present stayed green.
-     Specificity is part of this rule, not a detail of it. */
+     第一次尝试把同一条规则去掉那个前缀写，那只有 (0,4,1)，所以它输了，而一个只检查文本
+     是否存在的测试保持绿色。特异性是这条规则的一部分，不是它的细节。 */
   assert.match(
     css,
     /\[data-windows-titlebar\] body\[data-glass-panels\] \[data-glass-fullscreen\] \[data-dockkit-column="0"\]\[data-dockkit-pane\]\{border-radius:0\}/,
-    "the pane inside owns NO radius — only the glass draws a contour, and this outranks the app's (0,5,0)"
+    '里面的窗格一个半径都没有——只有玻璃画外形，而这压过 app 的 (0,5,0)'
   )
   assert.ok(
     !/(^|\})\s*body\[data-glass-panels\] \[data-glass-fullscreen\] \[data-dockkit-column="0"\]/.test(css),
-    'and no weaker (0,4,1) twin of it is left behind to quietly lose'
+    '且没留下一个更弱的 (0,4,1) 孪生规则去悄悄输掉'
   )
-  // One surface, not two: the pane paints a pale layer of its own, and since only one of
-  // the two stacked rects is transparent it is the pane's edge a person sees — the last
-  // sliver of the ghosting, and a white wash the opacity knob could not reach.
+  // 一个表面，不是两个：窗格画着自己苍白的一层，而两个叠起来的矩形里只有一个透明，所以
+  // 人看到的是窗格的边缘——重影的最后一细丝，也是一层不透明度旋钮够不着的白。
   assert.match(
     css,
     /\[data-windows-titlebar\] body\[data-glass-panels\] \[data-glass-fullscreen\] \[data-dockkit-pane\]\{background-color:transparent\}/,
-    "the pane stops painting a second surface under the glass"
+    '窗格停止在玻璃下面画第二个表面'
   )
 
-  /* The title bar is a pseudo-element with an opaque fill spanning the whole window.
-     It never joined the glass system, so it stayed a solid band above every panel —
-     and its bottom edge being dead straight is what makes a panel's rounded corner just
-     below it read as a right-angled shadow pressed onto the corner. `describeNode` can
-     never see a pseudo-element, which is why no report ever caught it. */
+  /* 标题栏是一个横跨整个窗口、带不透明填充的伪元素。它从没入过玻璃系统，所以它在每个
+     面板上方保持一条实心带——而它的底边死直，正是让紧贴其下的面板圆角读作"一个直角阴影
+     压在角上"的东西。`describeNode` 永远看不见伪元素，这就是没有一份报告抓到过它的原因。 */
   assert.match(
     css,
     /\[data-windows-titlebar\] body\[data-glass-panels\] \[data-glass-frame\]::before\{background:transparent\}/,
-    'the title bar stops painting an opaque band above every panel'
+    '标题栏不再在每个面板上方画一条不透明带'
   )
 
-  // The ghosting itself. The rim's catch light was a FIXED 90x70 ellipse; laid over a
-  // 12px corner its curvature matches nothing, so the corner drew a second arc — always
-  // the top-left, because that is the only corner carrying a catch light. With the panes
-  // this transparent the rim is most of what a person sees. It now follows the radius.
+  // 重影本身。镜边的捕光曾经是一个固定的 90x70 椭圆；铺在 12px 的角上，它的曲率对不上
+  // 任何东西，于是那个角画出第二弧——永远是左上，因为那是唯一带捕光的角。面板设到这么透，
+  // 镜边是人看到的大部分。它现在跟着半径走。
   assert.match(
     css,
     /radial-gradient\(calc\(var\(--gm-radius,20px\) \* 2\.6\) calc\(var\(--gm-radius,20px\) \* 2\.1\) at 0% 0%/,
-    'the catch light scales with the panel radius instead of being a fixed ellipse'
+    '捕光跟着面板半径缩放，而不是一个固定椭圆'
   )
 
-  // Collapsing hands everything back: the material, the marker, and the position.
+  // 收起把一切交还：材质、标记和定位。
   layer.setAttribute('data-sidebar-right-panel', 'push')
   m.shell.frame.removeAttribute('data-rightbar-fullscreen')
   m.engine.retag(true)
-  assert.equal(layer.getAttribute('data-glass-surface'), undefined, 'collapsing takes the material off the layer')
-  assert.equal(layer.getAttribute('data-glass-fullscreen'), undefined, 'and the marker, so its position goes back to the app')
-  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, 'with the column painting for itself again')
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'and keeping the panel')
+  assert.equal(layer.getAttribute('data-glass-surface'), undefined, '收起把材质从那一层拿走')
+  assert.equal(layer.getAttribute('data-glass-fullscreen'), undefined, '以及标记，好让它的定位还给 app')
+  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, '列重新自己画')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', '并保住面板')
   m.dispose()
-  console.log('ok  a fullscreen right panel is hosted by the layer the app itself renders')
+  console.log('ok  全屏右栏寄宿在 app 自己渲染的那一层上')
 }
 //#endregion
 
 //#region overlay
 {
-  // The reported bug, in the shape the app's own code gives it. The frame's grid keeps
-  // the right column at its normal track in that mode (`data-rightbar-fullscreen`
-  // suppresses a transition and hides the drag handle, nothing more), so the column is
-  // only the panel's OLD position: 576px of a 2280px panel. Painting the material there
-  // is why the transparency and the blur appeared to stop at the sidebar's old edge
-  // while the rest of the expanded panel showed the app's own paint.
+  // 报上来的 bug，用 app 自己的代码给出的形状。那个模式下外框的网格把右列保持在正常轨道
+  // （`data-rightbar-fullscreen` 只压制一个过渡、藏起拖拽手柄，仅此而已），所以列只是面板
+  // 的旧位置：2280px 面板里的 576px。把材质画在那里，就是透明和模糊看起来停在侧边栏旧边缘
+  // 的原因，而展开面板的其余部分显示着 app 自己的颜料。
   //
-  // Nothing in the shell's overlay slot is the panel — that slot holds toasts — so a
-  // frame-spanning child of it must never be handed the material, however large it is.
+  // 外壳覆盖层槽里没有任何东西是面板——那个槽装的是 toast——所以它跨满框的子元素绝不能
+  // 被交给材质，无论多大。
   const m = mount()
   const layer = m.document.createElement('div')
   layer.setAttribute('data-shell-overlay', '')
@@ -1623,117 +1565,106 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 
   m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
   m.engine.retag(true)
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'an expanded right panel is still its column')
-  assert.equal(panel.getAttribute('data-glass-panel'), undefined, "a frame-spanning child of the overlay slot is not the panel")
-  assert.equal(panel.getAttribute('data-glass-surface'), undefined, 'and is never handed its material')
-  assert.equal(m.engine.panelStatus().found.right, true, 'and the panel is still reported as found')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', '展开的右栏仍然是它的列')
+  assert.equal(panel.getAttribute('data-glass-panel'), undefined, '覆盖层槽里跨满框的子元素不是面板')
+  assert.equal(panel.getAttribute('data-glass-surface'), undefined, '且永远接不到它的材质')
+  assert.equal(m.engine.panelStatus().found.right, true, '且面板仍报成找到')
   m.dispose()
-  console.log('ok  the overlay slot is never mistaken for the expanded right panel')
+  console.log('ok  覆盖层槽永不被误当成展开的右栏')
 }
 //#endregion
 //#region expanded
 {
-  // The fallback, with no layer from the app to host the material: a wrapper that
-  // stopped covering the column must be released and the material must land on the
-  // column rather than stay on a pane that no longer spans anything.
+  // 兜底，没有 app 的层来寄宿材质：一个不再覆盖列的包装必须被释放，材质必须落到列上，
+  // 而不是留在不再跨满任何东西的窗格上。
   //
-  // Note what this is NOT: the real fullscreen case. There the app renders its own
-  // layer (`data-sidebar-right-panel="fullscreen"`) and the material goes to that —
-  // locked in the `presentation` region above. This region only covers the shape the
-  // plugin falls back to when no such layer is found, so nothing is left floating on a
-  // stale surface.
+  // 注意这不是什么：不是真正的全屏案例。那里 app 渲染自己的层
+  // （`data-sidebar-right-panel="fullscreen"`），材质去那里——锁在上面 `presentation` 区。
+  // 这个区只覆盖找不到这种层时插件回退成的形状，所以什么都不留在陈旧的表面上漂着。
   const m = mount()
-  // Give the right panel a painting wrapper, so it starts delegated like the sidebar.
+  // 给右面板一个画颜料的包装，让它像侧边栏一样起步就授权。
   m.shell.rightWrapper.computed = { backgroundColor: 'rgba(255, 255, 255, 0.5)' }
   m.engine.retag(true)
-  assert.equal(m.engine.blurReport().right.delegated, true, 'the right panel starts delegated to its wrapper')
+  assert.equal(m.engine.blurReport().right.delegated, true, '右面板起步时授权给它的包装')
 
-  // The user presses expand: the frame gets the attribute and the column takes 70%.
+  // 用户按下展开：外框拿到属性，列占 70%。
   m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
   m.shell.right.box = { width: 900, height: 780, left: 500, top: 0 }
   m.shell.rightWrapper.box = { width: 520, height: 780, left: 880, top: 0 }
   m.window.observers.at(-1).emit()
   m.clock.advance(200)
 
-  assert.equal(m.engine.blurReport().right.delegated, false, 'the expanded panel keeps its material on the column')
-  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, 'so the column stops deferring to the wrapper')
-  assert.equal(m.shell.rightWrapper.getAttribute('data-glass-surface'), undefined, 'and the narrow wrapper is released')
-  assert.equal(m.engine.blurReport().right.blurHost, 'element', 'with the blur on the element that spans the mode')
+  assert.equal(m.engine.blurReport().right.delegated, false, '展开的面板把材质留在列上')
+  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, '所以列不再礼让包装')
+  assert.equal(m.shell.rightWrapper.getAttribute('data-glass-surface'), undefined, '且窄包装被释放')
+  assert.equal(m.engine.blurReport().right.blurHost, 'element', '模糊在跨满模式的元素上')
 
-  // The row states the measurement while the mode is on, so the layout can be reported
-  // without a console.
+  // 模式开着时这一行说明测量结果，好让布局不必开控制台就能报出来。
   const layout = m.engine.layoutReport()
-  assert.equal(layout.expanded, true, 'the layout report knows the mode is on')
+  assert.equal(layout.expanded, true, '布局报告知道模式开着')
   assert.ok(
     layout.lines.some((line) => /右侧栏：列 x=\d+ 宽 900/.test(line)),
-    `and gives the column's geometry (${JSON.stringify(layout.lines)})`
+    `并给出列的几何（${JSON.stringify(layout.lines)}）`
   )
 
-  // Collapsing it back returns the delegation.
+  // 收回去把授权还回来。
   m.shell.frame.removeAttribute('data-rightbar-fullscreen')
   m.shell.right.box = { width: 320, height: 780, left: 888, top: 0 }
   m.shell.rightWrapper.box = { width: 320, height: 780, left: 888, top: 0 }
   m.window.observers.at(-1).emit()
   m.clock.advance(200)
-  assert.equal(m.engine.blurReport().right.delegated, true, 'and a normal-width column delegates again')
-  assert.equal(m.engine.layoutReport().expanded, false, 'with the layout report going quiet')
+  assert.equal(m.engine.blurReport().right.delegated, true, '而正常宽度的列重新授权')
+  assert.equal(m.engine.layoutReport().expanded, false, '连同安静下来的布局报告')
   m.dispose()
-  console.log('ok  an expanded right panel keeps the material on the column that spans it')
+  console.log('ok  展开的右栏把材质留在跨满它的列上')
 }
 //#endregion
 
 //#region version
 {
-  // The row prints the build so "the fix did not work" can never be confused with "the
-  // new build never loaded", which costs a whole round trip every time. That makes the
-  // constant load-bearing, so it is locked to the package.
+  // 这一行打印构建，好让"修复没生效"永远不会和"新构建根本没加载"混为一谈——那每次都要
+  // 花掉一整轮往返。这使这个常量成为承重墙，所以它被锁到包上。
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   const m = mount()
-  assert.equal(m.engine.build(), pkg.version, `the printed build (${m.engine.build()}) matches package.json`)
-  assert.match(m.engine.build(), /^\d+\.\d+\.\d+$/, 'and it is a plain version')
+  assert.equal(m.engine.build(), pkg.version, `打印出来的构建（${m.engine.build()}）与 package.json 一致`)
+  assert.match(m.engine.build(), /^\d+\.\d+\.\d+$/, '且它是一个普通版本号')
   m.dispose()
-  console.log('ok  the row prints the build that is actually loaded')
+  console.log('ok  这一行打印真正加载的构建')
 }
 //#endregion
 
 //#region panels
 {
-  // A backdrop-filter only blurs what is painted behind its backdrop root, and
-  // `isolation: isolate` CREATES a backdrop root. Hosting the frost on an isolated
-  // element therefore left the blur with nothing to blur: the panel's fill moved
-  // (a plain background, so the opacity knob felt fine) while its blur knob looked
-  // dead. Two corrections are locked here: the hosts form their stacking context
-  // with position + z-index, and the panels carry the filter on the painted element
-  // itself rather than on a negative-z pseudo.
+  // backdrop-filter 只模糊画在它背景根背后的东西，而 `isolation: isolate` 会创造一个
+  // 背景根。把磨砂寄在一个隔离的元素上，于是留给模糊没什么可糊：面板的填充动了（一个普通
+  // 背景，所以不透明度旋钮手感良好），而它的模糊旋钮看起来是死的。这里锁两条纠正：宿主用
+  // position + z-index 形成层叠上下文，面板把滤波器带在真正画颜料的元素自己身上，而不是
+  // 一个负 z 伪元素上。
   const m = mount()
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
-  assert.ok(!/isolation:isolate/.test(css), 'no frost host isolates — that would kill backdrop-filter')
-  assert.match(css, /\[data-glass-surface\]\{position:relative;z-index:0;/, 'the delegated surface forms a stacking context the other way')
-  /* The contour belongs on the surface too. A delegated panel paints nothing of its own,
-     so a radius on the column draws nothing — and the inner surface, which is the element
-     that DOES paint, had radius 0 while sitting inside the column at exactly its size, so
-     the column had nothing to clip. The panel measured `border-radius: 12px` and showed
-     square corners: the radius was being asked of the element that paints nothing. */
+  assert.ok(!/isolation:isolate/.test(css), '磨砂宿主不隔离——那会杀死 backdrop-filter')
+  assert.match(css, /\[data-glass-surface\]\{position:relative;z-index:0;/, '被授权的表面以另一种方式形成层叠上下文')
+  /* 外形也归表面。一个被授权的面板自己不画任何东西，所以列上的半径画不出东西——而内层
+     表面，那个真正画东西的元素，半径是 0，同时按列的确切尺寸坐在列里面，所以列没什么可
+     裁。面板量着 `border-radius: 12px` 却显示方角：半径被问到了那个什么都不画的元素头上。 */
   assert.match(
     css,
     /\[data-glass-surface\]\{position:relative;z-index:0;border-radius:var\(--gm-radius\);overflow:hidden\}/,
-    'and carries the radius and the clip, because it is the element that actually paints'
+    '并带上半径和片子，因为它才是真正画画的元素'
   )
-  /* EXCEPT the sidebar's. The app sizes that surface from the track (measured: 269px
-     inside a 260px column, because this theme insets the column with a gutter), so its
-     corner sits 9px outside the column and `overflow:hidden` cuts it to a short remnant.
-     Both measured 12px, yet the sidebar's corner read smaller than the centre's. A
-     surface that OVERLAYS its column must not round; one that matches it exactly may. */
+  /* 侧边栏的除外。app 从轨道给那个表面量尺寸（实测：260px 的列里 269px，因为本主题用
+     沟槽内缩列），所以它的角坐在列外 9px，`overflow:hidden` 把它裁成一截残段。两者都量
+     12px，然而侧边栏的角读起来比中间的小。一个叠在列上的表面绝不能圆；一个和列严丝合缝
+     的可以。 */
   assert.match(
     css,
     /\[data-glass-surface=left\]\{[^}]*border-radius:0\}/,
-    'the sidebar surface paints but does not round — its own corner would be clipped to a remnant'
+    '侧边栏表面画但不圆——它自己的角会被裁成一截残段'
   )
-  assert.match(css, /\[data-glass-panel\]\{position:relative;z-index:0;/, 'and so does a column that paints itself')
-  // Both arrangements are declared: the element-hosted one (measured to be the one
-  // this browser honours) and the pseudo fallback, which stays for panels that hold a
-  // fixed descendant — an element with a backdrop-filter becomes that descendant's
-  // containing block, which is what once hid the sidebar's reopen control.
+  assert.match(css, /\[data-glass-panel\]\{position:relative;z-index:0;/, '自己画画的列同样')
+  // 两种排布都声明：元素承载的那个（实测是这个浏览器认的那个）和伪元素降级——它留给
+  // 住着 fixed 后代的面板——一个带 backdrop-filter 的元素会成为那个后代的包含块，这正是
+  // 曾经藏掉侧边栏重开控件的东西。
   assert.match(
     css,
     /\[data-glass-blur=on\] \[data-glass-blur-host=element\]\{[^}]*backdrop-filter:blur\(var\(--gm-panel-blur\)/,
@@ -1747,234 +1678,218 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.match(
     css,
     /\[data-glass-panel\]:not\(\[data-glass-delegate=on\]\):not\(\[data-glass-blur-host=element\]\)::before\{[^}]*backdrop-filter/,
-    'and for a column that paints itself'
+    '而对一个自己画画的列'
   )
   m.dispose()
 
-  // The arrangement is now the one that measurably works in this browser: the blur
-  // rides the element that carries the material, on every panel. A negative-z pseudo
-  // reports a valid blur and samples nothing — measured on a delegated surface and on
-  // a column alike — so it survives only as the escape hatch for the one cost of the
-  // element arrangement (it becomes the containing block of a fixed descendant),
-  // which is why a panel holding such a control gives the blur up instead.
+  // 现在这个排布是在这个浏览器里实测管用的那个：模糊骑在承载材质的元素上，每个面板
+  // 都这样。负 z 伪元素报一个有效的模糊值、却什么都不取样——在被授权的表面和列上都实测
+  // 过——所以它只作为元素排布那一处代价的逃生舱活着（它成为 fixed 后代的包含块），这就是
+  // 一个住着这种控件的面板宁可放弃模糊的原因。
   const guard = mount()
-  assert.equal(guard.engine.blurReport().left.delegated, true, 'the left panel is delegated')
-  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'so its blur rides the surface itself')
-  assert.equal(guard.engine.blurReport().main.blurHost, 'element', 'and a self-painting column does the same')
-  assert.equal(guard.engine.blurReport().right.blurHost, 'element', 'on every panel')
-  // With every panel recognised and no fixed descendant in the way, the row says
-  // nothing about blur hosting: diagnostics are for when something needs attention.
+  assert.equal(guard.engine.blurReport().left.delegated, true, '左面板被授权')
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', '所以它的模糊骑在表面自己身上')
+  assert.equal(guard.engine.blurReport().main.blurHost, 'element', '而自己画画的列同样')
+  assert.equal(guard.engine.blurReport().right.blurHost, 'element', '在每个面板上')
+  // 每个面板都识别到、路上没有 fixed 后代时，这一行对磨砂寄宿什么都不说：诊断是给
+  // 需要留意的东西准备的。
   assert.ok(
     guard.engine.blurSummary().every((line) => !/未识别|fixed|降级/.test(line)),
-    'a healthy mount has no diagnostic to report'
+    '健康的挂载没什么诊断要报'
   )
   const floating = guard.document.createElement('div')
   floating.setAttribute('class', 'ScrollToBottom_fab')
   floating.computed = { position: 'fixed' }
   guard.shell.leftSurface.appendChild(floating)
   guard.engine.retag(true)
-  // A fixed descendant must not be re-anchored: a backdrop-filter on the material
-  // element makes it the containing block of that control, which is what pulled the
-  // shell's own floating control (the sidebar collapse control) out of the top bar
-  // and onto the sidebar logo. The panel keeps its fill and its rim and drops the
-  // frost; only that panel pays, and the reason is reported.
-  assert.equal(guard.engine.blurReport().left.blurHost, 'none', 'a fixed descendant takes the frost off that panel')
+  // 一个 fixed 后代绝不能被重新锚定：材质元素上的 backdrop-filter 让它成为那个控件的
+  // 包含块，而这就是把外壳自己的浮动控件（侧边栏的折叠控件）从顶栏拉到侧边栏 logo 上的
+  // 原因。面板保住填充和镜边、放弃磨砂；只有那个面板付账，原因被报出来。
+  assert.equal(guard.engine.blurReport().left.blurHost, 'none', '一个 fixed 后代拿掉那个面板的磨砂')
   assert.match(
     guard.engine.blurSummary().join(' '),
     /含 fixed 子元素：div\.ScrollToBottom_fab/,
-    'it is named, so a panel without blur can be traced to the control that cost it'
+    '它被点了名，所以一块没有模糊的面板能追到是哪个控件造成的'
   )
-  assert.equal(guard.engine.blurReport().main.blurHost, 'element', 'and only that panel pays for it')
-  // The guard can be stood down, which is how the diagnosis is confirmed in the
-  // running app: the frost comes back and the control moves again.
+  assert.equal(guard.engine.blurReport().main.blurHost, 'element', '且只有那个面板为它付账')
+  // 守卫可以撤下，这就是在运行中的 app 里确认诊断的方式：磨砂回来，控件再次移位。
   guard.engine.setPanels({ fixedGuard: false })
-  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'standing the guard down puts the frost back')
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', '撤下守卫把磨砂放回来')
   guard.engine.setPanels({ fixedGuard: true })
-  assert.equal(guard.engine.blurReport().left.blurHost, 'none', 'and it comes off again')
-  // The escape hatch, live: it puts the pseudo arrangement back on demand.
+  assert.equal(guard.engine.blurReport().left.blurHost, 'none', '且它再次摘下')
+  // 逃生舱，实时：它按需把伪元素排布放回来。
   guard.engine.setPanels({ blurFallback: true })
-  assert.equal(guard.engine.blurReport().left.blurHost, 'pseudo', 'the fallback switch puts the pseudo back')
-  assert.equal(guard.shell.leftSurface.getAttribute('data-glass-blur-host'), undefined, 'and the element stops claiming it')
+  assert.equal(guard.engine.blurReport().left.blurHost, 'pseudo', '降级开关把伪元素放回来')
+  assert.equal(guard.shell.leftSurface.getAttribute('data-glass-blur-host'), undefined, '且元素停止认领它')
   guard.engine.setPanels({ blurFallback: false })
   floating.remove()
   guard.engine.retag(true)
-  assert.equal(guard.engine.blurReport().left.blurHost, 'element', 'a panel with no floating control keeps the frost')
-  assert.ok(!/含 fixed 子元素/.test(guard.engine.blurSummary().join(' ')), 'the note clears with the control')
+  assert.equal(guard.engine.blurReport().left.blurHost, 'element', '没有浮动控件的面板保住磨砂')
+  assert.ok(!/含 fixed 子元素/.test(guard.engine.blurSummary().join(' ')), '控件一走，注记就清')
   guard.dispose()
-  console.log('ok  frost hosts do not form a backdrop root')
+  console.log('ok  磨砂宿主不形成背景根')
 }
 
 {
-  // A collapsed column is not a panel: it must keep the app's own styling, or the
-  // control that reopens the sidebar (which the collapsed column renders outside its
-  // own box) gets clipped by the theme's overflow and margins.
+  // 收起的列不是面板：它必须保持 app 自己的样式，否则重开侧边栏的控件（收起的列把它
+  // 渲染在自己的盒子外面）会被主题的 overflow 和 margin 裁掉。
   const m = mount()
-  assert.equal(m.engine.panelStatus().found.left, true, 'an open sidebar is a panel')
-  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', 'and is tagged')
+  assert.equal(m.engine.panelStatus().found.left, true, '展开的侧边栏是面板')
+  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', '且被打上标签')
   m.shell.left.box = { width: 0, height: 780 }
   m.engine.retag(true)
-  assert.equal(m.engine.panelStatus().found.left, false, 'a collapsed column is reported as not a panel')
-  assert.equal(m.shell.left.getAttribute('data-glass-panel'), undefined, 'and every hook is withdrawn')
-  assert.equal(m.engine.panelStatus().surfaces.left, false, 'including any delegated surface')
-  // The app's own control survives: nothing is clipped or offset while collapsed.
+  assert.equal(m.engine.panelStatus().found.left, false, '收起的列被报成不是面板')
+  assert.equal(m.shell.left.getAttribute('data-glass-panel'), undefined, '且每个钩子都撤回')
+  assert.equal(m.engine.panelStatus().surfaces.left, false, '包括任何被授权的表面')
+  // app 自己的控件幸存：收起来期间什么都不被裁、不错位。
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   const frameBase = /\[data-glass-panels\] \[data-glass-frame\]\{([^}]*)\}/.exec(css)
-  assert.ok(frameBase, 'the frame base rule exists')
-  assert.ok(!/overflow:hidden/.test(frameBase[1]), 'the frame does not clip unless the panels are flush')
-  assert.match(css, /\[data-glass-gap=off\] \[data-glass-frame\]\{overflow:hidden\}/, 'the flush arrangement still cuts the sheet')
-  // Expanding again brings the panel back.
+  assert.ok(frameBase, '外框基础规则存在')
+  assert.ok(!/overflow:hidden/.test(frameBase[1]), '面板不齐平时外框不裁剪')
+  assert.match(css, /\[data-glass-gap=off\] \[data-glass-frame\]\{overflow:hidden\}/, '齐平排布仍然裁玻璃')
+  // 再次展开把面板带回来。
   m.shell.left.box = { width: 260, height: 780 }
   m.engine.retag(true)
-  assert.equal(m.engine.panelStatus().found.left, true, 'expanding restores the panel treatment')
-  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', 'with its hook')
+  assert.equal(m.engine.panelStatus().found.left, true, '展开恢复面板待遇')
+  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', '连同它的钩子')
 
-  // The panic switch: a theme that can hide part of the app must be removable
-  // without knowing why.
+  // 急停开关：一个能藏起部分 app 的主题，必须能在不知道为什么的情况下被移除。
   m.engine.off()
-  assert.equal(m.document.getElementById('dsh-glass-mood-style'), null, 'off() removes the stylesheet')
-  assert.equal(m.document.querySelectorAll('[data-glass-panel]').length, 0, 'and every hook')
-  assert.equal(m.document.getElementById('dsh-glass-mood-bg'), null, 'and the stage')
-  assert.equal(m.document.body.dataset.glassMood, undefined, 'and the body attributes')
-  console.log('ok  collapsed columns are left alone + panic switch')
+  assert.equal(m.document.getElementById('dsh-glass-mood-style'), null, 'off() 移除样式表')
+  assert.equal(m.document.querySelectorAll('[data-glass-panel]').length, 0, '以及每个钩子')
+  assert.equal(m.document.getElementById('dsh-glass-mood-bg'), null, '以及舞台')
+  assert.equal(m.document.body.dataset.glassMood, undefined, '以及 body 属性')
+  console.log('ok  收起的列整个放过 + 急停开关')
 }
 
 {
-  // An expanding sidebar must not wait for the 2.5s retag pass. The app's own
-  // control survives the delay, but the column sat there as a plain column for a
-  // second before it got its radius and its material.
+  // 正在展开的侧边栏绝不能等 2.5s 的重打标签。app 自己的控件熬得过这个延迟，但列会干坐
+  // 一秒钟素列，才拿到它的半径和材质。
   const m = mount()
   const observer = m.window.observers[0]
-  assert.ok(observer, 'the columns are watched')
-  assert.equal(observer.targets.length, 3, 'all three are watched, collapsed ones included')
+  assert.ok(observer, '列被观察着')
+  assert.equal(observer.targets.length, 3, '三列都被观察，收起的也算')
 
   m.shell.left.box = { width: 0, height: 780 }
   m.engine.retag(true)
-  assert.equal(m.engine.panelStatus().found.left, false, 'a collapsed column is not a panel')
+  assert.equal(m.engine.panelStatus().found.left, false, '收起的列不是面板')
 
-  // Reopening: the resize arrives on its own, and the debounce is far shorter than
-  // the retag interval.
+  // 重开：缩放自己到达，去抖远比重打标签间隔短。
   m.shell.left.box = { width: 260, height: 780 }
   observer.emit()
   m.clock.advance(70)
-  assert.equal(m.engine.panelStatus().found.left, true, 'reopening is picked up at once, not on the next pass')
-  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', 'and the column is tagged again')
+  assert.equal(m.engine.panelStatus().found.left, true, '重新展开立刻被察觉，不等下一趟')
+  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', '且列重新被打上标签')
   assert.ok(
     m.document.body.style.getPropertyValue('--gm-panel-left-fill') !== '',
-    'with its material published, not just its hook'
+    '连它的材质一起发布，不只是钩子'
   )
 
   m.dispose()
-  assert.equal(observer.targets.length, 0, 'dispose stops watching')
-  console.log('ok  a column that changes size is re-tagged at once')
+  assert.equal(observer.targets.length, 0, '卸载停止观察')
+  console.log('ok  改变尺寸的列立刻重新打标签')
 }
 
 {
-  // A backdrop-filter cannot see anything painted outside its own backdrop root, and
-  // the wallpaper used to be a child of <body> while the panels live inside the app
-  // shell — so a shell that isolates/filters/contains:paint made the panels blind to
-  // the wallpaper. The stage now mounts inside the shell, in a negative layer.
+  // backdrop-filter 看不见画在它自己背景根外的任何东西，而壁纸过去是 <body> 的子元素、
+  // 面板住在 app 外壳里——所以一个隔离/滤波/contain:paint 的外壳会让面板对壁纸失明。
+  // 舞台现在挂在外壳内部，一个负层里。
   const m = mount()
   const stage = m.document.getElementById('dsh-glass-mood-bg')
-  assert.equal(stage.parent, m.shell.frame, 'the wallpaper stage lives inside the app shell')
-  assert.equal(stage.getAttribute('data-glass-in-shell'), '', 'and is marked so it can take the negative layer')
+  assert.equal(stage.parent, m.shell.frame, '壁纸舞台住在 app 外壳内部')
+  assert.equal(stage.getAttribute('data-glass-in-shell'), '', '且被标记，好接住负层')
   assert.match(
     m.document.getElementById('dsh-glass-mood-style').textContent,
     /#dsh-glass-mood-bg\{position:fixed;inset:0;z-index:-1/,
-    'the stage sits in a negative layer whatever its host: a stray stage can never cover the app'
+    '无论宿主是谁舞台都坐在负层：一个流浪舞台永远盖不住 app'
   )
-  // If the shell is replaced, the poll moves the stage into the new one.
+  // 外壳被换掉时，轮询把舞台搬进新的那个。
   const newFrame = m.document.createElement('div')
   newFrame.setAttribute('class', 'AppFrame_frame_2')
   m.document.body.appendChild(newFrame)
   m.shell.frame.remove()
   m.engine.retag()
-  assert.equal(stage.parent, newFrame, 'a rebuilt shell re-homes the stage')
+  assert.equal(stage.parent, newFrame, '重建的外壳把舞台重新安家')
 
-  // The visible blur test: a checkerboard inside the stage, removable again.
-  assert.equal(m.engine.checker(true).checker, true, 'the checkerboard mounts')
-  assert.notEqual(m.document.querySelector('[data-glass-checker]'), null, 'and is findable in the stage')
-  assert.equal(m.engine.checker(false).checker, false, 'and comes off again')
-  assert.equal(m.document.querySelector('[data-glass-checker]'), null, 'leaving nothing behind')
+  // 看得见的模糊测试：舞台里一块棋盘格，可再移除。
+  assert.equal(m.engine.checker(true).checker, true, '棋盘格挂上')
+  assert.notEqual(m.document.querySelector('[data-glass-checker]'), null, '且在舞台里找得到')
+  assert.equal(m.engine.checker(false).checker, false, '并再次摘下')
+  assert.equal(m.document.querySelector('[data-glass-checker]'), null, '什么都不留')
 
-  // The diagnostic reports the computed filter and the stage's host.
+  // 诊断报出计算出的滤波器和舞台的宿主。
   const report = m.engine.blurReport()
-  assert.equal(typeof report.left, 'object', 'the report covers each panel')
-  assert.ok('backdrop' in report.left && 'stageHost' in report.left, 'with the computed filter and the stage host')
-  assert.equal(report.left.delegated, true, 'and whether the material was delegated to an inner element')
-  assert.equal(report.main.delegated, false, 'which differs per panel')
-  assert.equal(typeof report.left.fillAlpha, 'number', 'the pane alpha is reported, since an opaque pane hides any blur')
+  assert.equal(typeof report.left, 'object', '报告覆盖每个面板')
+  assert.ok('backdrop' in report.left && 'stageHost' in report.left, '连同计算出的滤波器和舞台宿主')
+  assert.equal(report.left.delegated, true, '以及材质是否被授权给内层元素')
+  assert.equal(report.main.delegated, false, '它逐面板不同')
+  assert.equal(typeof report.left.fillAlpha, 'number', '面板 alpha 被报出，因为不透明的面板会藏掉任何模糊')
 
-  // The one failure a computed value cannot show: a painter that forms a backdrop
-  // root cannot see the wallpaper, so its frost would report blur(20px) and blur
-  // nothing. The material has to move to the column, and the painter has to give up
-  // its own paint so the column's material is what shows.
+  // 计算值显示不出的那一种失败：一个形成背景根的画手看不见壁纸，所以它的磨砂会报
+  // blur(20px) 却什么都不糊。材质必须搬到列，画手必须交出自己对颜料，好让列的材质成为
+  // 显形的那个。
   m.shell.leftSurface.computed = { backgroundColor: 'rgba(255, 255, 255, 0.52)', contain: 'paint', opacity: '0.98' }
   m.engine.retag(true)
   const fixed = m.engine.blurReport().left
-  assert.equal(fixed.delegated, false, 'a painter that cannot see the wallpaper is not handed the material')
+  assert.equal(fixed.delegated, false, '看不见壁纸的画手接不到材质')
   assert.ok(
     fixed.probeReason.some((entry) => entry.includes('contain=paint')),
-    `and the reason is recorded (${JSON.stringify(fixed.probeReason)})`
+    `并且原因被记录下来（${JSON.stringify(fixed.probeReason)}）`
   )
-  assert.equal(fixed.hollowed, 1, 'the painter is hollowed so the column material shows')
-  assert.equal(m.shell.leftSurface.getAttribute('data-glass-hollow'), '', 'the surface gives up its paint')
-  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, 'and the column keeps the material')
-  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', 'while still being a panel')
-  assert.equal(m.engine.blurReport().main.backdropRoots.length, 0, 'a clean panel reports no backdrop root')
+  assert.equal(fixed.hollowed, 1, '画手被掏空，好让列的材质显形')
+  assert.equal(m.shell.leftSurface.getAttribute('data-glass-hollow'), '', '表面交出它的颜料')
+  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, '且列保住材质')
+  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', '同时仍是面板')
+  assert.equal(m.engine.blurReport().main.backdropRoots.length, 0, '一个干净的面板报不出背景根')
 
-  // Put the layout back: the delegation returns and the hollow is withdrawn.
+  // 把布局放回去：授权回来，掏空撤回。
   m.shell.leftSurface.computed = { backgroundColor: 'rgba(255, 255, 255, 0.52)' }
   m.engine.retag(true)
-  assert.equal(m.engine.blurReport().left.delegated, true, 'a clean painter is delegated to again')
-  assert.equal(m.shell.leftSurface.getAttribute('data-glass-hollow'), undefined, 'with the hollow withdrawn')
-  assert.equal(m.engine.blurReport().left.probeReason.length, 0, 'and nothing left to explain')
+  assert.equal(m.engine.blurReport().left.delegated, true, '一个干净的画手重新被授权')
+  assert.equal(m.shell.leftSurface.getAttribute('data-glass-hollow'), undefined, '连同撤回的掏空')
+  assert.equal(m.engine.blurReport().left.probeReason.length, 0, '且没什么要解释')
   m.dispose()
-  console.log('ok  stage sits inside the shell + blur diagnostics')
+  console.log('ok  舞台坐在外壳内部 + 模糊诊断')
 }
 
 {
-  // A live reload can mount this plugin on a page where the previous instance is
-  // still present. The new mount must sweep that one rather than stack a second
-  // wallpaper over the interface — two stages is exactly how the UI got buried
-  // under "the wallpaper plus a hazy veil" with no text in sight.
+  // 一次热重载可能把本插件挂到上一个实例还在的页面上。新挂载必须清扫那一个，而不是在
+  // 界面上叠第二层壁纸——两个舞台正是 UI 被埋在"壁纸加一层灰纱"下面、看不见文字的由来。
   const m = mount({ strayStage: true })
-  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-bg"]').length, 1, 'one stage, never two')
-  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-style"]').length, 1, 'one style sheet, never two')
-  // The panic clean-up is available on its own, for a UI that is already buried.
-  assert.ok(m.engine.sweep() >= 1, 'sweep() reports what it removed')
-  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-bg"]').length, 0, 'and leaves no stage behind')
+  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-bg"]').length, 1, '一个舞台，绝不两个')
+  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-style"]').length, 1, '一张样式表，绝不两张')
+  // 应急清理可以单独用，给一个已经被埋住的 UI。
+  assert.ok(m.engine.sweep() >= 1, 'sweep() 报出它清掉了什么')
+  assert.equal(m.document.querySelectorAll('[id="dsh-glass-mood-bg"]').length, 0, '且不留舞台')
   m.dispose()
-  console.log('ok  a remount sweeps the previous instance')
+  console.log('ok  重新挂载清扫上一个实例')
 }
 
 {
-  // A blue veil over warm footage composites to magenta, and work mode used to push
-  // `saturate()` to 170%, amplifying it. The mood wash now keeps the mood's
-  // lightness and gives up most of its hue, the blue pulse is neutralised, and the
-  // backdrop saturation stays in a sane range.
+  // 暖片子上的一层蓝纱会合成出品红，而工作态过去把 `saturate()` 推到 170%，放大它。
+  // 情绪洗色现在保住心情的明度、让出大部分色相，蓝色呼吸被中和，背景饱和度留在一个
+  // 清醒的区间。
   const m = mount()
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   const satOf = (selector) => {
-    // Several rules start with the same mood selector, so find the one that actually
-    // declares the saturation.
+    // 好几条规则以同一个心情选择器开头，所以要找到真正声明饱和度的那条。
     const line = css.split('\n').find((rule) => rule.startsWith(selector) && rule.includes('--gm-sat:'))
     assert.ok(line, `missing the ${selector} saturation rule`)
     return Number(/--gm-sat:(\d+)%/.exec(line)[1])
   }
-  assert.ok(satOf('body[data-glass-mood]{') <= 120, 'idle keeps backdrop saturation gentle')
-  assert.ok(satOf('body[data-glass-mood=work]{') <= 130, 'and work no longer over-saturates the footage')
-  assert.match(css, /\[data-glass-layer=idle\],body\[data-glass-wallpaper=on\][^{]*\[data-glass-layer=work\]\{filter:saturate\(\.4\)\}/, 'with footage on screen the wash drops most of its hue')
-  assert.match(css, /\[data-glass-layer=pulse\]\{opacity:0;background:radial-gradient\(70% 55% at 50% -10%, rgba\(152,178,202,\.16\)/, 'the pulse is a neutral cool light, not a saturated blue')
-  assert.match(css, /body\[data-glass-wallpaper=on\]\[data-glass-mood=work\][^{]*\[data-glass-layer=pulse\]\{opacity:\.35\}/, 'and it steps back further over footage')
-  assert.ok(!/rgba\(88,166,255/.test(css), 'the saturated blue pulse is gone')
+  assert.ok(satOf('body[data-glass-mood]{') <= 120, '空闲让背景饱和度温和')
+  assert.ok(satOf('body[data-glass-mood=work]{') <= 130, '且工作态不再过度饱和片子')
+  assert.match(css, /\[data-glass-layer=idle\],body\[data-glass-wallpaper=on\][^{]*\[data-glass-layer=work\]\{filter:saturate\(\.4\)\}/, '片子上屏时洗色丢掉大部分色相')
+  assert.match(css, /\[data-glass-layer=pulse\]\{opacity:0;background:radial-gradient\(70% 55% at 50% -10%, rgba\(152,178,202,\.16\)/, '呼吸是一道中性的冷光，不是饱和的蓝')
+  assert.match(css, /body\[data-glass-wallpaper=on\]\[data-glass-mood=work\][^{]*\[data-glass-layer=pulse\]\{opacity:\.35\}/, '且在片子上方退得更远')
+  assert.ok(!/rgba\(88,166,255/.test(css), '饱和蓝的呼吸消失了')
   m.dispose()
-  console.log('ok  the mood wash cannot purple-shift footage')
+  console.log('ok  情绪洗色不会把片子染紫')
 }
 
 {
-  // Page-like content is frosted (the settings surface reads well that way); a small
-  // transient popover is not, because blurring a diff preview's backdrop is what made
-  // the file content hard to read in the first place.
+  // 页面级内容获得磨砂（设置表面那样读起来正好）；小的转瞬弹出层不，因为模糊一个 diff
+  // 预览的背景，正是当初让文件内容难读的东西。
   const m = mount()
   const settings = m.document.createElement('div')
   settings.setAttribute('role', 'dialog')
@@ -1987,39 +1902,37 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.document.body.appendChild(diff)
 
   m.engine.tagBigSurfaces()
-  assert.equal(settings.getAttribute('data-glass-frost'), 'on', 'a page-sized surface is frosted')
-  assert.equal(diff.getAttribute('data-glass-frost'), undefined, 'a small popover is not')
+  assert.equal(settings.getAttribute('data-glass-frost'), 'on', '页面级表面获得磨砂')
+  assert.equal(diff.getAttribute('data-glass-frost'), undefined, '小弹出层不')
 
-  // A shrunk surface loses the hook again (a dialog can be resized or reused).
+  // 缩水的表面再次丢掉钩子（对话框可以被缩放或复用）。
   settings.box = { width: 300, height: 200 }
   m.engine.tagBigSurfaces()
-  assert.equal(settings.getAttribute('data-glass-frost'), undefined, 'and the hook is withdrawn when it shrinks')
+  assert.equal(settings.getAttribute('data-glass-frost'), undefined, '且它缩小时钩子撤回')
 
   m.dispose()
-  assert.equal(m.document.querySelectorAll('[data-glass-frost]').length, 0, 'dispose removes the hook')
-  console.log('ok  page-like surfaces get frosted, popovers do not')
+  assert.equal(m.document.querySelectorAll('[data-glass-frost]').length, 0, '卸载移除钩子')
+  console.log('ok  页面级表面获得磨砂，弹出层不')
 }
 {
   const m = mount()
-  // The left column's surface is nested (as ui-sidebar's is): the probe must find
-  // it and hand the paint over, or that panel's opacity and blur knobs move values
-  // nobody can see — which is exactly what happened before.
-  assert.equal(m.shell.leftSurface.getAttribute('data-glass-surface'), 'left', 'the nested left surface is found and tagged')
-  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), 'on', 'and the column steps aside')
-  assert.equal(m.shell.center.getAttribute('data-glass-delegate'), undefined, 'a column that paints itself keeps the material')
-  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, 'a transparent wrapper is not mistaken for a surface')
-  assert.equal(m.shell.rightWrapper.getAttribute('data-glass-surface'), undefined, 'and is left untagged')
-  // The probe reports what it found, so a mismatch can be diagnosed from the GUI.
-  assert.equal(m.engine.panelStatus().surfaceDetail.left.className, 'Sidebar_root_7h6g5', 'the probe reports which element it handed the material to')
+  // 左列的表面是嵌套的（正如 ui-sidebar 的）：探测必须找到它并把颜料交过去，否则那个
+  // 面板的不透明度和模糊旋钮挪动的是没人看得见的值——这正是过去真实发生的事。
+  assert.equal(m.shell.leftSurface.getAttribute('data-glass-surface'), 'left', '嵌套的左表面被找到并打上标签')
+  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), 'on', '且列退到一边')
+  assert.equal(m.shell.center.getAttribute('data-glass-delegate'), undefined, '自己画画的列保住材质')
+  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, '透明包装不会被误当成表面')
+  assert.equal(m.shell.rightWrapper.getAttribute('data-glass-surface'), undefined, '且留着不打标签')
+  // 探测报出它找到了什么，好让一处不匹配能从 GUI 诊断出来。
+  assert.equal(m.engine.panelStatus().surfaceDetail.left.className, 'Sidebar_root_7h6g5', '探测报出它把材质交给了哪个元素')
 
-  // The material is sticky. Re-probing used to move it, and because a probe that
-  // finds nothing leaves the inner layer's own near-opaque fill in charge, every
-  // move showed up as the panel's opacity flipping between two values.
+  // 材质是粘的。重新探测过去会挪动它，而因为一个什么都找不到的探测会把内层自己的近
+  // 不透明填充放上台，每次移动都表现为面板的不透明度在两个值之间翻。
   const beforeProbe = m.engine.panelStatus().surfaceDetail.left.className
   m.engine.probe()
-  assert.equal(m.engine.panelStatus().surfaceDetail.left.className, beforeProbe, 'a re-probe keeps the same surface')
+  assert.equal(m.engine.panelStatus().surfaceDetail.left.className, beforeProbe, '重新探测保住同一个表面')
 
-  // A modal inside the panel is never mistaken for the panel's surface.
+  // 面板里的模态永远不被误当成面板的表面。
   const dialog = m.document.createElement('div')
   dialog.setAttribute('role', 'dialog')
   dialog.box = { width: 260, height: 700 }
@@ -2027,281 +1940,269 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.shell.left.appendChild(dialog)
   m.shell.leftSurface.remove()
   m.engine.probe()
-  assert.equal(dialog.getAttribute('data-glass-surface'), undefined, 'a modal is never handed the panel material')
-  assert.equal(m.engine.panelStatus().surfaces.left, false, 'so that panel reports no surface rather than following the modal')
+  assert.equal(dialog.getAttribute('data-glass-surface'), undefined, '模态永远接不到面板材质')
+  assert.equal(m.engine.panelStatus().surfaces.left, false, '所以那个面板报不出表面，而不是跟着模态走')
   dialog.remove()
 
-  // A rebuilt shell is re-probed, and a surface that lost its element is released.
+  // 重建的外壳被重新探测，丢了元素的表面被释放。
   m.shell.leftSurface.remove()
   m.engine.probe()
-  assert.equal(m.engine.panelStatus().surfaces.left, false, 'the probe reports no surface once the element is gone')
-  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, 'and the column takes the material back')
+  assert.equal(m.engine.panelStatus().surfaces.left, false, '元素一没，探测报不出表面')
+  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, '且列把材质取回')
   m.dispose()
-  assert.equal(m.document.querySelectorAll('[data-glass-surface]').length, 0, 'dispose un-tags surfaces')
-  assert.equal(bodyVar(m, '--gm-panel-left-alpha'), '', 'and removes the published alphas')
-  console.log('ok  surface probe')
+  assert.equal(m.document.querySelectorAll('[data-glass-surface]').length, 0, '卸载给表面摘标签')
+  assert.equal(bodyVar(m, '--gm-panel-left-alpha'), '', '并移除已发布的 alpha')
+  console.log('ok  表面探测')
 }
 
 {
   const m = mount()
-  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', 'the left column is tagged')
-  assert.equal(m.shell.center.getAttribute('data-glass-panel'), 'main', 'the centre column is tagged')
-  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', 'the right column is tagged')
-  assert.equal(m.shell.frame.getAttribute('data-glass-frame'), '', 'the frame is tagged')
-  assert.equal(m.document.body.dataset.glassPanels, 'on', 'the panel system is part of the theme')
-  assert.equal(m.engine.panelStatus().found.left && m.engine.panelStatus().found.main && m.engine.panelStatus().found.right, true, 'all three columns are reported found')
+  assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', '左列被打上标签')
+  assert.equal(m.shell.center.getAttribute('data-glass-panel'), 'main', '中间列被打上标签')
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', '右列被打上标签')
+  assert.equal(m.shell.frame.getAttribute('data-glass-frame'), '', '外框被打上标签')
+  assert.equal(m.document.body.dataset.glassPanels, 'on', '面板系统是主题的一部分')
+  assert.equal(m.engine.panelStatus().found.left && m.engine.panelStatus().found.main && m.engine.panelStatus().found.right, true, '三列都报成找到')
 
-  // Geometry defaults: a gutter with the official panel radius, no frame radius.
-  assert.equal(bodyVar(m, '--gm-gap'), '8px', 'the surface gutter has its default')
-  assert.equal(bodyVar(m, '--gm-radius'), '20px', 'panels use the official card radius by default')
-  assert.equal(bodyVar(m, '--gm-frame-radius'), '0px', 'the outer contour stays the window by default')
-  assert.equal(m.document.body.dataset.glassGap, 'on', 'a gap means floating panels')
-  assert.ok(m.document.querySelector('[data-glass-refraction]') !== null, 'the refraction filter is mounted')
-  assert.match(bodyVar(m, '--gm-refract'), /url\(#dsh-glass-mood-refraction-filter\)/, 'the refraction is wired by default')
+  // 几何默认值：一道沟槽、官方面板半径，无外框半径。
+  assert.equal(bodyVar(m, '--gm-gap'), '8px', '表面沟槽有它的默认值')
+  assert.equal(bodyVar(m, '--gm-radius'), '20px', '面板默认用官方卡片半径')
+  assert.equal(bodyVar(m, '--gm-frame-radius'), '0px', '外形默认保持窗口')
+  assert.equal(m.document.body.dataset.glassGap, 'on', '有间隙意味着面板浮起')
+  assert.ok(m.document.querySelector('[data-glass-refraction]') !== null, '折射滤波器已挂载')
+  assert.match(bodyVar(m, '--gm-refract'), /url\(#dsh-glass-mood-refraction-filter\)/, '折射默认接好线')
   m.dispose()
-  console.log('ok  panel tagging + geometry defaults')
+  console.log('ok  面板打标签 + 几何默认值')
 }
 
 {
-  // No shell columns (an unexpected layout): report honestly, never throw.
+  // 没有外壳列（一个意外布局）：诚实报出，绝不抛错。
   const m = mount({ shell: false })
   const status = m.engine.panelStatus()
-  assert.deepEqual(status.found, { left: false, main: false, right: false }, 'missing columns are reported, not hidden')
-  assert.equal(m.document.body.dataset.glassPanels, 'on', 'the theme still publishes its variables')
+  assert.deepEqual(status.found, { left: false, main: false, right: false }, '缺失的列被报出，而不是藏起来')
+  assert.equal(m.document.body.dataset.glassPanels, 'on', '主题仍然发布它的变量')
   m.engine.setPanels({ gap: 12 })
-  assert.equal(bodyVar(m, '--gm-gap'), '12px', 'and the knobs still work without the columns')
+  assert.equal(bodyVar(m, '--gm-gap'), '12px', '且没有列时旋钮照旧工作')
   m.dispose()
-  console.log('ok  missing shell columns degrade honestly')
+  console.log('ok  外壳列缺失时诚实降级')
 }
 
 {
   const m = mount()
-  // Each panel owns its material: one panel's opacity never moves another's fill.
+  // 每个面板拥有自己的材质：一个面板的不透明度绝不移动另一个的填充。
   const before = {
     left: bodyVar(m, '--gm-panel-left-fill'),
     main: bodyVar(m, '--gm-panel-main-fill'),
     right: bodyVar(m, '--gm-panel-right-fill')
   }
-  assert.equal(panelAlpha(before.left), 0.52, 'the left panel starts at its palette alpha (auto)')
-  assert.equal(panelAlpha(before.main), 0.64, 'the main panel starts at its palette alpha (auto)')
-  assert.equal(panelAlpha(before.right), 0.64, 'the right panel starts at its palette alpha (auto)')
+  assert.equal(panelAlpha(before.left), 0.52, '左面板从调色板 alpha 起步（自动）')
+  assert.equal(panelAlpha(before.main), 0.64, '中间面板从调色板 alpha 起步（自动）')
+  assert.equal(panelAlpha(before.right), 0.64, '右面板从调色板 alpha 起步（自动）')
 
-  // Absolute alpha: 1 has to be a solid panel and 0 a fully clear one, or the knob
-  // cannot do what its label promises (that was the "still see the wallpaper" bug).
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.52, 'auto follows the palette alpha')
+  // 绝对 alpha：1 必须是实心面板、0 必须全透，否则旋钮做不到标签承诺的事（那就是
+  // "还是看得见壁纸"那个 bug）。
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.52, 'auto 跟随调色板 alpha')
   m.engine.setPanels({ left: { opacity: 0.5 }, main: { opacity: 0.25, blur: 18, sheen: 0.4 }, right: { opacity: 0 } })
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.5, 'the left panel takes the exact value')
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-main-fill')), 0.25, 'the main panel takes the exact value')
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-right-fill')), 0, 'the right panel can be made invisible')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.5, '左面板取到这个准确值')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-main-fill')), 0.25, '中间面板取到这个准确值')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-right-fill')), 0, '右面板可以被做到看不见')
   const solid = m.engine.setPanels({ left: { opacity: 1 } })
-  assert.equal(solid.left.opacity, 1, 'opacity 1 is accepted as absolute')
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 1, 'and paints a fully solid panel')
+  assert.equal(solid.left.opacity, 1, '不透明度 1 被当作绝对值接受')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 1, '并画出一块完全实心的面板')
   m.engine.setPanels({ left: { opacity: -1 } })
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.52, '-1 returns to following the palette')
-  assert.equal(bodyVar(m, '--gm-panel-main-blur'), '18px', 'blur is per panel')
-  assert.equal(bodyVar(m, '--gm-panel-left-blur'), '0px', 'and does not leak to another panel')
-  assert.equal(bodyVar(m, '--gm-panel-main-sheen'), '0.4', 'the rim highlight is per panel')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.52, '-1 回到跟随调色板')
+  assert.equal(bodyVar(m, '--gm-panel-main-blur'), '18px', '模糊逐面板')
+  assert.equal(bodyVar(m, '--gm-panel-left-blur'), '0px', '且不漏到另一个面板')
+  assert.equal(bodyVar(m, '--gm-panel-main-sheen'), '0.4', '镜边高光逐面板')
 
-  // No milky veil any more: with an absolute range the slider is visible on its own,
-  // and a veil would have made "fully clear" a lie.
-  assert.equal(bodyVar(m, '--gm-panel-left-veil'), '', 'the veil is gone')
+  // 不再有奶白纱：有了绝对量程，滑杆自己就看得见，而一层纱会让"全透"成为谎言。
+  assert.equal(bodyVar(m, '--gm-panel-left-veil'), '', '薄纱消失了')
   m.engine.setPanels({ left: { opacity: 1 } })
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 1, 'so fully opaque really is opaque')
-  assert.equal(bodyVar(m, '--gm-panel-left-alpha'), '1', 'and the readout prints the effective alpha')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 1, '所以全不透真的不透')
+  assert.equal(bodyVar(m, '--gm-panel-left-alpha'), '1', '且读数打印有效 alpha')
 
-  /* Edge light belongs to glass: a nearly clear pane has none for it to catch on, and the
-     rim — a 10px gradient along each edge with rounded ends — would otherwise be the only
-     thing still drawing, reading as a second pane inside the first. */
+  /* 边缘光属于玻璃：一块近透的窗格没有东西可供它捕捉，而镜边——一条沿每边 10px、带
+     圆角末端的渐变——否则会成为唯一还在画的东西，读起来是第一块里面嵌着第二块。 */
   m.engine.setPanels({ left: { opacity: 0 } })
-  // ZERO, not "nearly zero". The rim's edge is a 1px inset shadow whose inner radius is
-  // 12 - 1 = 11px against the glass's 12px — two concentric arcs 1px apart — and a
-  // hairline like that is still visible at 5% on a pale pane.
+  // 是零，不是"接近零"。镜边的边缘是一道 1px inset 阴影，内半径 12-1=11 对着玻璃的
+  // 12——两道相距 1px 的同心弧——而这样一根发丝在浅色窗格上 5% 仍看得见。
   assert.equal(
     bodyVar(m, '--gm-panel-left-rim'),
     '0',
-    'a fully clear pane drops its rim entirely: no glass, no edge light'
+    '全透的窗格整个丢掉镜边：没有玻璃就没有边缘光'
   )
   m.engine.setPanels({ left: { opacity: 0.5 } })
-  assert.equal(bodyVar(m, '--gm-panel-left-rim'), '1', 'while a normal tint keeps it exactly as it was')
+  assert.equal(bodyVar(m, '--gm-panel-left-rim'), '1', '而普通染色让它保持原样')
   m.engine.setPanels({ left: { opacity: 1 } })
   m.engine.setPanels({ left: { opacity: 0 } })
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0, 'while 0 really is fully clear')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0, '而 0 真的是全透')
 
-  /* The highlight also carries a contact shadow, which a white-on-white rim cannot.
-     Its SPREAD has to follow the radius, not sit at a flat -14px: a negative spread
-     shrinks the shadow's shape and the corner shrinks with it, so at the panel's 12px
-     the effective radius was max(0, 12 - 14) = 0 — a square block sitting INSIDE the
-     panel, which through a pane this transparent reads as a hard right-angled shadow
-     in the corner rather than a halo beneath the card. */
+  /* 高光还带一道接触阴影，这是白上白的镜边做不到的。它的扩散必须跟着半径，而不是停在
+     一个死的 -14px：负扩散会缩小阴影的形状，角跟着缩，所以面板 12px 时有效半径是
+     max(0, 12-14)=0——一个坐在面板里面的方块，透过这么一块透明的窗格，读起来是角上一个
+     硬的直角阴影，而不是卡下面的一层光晕。 */
   assert.match(
     bodyVar(m, '--gm-panel-main-shadow'),
     /^0 10px 28px calc\(var\(--gm-radius, 20px\) \* -0\.35\) rgba\(84,94,124,0\.0[0-9]+\)$/,
-    'the highlight publishes a contact shadow whose spread follows the radius'
+    '高光发布一道扩散跟随半径的接触阴影'
   )
   assert.ok(
     !/-14px/.test(bodyVar(m, '--gm-panel-main-shadow')),
-    'and no flat spread is left that could flatten the corner away'
+    '且没留下能把角抹平的死扩散'
   )
   const dimShadow = Number(/rgba\([^)]*,([0-9.]+)\)$/.exec(bodyVar(m, '--gm-panel-main-shadow'))[1])
   m.engine.setPanels({ main: { sheen: 1 } })
   const fullShadow = Number(/rgba\([^)]*,([0-9.]+)\)$/.exec(bodyVar(m, '--gm-panel-main-shadow'))[1])
-  assert.ok(fullShadow > dimShadow, 'a stronger highlight casts a stronger shadow')
+  assert.ok(fullShadow > dimShadow, '更强的高光投更重的阴影')
 
-  // The divider base is strong enough to actually read (it used to be ~5% alpha
-  // AND it was painted behind the sidebar surface).
-  assert.match(bodyVar(m, '--gm-divider'), /^rgba\(96,108,134,0\.175\)$/, 'the divider alpha is visible at the default strength')
-  assert.notEqual(bodyVar(m, '--gm-rim-edge'), undefined, 'the rim publishes its edge tone')
-  assert.match(bodyVar(m, '--gm-rim-edge'), /^rgba\(120,132,156,0\.34\)$/, 'the light scheme edge is a cool grey, not white-on-white')
+  // 分隔线基准强到真的读得出来（它过去是约 5% 的 alpha，而且还画在侧边栏表面背后）。
+  assert.match(bodyVar(m, '--gm-divider'), /^rgba\(96,108,134,0\.175\)$/, '默认强度下分隔线 alpha 看得见')
+  assert.notEqual(bodyVar(m, '--gm-rim-edge'), undefined, '镜边发布它的边缘色调')
+  assert.match(bodyVar(m, '--gm-rim-edge'), /^rgba\(120,132,156,0\.34\)$/, '浅配方的边缘是冷灰，不是白上白')
 
-  // Refraction is a lens, not a blur knob: no pre-blur in the filter, and nothing
-  // about the frost follows the switch — moving the frost is what made it read as a
-  // blur control.
+  // 折射是透镜，不是模糊旋钮：滤波器里没有预模糊，磨砂什么都不跟这个开关走——动磨砂
+  // 正是让它读起来像模糊控件的东西。
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
-  assert.equal(m.document.querySelector('[data-glass-refraction]').innerHTML.includes('feGaussianBlur'), false, 'the refraction filter has no pre-blur')
-  assert.equal(bodyVar(m, '--gm-blur-scale'), '', 'no blur variable follows the edge switch')
-  assert.match(css, /\[data-glass-frost=on\]::before\{[^}]*backdrop-filter:blur\(var\(--gm-blur\)\)/, 'the frosted surfaces are not scaled by it either')
-  // And the switch has to be visible ON THE EDGE: with it off, the rim relaxes to a
-  // soft hairline with no dispersion in it. (It used to move nothing but the panel
-  // blur, which is why it read as a blur control.)
+  assert.equal(m.document.querySelector('[data-glass-refraction]').innerHTML.includes('feGaussianBlur'), false, '折射滤波器没有预模糊')
+  assert.equal(bodyVar(m, '--gm-blur-scale'), '', '边缘开关不带出模糊变量')
+  assert.match(css, /\[data-glass-frost=on\]::before\{[^}]*backdrop-filter:blur\(var\(--gm-blur\)\)/, '磨砂表面也不被它缩放')
+  // 而且这个开关必须在边缘上看得出：关掉时，镜边放松成一道没有色散的软发丝。（它过去
+  // 只动面板模糊，这就是它读起来像模糊控件的原因。）
   const rimOn = bodyVar(m, '--gm-rim-band')
   const sheenOn = bodyVar(m, '--gm-sheen-edge')
   m.engine.setPanels({ refraction: false })
-  assert.notEqual(bodyVar(m, '--gm-rim-band'), rimOn, 'the edge switch changes the rim, not just the blur')
-  assert.equal(bodyVar(m, '--gm-rim-disp'), 'transparent', 'off means no dispersion fringe')
-  assert.notEqual(bodyVar(m, '--gm-sheen-edge'), sheenOn, 'and a weaker specular')
+  assert.notEqual(bodyVar(m, '--gm-rim-band'), rimOn, '边缘开关改变镜边，不只是模糊')
+  assert.equal(bodyVar(m, '--gm-rim-disp'), 'transparent', '关意味着没有色散 fringe')
+  assert.notEqual(bodyVar(m, '--gm-sheen-edge'), sheenOn, '以及更弱的高光')
   m.engine.setPanels({ refraction: true })
-  assert.equal(bodyVar(m, '--gm-rim-band'), rimOn, 'and back on')
+  assert.equal(bodyVar(m, '--gm-rim-band'), rimOn, '并重新打开')
   m.engine.setPanels({ refraction: false })
-  assert.equal(bodyVar(m, '--gm-blur-scale'), '', 'and still no blur variable when it is off')
+  assert.equal(bodyVar(m, '--gm-blur-scale'), '', '且关着时仍没有模糊变量')
 
-  // Values are clamped, never trusted.
+  // 值被夹住，绝不被信任。
   const clamped = m.engine.setPanels({ gap: 99, frameRadius: -5, panelRadius: 999, divder: 3, divider: 9, left: { opacity: 5, blur: -3, sheen: 4 } })
-  assert.equal(clamped.gap, 24, 'the gap is clamped')
-  assert.equal(clamped.frameRadius, 0, 'a negative radius lands at 0')
-  assert.equal(clamped.panelRadius, 32, 'the panel radius is clamped')
-  assert.equal(clamped.divider, 1, 'the divider is clamped')
-  assert.equal(clamped.left.opacity, 1, 'opacity is clamped')
-  assert.equal(clamped.left.blur, 0, 'blur is clamped')
-  assert.equal(clamped.left.sheen, 1, 'sheen is clamped')
+  assert.equal(clamped.gap, 24, '间隙被夹住')
+  assert.equal(clamped.frameRadius, 0, '负半径落到 0')
+  assert.equal(clamped.panelRadius, 32, '面板半径被夹住')
+  assert.equal(clamped.divider, 1, '分隔线被夹住')
+  assert.equal(clamped.left.opacity, 1, '不透明度被夹住')
+  assert.equal(clamped.left.blur, 0, '模糊被夹住')
+  assert.equal(clamped.left.sheen, 1, '高光被夹住')
   m.dispose()
-  console.log('ok  per-panel material + clamping')
+  console.log('ok  逐面板材质 + 夹取')
 }
 
 {
   const m = mount()
-  // In AUTO mode the visibility knob thins the panels through their own token
-  // budgets, floors included.
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.52, 'no wallpaper, no thinning')
+  // 自动模式下，可见度旋钮通过各 token 自己的预算削薄面板，地板包含在内。
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.52, '没有壁纸就不削薄')
   m.engine.setWallpaper({ url: 'https://cdn.example.com/a.mp4', clarity: 1 })
   const left = panelAlpha(bodyVar(m, '--gm-panel-left-fill'))
   const main = panelAlpha(bodyVar(m, '--gm-panel-main-fill'))
-  assert.ok(left <= 0.25 && left >= 0.2, 'the sidebar thins to its own floor (' + left + ')')
-  assert.ok(main <= 0.1, 'the canvas panel thins further than the sidebar (' + main + ')')
+  assert.ok(left <= 0.25 && left >= 0.2, '侧边栏削到它自己的地板（' + left + '）')
+  assert.ok(main <= 0.1, '画布面板比侧边栏削得更狠（' + main + '）')
 
-  // An explicit alpha opts OUT of that budget: that is exactly what makes "solid"
-  // solid while a wallpaper is on, and it is the fix for "still see the wallpaper".
+  // 一个显式 alpha 选择退出那份预算：这正是让"实心"在壁纸开着时也实心的原因，也是
+  // "还是看得见壁纸"的修法。
   m.engine.setPanels({ left: { opacity: 1 } })
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 1, 'an explicit alpha overrides the visibility budget')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 1, '显式 alpha 压过可见度预算')
 
   m.engine.clearWallpaper()
   m.engine.setPanels({ left: { opacity: -1 } })
-  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.52, 'clearing the wallpaper restores the panels')
+  assert.equal(panelAlpha(bodyVar(m, '--gm-panel-left-fill')), 0.52, '清掉壁纸恢复面板')
   m.dispose()
-  console.log('ok  visibility reaches the panels; explicit alpha wins')
+  console.log('ok  可见度抵达面板；显式 alpha 胜出')
 }
 
 {
   const m = mount()
-  // The mood repaints the panels: work is cooler and slightly crisper.
+  // 心情重绘面板：工作态更冷、更锐利一分。
   const idleRim = bodyVar(m, '--gm-rim-a')
   m.sessionStatus.set(new Map([['s1', { running: true }]]))
   m.clock.advance(120)
-  assert.equal(m.document.body.dataset.glassMood, 'work', 'the mood switched')
-  assert.notEqual(bodyVar(m, '--gm-rim-a'), idleRim, 'the rim light follows the mood')
-  assert.equal(bodyVar(m, '--gm-panel-main-fill'), bodyVar(m, '--gm-panel-main-fill'), 'the fill is republished per mood')
+  assert.equal(m.document.body.dataset.glassMood, 'work', '心情切换了')
+  assert.notEqual(bodyVar(m, '--gm-rim-a'), idleRim, '镜边光跟随心情')
+  assert.equal(bodyVar(m, '--gm-panel-main-fill'), bodyVar(m, '--gm-panel-main-fill'), '填充逐心情重新发布')
   m.dispose()
-  console.log('ok  panels follow the mood')
+  console.log('ok  面板跟随心情')
 }
 
 {
-  // The scheme flip repaints the panels from the other palette.
+  // 配色翻转用另一套调色板重绘面板。
   const m = mount()
   const light = bodyVar(m, '--gm-panel-left-fill')
   m.document.body.setAttribute('data-ds-dark-theme', '')
   m.emitThemeChange()
   const dark = bodyVar(m, '--gm-panel-left-fill')
-  assert.notEqual(dark, light, 'the dark scheme publishes a different panel fill')
+  assert.notEqual(dark, light, '暗配方发布不同的面板填充')
   m.document.body.removeAttribute('data-ds-dark-theme')
   m.emitThemeChange()
-  assert.equal(bodyVar(m, '--gm-panel-left-fill'), light, 'and switching back restores the light fill')
+  assert.equal(bodyVar(m, '--gm-panel-left-fill'), light, '切回去恢复浅色填充')
   m.dispose()
-  console.log('ok  panels follow the colour scheme')
+  console.log('ok  面板跟随配色')
 }
 
 {
-  // Panel config survives a reload, and a re-tag finds rebuilt columns.
+  // 面板配置在重载后幸存，一次重打标签找到重建的列。
   const first = mount()
   first.engine.setPanels({ main: { opacity: 0.4, blur: 22, sheen: 0.6 }, gap: 0, refraction: false })
   first.dispose()
 
   const second = mount({ storage: first.storage })
-  assert.equal(second.engine.getPanels().main.blur, 22, 'the panel blur is restored')
-  assert.equal(second.engine.getPanels().main.opacity, 0.4, 'the panel opacity is restored')
-  assert.equal(second.engine.getPanels().gap, 0, 'the gap is restored')
-  assert.equal(second.document.body.dataset.glassGap, 'off', 'a zero gap switches the layout mode')
-  assert.equal(bodyVar(second, '--gm-refract'), 'none', 'refraction off publishes no filter')
-  assert.equal(panelAlpha(bodyVar(second, '--gm-panel-main-fill')), 0.4, 'the restored opacity reaches the fill verbatim')
+  assert.equal(second.engine.getPanels().main.blur, 22, '面板模糊被恢复')
+  assert.equal(second.engine.getPanels().main.opacity, 0.4, '面板不透明度被恢复')
+  assert.equal(second.engine.getPanels().gap, 0, '间隙被恢复')
+  assert.equal(second.document.body.dataset.glassGap, 'off', '零间隙切换布局模式')
+  assert.equal(bodyVar(second, '--gm-refract'), 'none', '折射关时不发布滤波器')
+  assert.equal(panelAlpha(bodyVar(second, '--gm-panel-main-fill')), 0.4, '恢复的不透明度原样抵达填充')
 
-  // A shell rebuild (right column replaced) is picked up by a re-tag.
+  // 一次外壳重建（右列被换掉）被一次重打标签捡到。
   second.shell.right.remove()
   const rebuilt = second.document.createElement('div')
   rebuilt.setAttribute('class', 'AppFrame_rightbarCol_2v1u0')
   second.document.body.appendChild(rebuilt)
   second.engine.retag()
-  assert.equal(rebuilt.getAttribute('data-glass-panel'), 'right', 'a rebuilt column is re-tagged')
-  assert.equal(second.engine.panelStatus().found.right, true, 'and reported found again')
+  assert.equal(rebuilt.getAttribute('data-glass-panel'), 'right', '重建的列被重新打标签')
+  assert.equal(second.engine.panelStatus().found.right, true, '并再次报成找到')
   second.dispose()
-  assert.equal(second.shell.left.getAttribute('data-glass-panel'), undefined, 'dispose un-tags the columns')
-  assert.equal(bodyVar(second, '--gm-gap'), '', 'and removes its variables')
-  assert.equal(bodyVar(second, '--gm-panel-left-shadow'), '', 'and the per-panel contact shadow')
-  assert.equal(bodyVar(second, '--gm-panel-left-rim'), '', 'and the per-panel rim weight')
-  assert.equal(bodyVar(second, '--gm-rim-edge'), '', 'and the rim edge tone')
-  assert.equal(bodyVar(second, '--gm-sheen-edge'), '', 'and the edge weight')
-  assert.equal(second.document.body.dataset.glassPanels, undefined, 'and its body attributes')
-  assert.equal(second.document.querySelector('[data-glass-refraction]'), null, 'and the refraction filter')
-  console.log('ok  panel config persists + columns re-tag')
+  assert.equal(second.shell.left.getAttribute('data-glass-panel'), undefined, '卸载给列摘标签')
+  assert.equal(bodyVar(second, '--gm-gap'), '', '并移除它的变量')
+  assert.equal(bodyVar(second, '--gm-panel-left-shadow'), '', '以及逐面板接触阴影')
+  assert.equal(bodyVar(second, '--gm-panel-left-rim'), '', '以及逐面板镜边权重')
+  assert.equal(bodyVar(second, '--gm-rim-edge'), '', '以及镜边色调')
+  assert.equal(bodyVar(second, '--gm-sheen-edge'), '', '以及边缘权重')
+  assert.equal(second.document.body.dataset.glassPanels, undefined, '以及它的 body 属性')
+  assert.equal(second.document.querySelector('[data-glass-refraction]'), null, '以及折射滤波器')
+  console.log('ok  面板配置持久化 + 列重新打标签')
 }
 
 {
-  // The poll is cheap on purpose. It re-tints the panes and re-reads the clips,
-  // and it never re-decides where the frost lives: that decision is one computed-
-  // style read per descendant, and it used to run on the 1.5s poll — about 800
-  // reads a second, forever, with nothing on screen having moved. (The 2.5s deep
-  // re-tag is a different animal: it is a layout event by another name, and it
-  // still pays for the probe.)
+  // 轮询廉价是刻意的。它重新给面板上色、重读片子，而绝不重新决定磨砂住在哪：那个决定
+  // 是每个后代一次计算样式读取，它过去跑在 1.5s 轮询上——约每秒 800 次读取，永远，而
+  // 屏幕上什么都没动。（2.5s 的深度重打标签是另一头野兽：它是换个名字的布局事件，仍然
+  // 为探测付账。）
   const m = mount()
   const baseline = m.window.__styleReads()
   m.clock.advance(1500)
-  assert.equal(m.window.__styleReads(), baseline, 'one poll tick costs no computed-style read at all')
+  assert.equal(m.window.__styleReads(), baseline, '一跳轮询完全不花计算样式读取')
   m.engine.retag(true)
-  assert.ok(m.window.__styleReads() > baseline, 'a layout event is what pays for the probe')
+  assert.ok(m.window.__styleReads() > baseline, '布局事件才为探测付账')
   m.dispose()
-  console.log('ok  the poll never pays for the blur-host decision')
+  console.log('ok  轮询绝不为磨砂宿主决定付账')
 }
 
 {
-  // The shell's own class names are the lookup contract.
+  // 外壳自己的类名是查找契约。
   const { PANEL_SELECTOR } = mount().loaded
-  assert.match(PANEL_SELECTOR.left, /_sidebarCol/, 'the left column is found by its shell local name')
-  assert.match(PANEL_SELECTOR.main, /_centerCol/, 'the centre column is found by its shell local name')
-  assert.match(PANEL_SELECTOR.right, /data-rightbar-col/, 'the right column prefers the shell\'s own data hook')
-  console.log('ok  panel selector contract')
+  assert.match(PANEL_SELECTOR.left, /_sidebarCol/, '左列按外壳的类名局部名找到')
+  assert.match(PANEL_SELECTOR.main, /_centerCol/, '中间列按外壳的类名局部名找到')
+  assert.match(PANEL_SELECTOR.right, /data-rightbar-col/, '右列优先用外壳自己的数据钩子')
+  console.log('ok  面板选择器契约')
 }
 
 {
-  // A comma selector list hands back the first match in DOCUMENT order, so the
-  // right column is asked twice: the app's data hook first and alone. A hashed
-  // class name that merely sits earlier in the tree must not win over it.
+  // 逗号选择器列表交回文档序里第一个匹配，所以右列问两遍：app 的数据钩子先问、单独问。
+  // 一个仅仅在树里排得更前的哈希类名，绝不能赢过它。
   const m = mount({ shell: false })
   const frame = m.document.createElement('div')
   frame.setAttribute('class', 'AppFrame_frame_1a2b3')
@@ -2316,15 +2217,15 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   frame.appendChild(real)
   m.document.body.appendChild(frame)
   m.engine.retag(true)
-  assert.equal(real.getAttribute('data-glass-panel'), 'right', "the app's own hook picks the right column")
-  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, 'an earlier class-name match does not')
+  assert.equal(real.getAttribute('data-glass-panel'), 'right', 'app 自己的钩子选中右列')
+  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, '文档序更前的类名匹配不')
   m.dispose()
-  console.log('ok  the right column is found by the app\'s own hook, not by document order')
+  console.log('ok  右列按 app 自己的钩子找，不按文档序')
 }
 //#endregion
 
 //#region settings row
-/** A minimal React stand-in: enough hook state to render the row once. */
+/** 一个最小的 React 替身：刚够把这一行渲染一次的钩子状态。 */
 function createFakeReact() {
   const hooks = []
   let cursor = 0
@@ -2336,8 +2237,8 @@ function createFakeReact() {
         hooks[index] = [initial, null]
         hooks[index][1] = (next) => {
           const slot = hooks[index]
-          // A write from an unmounted component (e.g. a promise that settled after
-          // the tree was reset) is a no-op, exactly as React treats it.
+        // 一个来自已卸载组件的写入（比如一棵树被重置后才落定的 promise）是空操作，
+        // 和 React 对待它的方式完全一样。
           if (slot === undefined) return
           slot[0] = typeof next === 'function' ? next(slot[0]) : next
         }
@@ -2353,13 +2254,13 @@ function createFakeReact() {
       if (hooks[index] === undefined) hooks[index] = { current: initial }
       return hooks[index]
     },
-    // A fresh mount of another component: its hooks belong to that component only.
+    // 另一个组件的新挂载：它的钩子只属于那个组件。
     reset() { hooks.length = 0; cursor = 0 }
   }
   return api
 }
 
-/** Depth-first search of the fake element tree (text children included). */
+/** 对假元素树的深度优先搜索（文本子节点也算）。 */
 function findNodes(node, predicate, found = []) {
   if (node === null || node === undefined) return found
   if (predicate(node)) found.push(node)
@@ -2369,21 +2270,20 @@ function findNodes(node, predicate, found = []) {
 }
 
 {
-  // Without the slots service the row path must return before it touches React,
-  // so a composition without settings can never break the theme itself.
+  // 没有 slots 服务时，这一行的路径必须在碰 React 之前返回，所以一个没有设置的组合
+  // 永远不可能弄坏主题本身。
   let required = 0
   const m = mount({ requireImpl: () => { required += 1; throw new Error('no react here') } })
   m.dispose()
-  assert.equal(required, 0, 'the row is skipped before React is touched')
-  console.log('ok  row skipped without the slots service')
+  assert.equal(required, 0, '碰 React 之前就跳过这一行')
+  console.log('ok  没有 slots 服务就跳过这一行')
 }
 
 {
   const calls = []
   const fakeReact = createFakeReact()
   const slots = {
-    // Record the inject BEFORE running its callback: the callback is what
-    // registers the occupant, so pushing afterwards would invert the order.
+    // 先记录 inject，再跑它的回调：回调才是注册占用者的东西，往后推会把顺序颠倒。
     inject: (key, cb) => { const record = { kind: 'inject', key, disposer: null }; calls.push(record); record.disposer = cb() },
     register: (options, Component) => { calls.push({ kind: 'register', options, Component }); return () => {} }
   }
@@ -2391,8 +2291,7 @@ function findNodes(node, predicate, found = []) {
   let disposePlugin = null
   const ctx = {
     get: (name) => (name === 'slots' ? slots : name === 'theme' ? theme : undefined),
-    // Cordis runs the effect body and keeps its returned disposer, so the test
-    // must do the same or the engine never mounts.
+    // Cordis 跑 effect 体并留住它返回的清理器，所以测试必须照做，否则引擎永远不挂载。
     effect: (fn) => {
       const disposer = fn()
       disposePlugin = () => { if (typeof disposer === 'function') disposer() }
@@ -2402,94 +2301,91 @@ function findNodes(node, predicate, found = []) {
   const document = createDocument()
   const storage = { data: new Map(), getItem() { return null }, setItem(key, value) { this.data.set(key, value) }, removeItem() {} }
   const { loaded, window } = loadBundle(document, storage, (id) => { assert.equal(id, 'react'); return fakeReact })
-  // `apply` builds the engine and hands the row the same instance the debug
-  // handle exposes, so the test drives and checks one object, not two.
+  // `apply` 构建引擎，并把行交给调试句柄暴露的同一个实例，所以测试驱动和检查的是
+  // 一个对象，不是两个。
   loaded.apply(ctx)
   const live = window.__dshGlassMood
 
-  assert.equal(calls.length, 4, 'two rows, each injecting into the slot and registering once')
-  assert.deepEqual(calls.map((call) => call.kind), ['inject', 'register', 'inject', 'register'], 'inject before register, per row')
-  assert.equal(calls[0].key, 'settings.general.item', 'the wallpaper row contributes to the General section item slot')
-  assert.equal(calls[1].options.id, 'glass-mood-wallpaper', 'the cell id is ours, never a shipped one')
-  assert.equal(calls[1].options.order, 13, 'it lands between transcript-view (12) and developer-tools (15)')
-  assert.equal(calls[2].key, 'settings.general.item', 'the panel row contributes to the same slot')
-  assert.equal(calls[3].options.id, 'glass-mood-panels', 'its cell id is ours too')
-  assert.equal(calls[3].options.order, 14, 'and sits right after the wallpaper row')
-  assert.equal(typeof calls[1].Component, 'function', 'a component is registered per row')
+  assert.equal(calls.length, 4, '两行，各自注入槽并注册一次')
+  assert.deepEqual(calls.map((call) => call.kind), ['inject', 'register', 'inject', 'register'], '先 inject 再 register，每行如此')
+  assert.equal(calls[0].key, 'settings.general.item', '壁纸行贡献到通用设置区的条目槽')
+  assert.equal(calls[1].options.id, 'glass-mood-wallpaper', '单元格 id 是我们自己的，绝不是自带的')
+  assert.equal(calls[1].options.order, 13, '它落在 transcript-view（12）与 developer-tools（15）之间')
+  assert.equal(calls[2].key, 'settings.general.item', '面板行贡献到同一个槽')
+  assert.equal(calls[3].options.id, 'glass-mood-panels', '单元格 id 也是我们自己的')
+  assert.equal(calls[3].options.order, 14, '且紧坐在壁纸行之后')
+  assert.equal(typeof calls[1].Component, 'function', '每行注册一个组件')
 
-  // Render the wallpaper row and drive its controls through the engine.
+  // 渲染壁纸行，通过引擎驱动它的控件。
   fakeReact.reset()
   const tree = calls[1].Component()
   const buttons = findNodes(tree, (node) => node.type === 'button')
   const urls = findNodes(tree, (node) => node.type === 'input' && node.props.type === 'text')
   const fileInputs = findNodes(tree, (node) => node.type === 'input' && node.props.type === 'file')
   const ranges = findNodes(tree, (node) => node.type === 'input' && node.props.type === 'range')
-  assert.equal(buttons.length, 4, 'each slot gets 选择文件 and 清除')
-  assert.equal(urls.length, 2, 'each slot gets its own url field')
-  assert.equal(fileInputs.length, 2, 'each slot gets its own file picker')
-  assert.deepEqual(fileInputs.map((node) => node.props.accept), ['video/mp4,video/webm,video/*', 'video/mp4,video/webm,video/*'], 'both pickers accept video')
-  assert.equal(ranges.length, 3, 'three knobs: 壁纸可见度 / 模糊 / 情绪染色')
-  assert.equal(buttons[1].props.disabled, true, 'the idle 清除 is disabled while empty')
-  assert.equal(buttons[3].props.disabled, true, 'the work 清除 is disabled while empty')
+  assert.equal(buttons.length, 4, '每槽有选择文件和清除')
+  assert.equal(urls.length, 2, '每槽有自己的链接输入框')
+  assert.equal(fileInputs.length, 2, '每槽有自己的文件选择器')
+  assert.deepEqual(fileInputs.map((node) => node.props.accept), ['video/mp4,video/webm,video/*', 'video/mp4,video/webm,video/*'], '两个选择器都收视频')
+  assert.equal(ranges.length, 3, '三个旋钮：壁纸可见度 / 模糊 / 情绪染色')
+  assert.equal(buttons[1].props.disabled, true, '空闲的清除在空着时禁用')
+  assert.equal(buttons[3].props.disabled, true, '工作的清除在空着时禁用')
 
-  // Every knob prints its value: dragging until it "looks right" is not a setting.
+  // 每个旋钮打印它的值：拖到"看着对"不是一个设置。
   const wallpaperValues = findNodes(tree, (node) => node.props?.className === 'gm-val').map((node) => node.children[0])
   assert.deepEqual(
     wallpaperValues,
     ['0.45', '0px', '0.35'],
-    'the wallpaper knobs print 壁纸可见度 / 模糊 / 情绪染色'
+    '壁纸旋钮打印壁纸可见度 / 模糊 / 情绪染色'
   )
 
-  // The work slot must be addressed as work, not as the default slot.
+  // 工作槽必须按 work 寻址，而不是默认槽。
   urls[1].props.onChange({ target: { value: 'https://cdn.example.com/focus.mp4' } })
   urls[1].props.onKeyDown({ key: 'Enter', target: { value: 'https://cdn.example.com/focus.mp4' } })
-  assert.equal(live.wallpaper().clips.work.url, 'https://cdn.example.com/focus.mp4', 'the second field writes the work slot')
-  assert.equal(live.wallpaper().clips.idle.url, '', 'and leaves the idle slot alone')
-  assert.equal(document.body.dataset.glassWallpaper, 'on', 'the stage follows the row')
-  assert.equal(clipOf({ document }, 'work'), 'both', 'a solo work clip serves both moods')
+  assert.equal(live.wallpaper().clips.work.url, 'https://cdn.example.com/focus.mp4', '第二个输入框写工作槽')
+  assert.equal(live.wallpaper().clips.idle.url, '', '且不碰空闲槽')
+  assert.equal(document.body.dataset.glassWallpaper, 'on', '舞台跟随这一行')
+  assert.equal(clipOf({ document }, 'work'), 'both', '单独一条工作片子服务两个心情')
 
-  // A commit with no readable field value must never clear a working wallpaper.
+  // 一次读不到字段值的提交，绝不能清掉一个正在工作的壁纸。
   urls[1].props.onKeyDown({ key: 'Enter' })
-  assert.equal(live.wallpaper().clips.work.url, 'https://cdn.example.com/focus.mp4', 'a targetless Enter is ignored')
+  assert.equal(live.wallpaper().clips.work.url, 'https://cdn.example.com/focus.mp4', '没有目标的回车被忽略')
 
-  // The clear button now works, and the engine drops that slot.
+  // 清除按钮现在管用，引擎丢掉那个槽。
   const rerendered = calls[1].Component()
   const clearButtons = findNodes(rerendered, (node) => node.type === 'button')
-  assert.equal(clearButtons[3].props.disabled, false, 'the work 清除 enables once that slot has a clip')
+  assert.equal(clearButtons[3].props.disabled, false, '该槽有片子后工作的清除才启用')
   clearButtons[3].props.onClick()
-  assert.equal(live.wallpaper().clips.work.source, '', 'the row clears only the work slot')
-  assert.equal(document.body.dataset.glassWallpaper, 'off', 'the stage turns off again')
+  assert.equal(live.wallpaper().clips.work.source, '', '行只清工作槽')
+  assert.equal(document.body.dataset.glassWallpaper, 'off', '舞台再次关掉')
 
-  // Render the panel row: three material lines, four geometry knobs, two toggles.
+  // 渲染面板行：三条材质行、四个几何旋钮、两个开关。
   fakeReact.reset()
   const panelsTree = calls[3].Component()
   const panelRanges = findNodes(panelsTree, (node) => node.type === 'input' && node.props.type === 'range')
   const toggles = findNodes(panelsTree, (node) => node.type === 'input' && node.props.type === 'checkbox')
   const panelText = findNodes(panelsTree, (node) => typeof node === 'string').join(' ')
-  assert.equal(panelRanges.length, 13, 'three panels x 不透明度/模糊/高光 plus 4 geometry knobs')
-  assert.equal(toggles.length, 3, '边缘折射 / 内容取色 / 按压形变: three switches, all live — the debugging ones are gone')
-  assert.equal(toggles[0].props.checked, true, 'refraction is on by default')
-  assert.equal(toggles[1].props.checked, true, 'and so is the content tint')
-  assert.equal(toggles[2].props.checked, true, 'and so is the press deformation')
-  // The self-test and the blur fallback were diagnostics: they may not reappear as
-  // row settings, however useful they were while the blur was being chased.
-  assert.ok(!/棋盘格自检|模糊降级/.test(panelText), 'no debugging switches are left in the row')
-  // This instance never found a panel, so the diagnostic line has something to say —
-  // and that is exactly when it is allowed to appear. A recognised mount stays quiet,
-  // which the accessibility/surface blocks cover.
-  assert.match(panelText, /模糊挂载：左侧栏：未识别/, 'the diagnostic speaks when a panel is missing')
-  assert.match(panelText, /左侧边栏/, 'the left column is labelled')
-  assert.match(panelText, /主打|主界面/, 'the centre column is labelled')
-  assert.match(panelText, /均已识别|未识别到面板/, 'the row reports which columns were found')
+  assert.equal(panelRanges.length, 13, '三面板 × 不透明度/模糊/高光，外加 4 个几何旋钮')
+  assert.equal(toggles.length, 3, '边缘折射 / 内容取色 / 按压形变：三个开关，全都实时生效——调试用的那些没了')
+  assert.equal(toggles[0].props.checked, true, '折射默认开')
+  assert.equal(toggles[1].props.checked, true, '内容染色也一样')
+  assert.equal(toggles[2].props.checked, true, '按压形变也一样')
+  // 自检和模糊降级是诊断：它们绝不可以重新变成行设置，不管它们在追模糊时多有用。
+  assert.ok(!/棋盘格自检|模糊降级/.test(panelText), '行里不留调试开关')
+  // 这个实例从没找到面板，所以诊断行有话要说——而那正是它被允许出现的时候。一个识别
+  // 齐全的挂载保持安静，这一点由无障碍/表面那几个块覆盖。
+  assert.match(panelText, /模糊挂载：左侧栏：未识别/, '有面板缺失时诊断开口')
+  assert.match(panelText, /左侧边栏/, '左列被标注')
+  assert.match(panelText, /主打|主界面/, '中间列被标注')
+  assert.match(panelText, /均已识别|未识别到面板/, '行报出找到了哪些列')
   const panelValues = findNodes(panelsTree, (node) => node.props?.className === 'gm-val').map((node) => node.children[0])
-  assert.equal(panelValues.length, 13, 'every panel knob prints its value')
-  assert.deepEqual(panelValues.slice(0, 3), ['0.52', '0px', '1.00'], 'the left panel prints its effective alpha / blur / highlight')
-  assert.deepEqual(panelValues.slice(9), ['8px', '0px', '20px', '0.35'], 'the geometry knobs print their units')
+  assert.equal(panelValues.length, 13, '每个面板旋钮打印它的值')
+  assert.deepEqual(panelValues.slice(0, 3), ['0.52', '0px', '1.00'], '左面板打印它的有效 alpha / 模糊 / 高光')
+  assert.deepEqual(panelValues.slice(9), ['8px', '0px', '20px', '0.35'], '几何旋钮打印单位')
 
-  // The bottom inset is the frame's padding, not each panel's margin. A column with
-  // an explicit `height: 100%` resolves it against the grid area, so its own bottom
-  // margin is added on top and it lands flush with the window — which is exactly why
-  // the centre panel had no bottom gap while the two side ones did.
+  // 底部内缩是外框的 padding，不是每个面板的 margin。一个带显式 `height: 100%` 的列
+  // 会对着网格区解析它，于是自己的底部 margin 叠加上去，落地时贴着窗口——这正是中间面板
+  // 没有底部间隙而两侧有的原因。
   const topology = createDocument()
   const topologyShell = mountShellColumns(topology)
   const live2 = loadBundle(topology, null, undefined)
@@ -2509,26 +2405,26 @@ function findNodes(node, predicate, found = []) {
   })
   engine2.start()
   const topologyCss = topology.getElementById('dsh-glass-mood-style').textContent
-  assert.match(topologyCss, /\[data-glass-panel\]\{position:relative;z-index:0;margin:var\(--gm-gap\) calc\(var\(--gm-gap\) \/ 2\) 0;/, 'the panels carry no bottom margin')
-  assert.match(topologyCss, /\[data-glass-frame\]\{border-radius:var\(--gm-frame-radius\);padding-bottom:var\(--gm-gap\)\}/, 'the frame owns the bottom inset')
-  assert.equal(topologyShell.left.getAttribute('data-glass-panel'), 'left', 'and the panels are still tagged')
+  assert.match(topologyCss, /\[data-glass-panel\]\{position:relative;z-index:0;margin:var\(--gm-gap\) calc\(var\(--gm-gap\) \/ 2\) 0;/, '面板不带底部 margin')
+  assert.match(topologyCss, /\[data-glass-frame\]\{border-radius:var\(--gm-frame-radius\);padding-bottom:var\(--gm-gap\)\}/, '外框拥有底部内缩')
+  assert.equal(topologyShell.left.getAttribute('data-glass-panel'), 'left', '且面板仍打着标签')
   engine2.off()
 
-  // Drive one per-panel knob and one global knob through the real engine.
+  // 通过真引擎驱动一个逐面板旋钮和一个全局旋钮。
   panelRanges[0].props.onChange({ target: { value: '0.5' } })
-  assert.equal(live.panels().left.opacity, 0.5, 'the first knob writes the left panel opacity')
-  assert.equal(document.body.style.getPropertyValue('--gm-panel-left-fill'), document.body.style.getPropertyValue('--gm-panel-left-fill'), 'and republishes the fill')
+  assert.equal(live.panels().left.opacity, 0.5, '第一个旋钮写左面板不透明度')
+  assert.equal(document.body.style.getPropertyValue('--gm-panel-left-fill'), document.body.style.getPropertyValue('--gm-panel-left-fill'), '并重新发布填充')
   panelRanges[9].props.onChange({ target: { value: '0' } })
-  assert.equal(live.panels().gap, 0, 'the first geometry knob writes the gap')
-  assert.equal(document.body.dataset.glassGap, 'off', 'and switches the layout mode')
+  assert.equal(live.panels().gap, 0, '第一个几何旋钮写间隙')
+  assert.equal(document.body.dataset.glassGap, 'off', '并切换布局模式')
 
-  // The cordis effect disposer is the plugin's own teardown path.
-  assert.equal(typeof disposePlugin, 'function', 'apply registered its teardown')
+  // cordis effect 清理器是插件自己的拆卸路径。
+  assert.equal(typeof disposePlugin, 'function', 'apply 注册了它的拆卸')
   disposePlugin()
-  assert.equal(document.body.dataset.glassMood, undefined, 'disposing the plugin removes the mood attribute')
-  assert.equal(document.getElementById('dsh-glass-mood-style'), null, 'and the stylesheet')
-  assert.equal(window.__dshGlassMood, undefined, 'and the debug handle')
-  console.log('ok  settings rows registration + interaction')
+  assert.equal(document.body.dataset.glassMood, undefined, '卸载插件移除心情属性')
+  assert.equal(document.getElementById('dsh-glass-mood-style'), null, '以及样式表')
+  assert.equal(window.__dshGlassMood, undefined, '以及调试句柄')
+  console.log('ok  设置行注册 + 交互')
 }
 //#endregion
 
@@ -2554,7 +2450,7 @@ function findNodes(node, predicate, found = []) {
     assert.ok(tokenSet.has(name), `${name} exists in the shipped ui-theme token set`)
     assert.ok(!forbidden.includes(name), `${name} is owned elsewhere and must not be overridden`)
   }
-  assert.equal(new Set(TOKEN_KEYS).size, TOKEN_KEYS.length, 'no duplicate token names')
+  assert.equal(new Set(TOKEN_KEYS).size, TOKEN_KEYS.length, 'token 名不重复')
 
   for (const mood of ['idle', 'work']) {
     const pair = pairFor(mood)
@@ -2577,11 +2473,11 @@ function findNodes(node, predicate, found = []) {
 
   assert.throws(() => pairFor('nope'), /unknown mood/, 'an unknown mood is a loud error')
 
-  // The theme service itself rejects a bare string; our shape must not trip it.
+  // 主题服务自己就拒绝裸字符串；我们的形状绝不能把它绊倒。
   for (const mood of ['idle', 'work']) {
     for (const [name, modes] of Object.entries(pairFor(mood))) {
       assert.equal(typeof modes, 'object', `${name} is a pair, never a bare string`)
-      assert.deepEqual(Object.keys(modes).sort(), ['dark', 'light'], `${name} carries both schemes`)
+      assert.deepEqual(Object.keys(modes).sort(), ['dark', 'light'], `${name} 同时带两套配色`)
     }
   }
   console.log('ok  token contract (' + TOKEN_KEYS.length + ' tokens x 4 palettes)')
@@ -2590,7 +2486,7 @@ function findNodes(node, predicate, found = []) {
 
 //#region legibility
 {
-  /** sRGB relative luminance. */
+  /** sRGB 相对亮度。 */
   const luminance = (rgb) => {
     const channel = (value) => {
       const c = value / 255
@@ -2607,7 +2503,7 @@ function findNodes(node, predicate, found = []) {
     const parts = value.slice(value.indexOf('(') + 1, value.lastIndexOf(')')).split(',').map((p) => Number(p.trim()))
     return [parts[0], parts[1], parts[2], parts.length > 3 ? parts[3] : 1]
   }
-  /** Source-over compositing of a translucent surface onto an opaque backdrop. */
+  /** 半透明表面对不透明背景的 source-over 合成。 */
   const over = (top, bottom) => {
     const a = top[3]
     return [0, 1, 2].map((i) => top[i] * a + bottom[i] * (1 - a)).concat(1)
@@ -2617,7 +2513,7 @@ function findNodes(node, predicate, found = []) {
     return (hi + 0.05) / (lo + 0.05)
   }
 
-  /** A representative backdrop color for each mood/scheme: the gradient's mid tone. */
+  /** 每个心情/配方的一个代表性背景色：渐变的中间调。 */
   const BACKDROP = {
     'idle/light': [252, 251, 253],
     'idle/dark': [20, 22, 28],
@@ -2631,14 +2527,13 @@ function findNodes(node, predicate, found = []) {
     const pair = pairFor(mood)
     for (const mode of ['light', 'dark']) {
       const backdrop = BACKDROP[`${mood}/${mode}`]
-      // The base pane is painted over the gradient, then a raised layer over that.
+      // 基础面板画在渐变之上，然后一层抬升画在那之上。
       const base = over(parse(pair['--dsw-alias-bg-base'][mode]), backdrop)
       const layer1 = over(parse(pair['--dsw-alias-bg-layer-1'][mode]), base)
       const layer2 = over(parse(pair['--dsw-alias-bg-layer-2'][mode]), base)
 
-      // The content tint moves the pane toward the footage's hue. It must never eat
-      // the contrast the label tiers were measured against, so it is checked at its
-      // strongest: a fully saturated reading, at the maximum mix.
+  // 内容染色把窗格拉向片子的色相。它绝不能吃掉标签层级当初被测量时依据的对比度，
+  // 所以按它最强的时候检查：一个完全饱和的读数，在最大的混合下。
       const strong = { ready: true, hue: 29, brightness: 0.9, saturation: 1 }
       const panels = { left: { opacity: -1 }, main: { opacity: -1 }, right: { opacity: -1 } }
       const tintedStr = mount().loaded.panelFill('main', mode, panels, 0, false, mood, strong)
@@ -2667,9 +2562,8 @@ function findNodes(node, predicate, found = []) {
         worst('--dsw-alias-label-primary') >= 4.5,
         `${mood}/${mode}: primary label contrast ${worst('--dsw-alias-label-primary').toFixed(2)} must reach 4.5`
       )
-      // Grey text is where this theme kept failing: the shipped theme draws captions
-      // and dimmed text with mid greys that wash out on a pale or translucent panel.
-      // Every label tier now has to hold its own against the raised layers.
+      // 灰字正是本主题反复失败的地方：官方主题用中等灰画说明文字和暗下来的文字，在
+      // 苍白或半透明的面板上会糊掉。现在每个标签层级都必须独自顶住被抬高的各层。
       assert.ok(
         worst('--dsw-alias-label-secondary') >= 4.5,
         `${mood}/${mode}: secondary label contrast ${worst('--dsw-alias-label-secondary').toFixed(2)} must reach 4.5`
@@ -2694,11 +2588,9 @@ function findNodes(node, predicate, found = []) {
         worst('--dsw-alias-brand-primary') >= 3,
         `${mood}/${mode}: brand contrast ${worst('--dsw-alias-brand-primary').toFixed(2)} must reach 3.0`
       )
-      // The primary button's own label token is not part of this theme's surface,
-      // so its fill must stay dark enough that the strictest label pairing — white
-      // text — remains readable. The bar is 4.2/3.0 because the product's own dark
-      // brand blue measures 4.33:1 for white text and 3.03:1 against the glass; a
-      // higher pair is geometrically impossible on a dark translucent backdrop.
+      // 主按钮自己的标签 token 不属于本主题的表面，所以它的填充必须保持足够暗，让最
+      // 严格的标签搭配——白字——仍然可读。门槛是 4.2/3.0，因为产品自己的深品牌蓝对白字
+      // 量出 4.33:1、对玻璃量出 3.03:1；在深色半透明背景上，更高的一对在几何上不可能。
       const whiteOnFill = contrast([255, 255, 255, 1], parse(pair['--dsw-alias-button-primary-fill'][mode]))
       const whiteOnHover = contrast([255, 255, 255, 1], parse(pair['--dsw-alias-button-primary-hover'][mode]))
       assert.ok(whiteOnFill >= 4.2, `${mood}/${mode}: white on the primary fill ${whiteOnFill.toFixed(2)} must reach 4.2`)
@@ -2713,11 +2605,11 @@ function findNodes(node, predicate, found = []) {
       )
     }
   }
-  console.log('ok  legibility:')
+  console.log('ok  可读性：')
   for (const row of rows) {
     console.log(`      ${row.mood}/${row.mode}  primary ${row.primary.toFixed(2)}  secondary ${row.secondary.toFixed(2)}  tertiary ${row.tertiary.toFixed(2)}  caption ${row.caption.toFixed(2)}  dimmed ${row.dimmed.toFixed(2)}  preview ${row.preview.toFixed(2)}  brand ${row.brand.toFixed(2)}`)
   }
 }
 //#endregion
 
-console.log('\nall glass-mood checks passed')
+console.log('\n全部检查通过')

@@ -919,8 +919,12 @@ window.__dshGlassMood.blurReport()                  // 每个面板的 backdrop-
 window.__dshGlassMood.off()                         // 应急开关：本次会话内完全卸下主题（样式表/钩子/舞台）
 window.__dshGlassMood.retag(true)                   // 重新识别三根列并深度探测
 window.__dshGlassMood.setWallpaper({ visibility: 0.7 })   // 等效于拖动「壁纸可见度」
+window.__dshGlassMood.postReport()                  // 立刻发一份 DOM 诊断报告（本地 8791 端口收）
+window.__dshGlassMood.setReports(true)              // 打开自动报告（默认关：展开/收起右栏时自动发）
 localStorage.setItem('dsh-glass-mood:no-blur', '1') // 关掉磨砂模糊（刷新后生效）
 ```
+
+**自动诊断报告默认关闭**。它是一件调试仪器：开启前，没有任何布局事件会往 `127.0.0.1:8791` 发东西、也不往 localStorage 写快照。需要时用 `setReports(true)`（或直接写 `localStorage['dsh-glass-mood:report'] = '1'`）打开，`postReport()` 则不受开关限制——那正是这个开关要区分的"显式请求"与"自动触发"。报告 payload 里有外框几何、覆盖层、呈现层候选、每个面板的材质宿主与背景根，以及**面板内部哪个元素在画第二个角**（cornerAudit）。
 
 只想看效果、不想等回合：`force('work')` / `force('idle')`。
 
