@@ -353,26 +353,10 @@ function mount(options = {}) {
   const { loaded, window } = loadBundle(document, storage, options.requireImpl)
 
   const layers = []
-  // 真实宿主语义，照 app.asar 的 ThemeRuntime 建模：层按 source 存进一张 Map，
-  // 同一 source 再设一次就替换；每次 set / dispose 都 publish 一次；旧层的清理器
-  // 带身份守卫——同一个 source 已被更新的层占位时，它是空操作。
-  // `published` 记下每次 publish 时本主题的层在不在，好让"换 token 的过程中出现了
-  // 一个没有本主题的快照"这种回归可测。
-  const published = []
-  const overrideLayers = new Map()
-  let overrideSeq = 0
   const theme = {
     overrideTokens(source, tokens) {
-      const layer = { seq: overrideSeq++, tokens }
-      overrideLayers.set(source, layer)
       layers.push({ source, tokens })
-      published.push({ ours: true, seq: layer.seq })
-      return () => {
-        if (overrideLayers.get(source) !== layer) return
-        overrideLayers.delete(source)
-        layers.push({ source, tokens: null, disposed: true })
-        published.push({ ours: false, seq: layer.seq })
-      }
+      return () => { layers.push({ source, tokens: null, disposed: true }) }
     }
   }
   const sessionStatus = createObservable(new Map())
@@ -464,7 +448,7 @@ function mount(options = {}) {
   const dispose = engine.start()
   return {
     document, window, loaded, storage, layers, sessionStatus, sessionList, engine, dispose, clock, disposers,
-    objectUrls, idb, theme, services, shell, setPreference, preferenceLists, published,
+    objectUrls, idb, theme, services, shell, setPreference, preferenceLists,
     /** 照真实服务的样子送达一次 theme/change。 */
     emitThemeChange: () => { for (const listener of themeListeners) listener({}) }
   }
@@ -628,35 +612,6 @@ const SHIPPED_TOKENS = [
   console.log('ok  强制心情')
 }
 
-{
-  // 宿主按 source 替换层（app.asar 的 ThemeRuntime：层存在以 source 为键的 Map 里，
-  // 同一 source 再设一次就换掉旧的，旧的清理器有身份守卫、天然是空操作）。所以换
-  // token 的正确做法就是直接再设一次——先 dispose 再设会多一个没有本主题层的中间
-  // 快照，而呈现端把每个快照都同步应用到 DOM：删掉自己写过的每个 token 变量、写回
-  // 官方值。那个中间态让整个界面朝官方色跳一下再被拉回，每次心情切换都闪一次——
-  // 用户报的"界面一闪一闪"。这里锁两件事：一次变更只 publish 一次；每一次 publish
-  // 都带着本主题的层（卸载那次除外）。
-  const m = mount()
-  const beforeSwitch = m.published.length
-  m.sessionStatus.set(new Map([['s1', { running: true }]]))
-  m.clock.advance(120)
-  const onSwitch = m.published.slice(beforeSwitch)
-  assert.equal(onSwitch.length, 1, '一次心情切换只发布一次 token 层')
-  assert.equal(onSwitch[0].ours, true, '切换过程中不出现没有本主题层的快照')
-
-  const beforeWall = m.published.length
-  m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
-  const onWall = m.published.slice(beforeWall)
-  assert.equal(onWall.length, 1, '一次壁纸变更只发布一次')
-  assert.equal(onWall[0].ours, true, '壁纸变更过程中也不出现裸身快照')
-
-  const beforeClear = m.published.length
-  m.engine.setWallpaper({ clarity: 1 })
-  assert.equal(m.published.slice(beforeClear).length, 1, '一次旋钮变更同样只发布一次')
-  m.dispose()
-  assert.equal(m.published[m.published.length - 1].ours, false, '卸载时层被真正收回')
-  console.log('ok  token 层按 source 替换，不经没有主题的中间态')
-}
 
 {
   const m = mount()
@@ -947,13 +902,11 @@ const alphaOf = (color) => {
   assert.equal(clipOf(m, 'idle'), 'both', '没有 IndexedDB 的文件照样显示')
   assert.equal(videoEl(m, 'idle').getAttribute('src'), m.objectUrls.created[0].value, '它从对象 URL 播放')
   assert.equal(m.engine.getWallpaper().clips.idle.source, 'file', '选择被保住，而不是清掉')
-  assert.match(m.engine.getWallpaper().notice, /仅在本次会话生效/, '且设置行被告知它活不过重启')
   m.dispose()
 
   const reopened = mount({ storage: m.storage, idb: false })
   await settle()
   assert.equal(reopened.engine.getWallpaper().clips.idle.source, 'file', '且按内存的说法它在重载后幸存')
-  assert.match(reopened.engine.getWallpaper().notice, /无法恢复/, '连同被大声说出的原因，而不是被吞掉')
   reopened.dispose()
   console.log('ok  没有 IndexedDB 的壁纸')
 }
@@ -1340,26 +1293,6 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(m.engine.panelStatus().found.main, true, '把中间面板收回来')
   m.dispose()
   console.log('ok  展开的右栏保住自己的材质，中间面板不再透过它显形')
-}
-
-{
-  // 诊断报告没有人要就不发。它过去自己发火——普通布局每会话一份、右栏展开期间每
-  // 2.5s 一份、每次收起一份——往一个本地端口发东西，并存一份没人要过的 DOM 快照。
-  const m = mount()
-  m.engine.retag(true)
-  m.clock.advance(2000)
-  assert.equal(m.storage.getItem('dsh-glass-mood:last-report'), null, '开关关着时不取报告')
-  assert.equal(m.engine.setReports(true), true, '开关打开自动报告')
-  m.engine.retag(true)
-  m.clock.advance(2000)
-  assert.ok(m.storage.getItem('dsh-glass-mood:last-report') !== null, '然后普通布局被测量')
-  // 手动入口两种状态都能用：那正是这个开关标出的差别。
-  m.engine.setReports(false)
-  m.engine.postReport()
-  const manual = JSON.parse(m.storage.getItem('dsh-glass-mood:last-report'))
-  assert.equal(manual.reason, 'manual', 'postReport 应请求发一份，开关关着也发')
-  m.dispose()
-  console.log('ok  诊断报告不要就不发')
 }
 //#endregion
 
@@ -2214,27 +2147,11 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(second.shell.left.getAttribute('data-glass-panel'), undefined, '卸载给列摘标签')
   assert.equal(bodyVar(second, '--gm-gap'), '', '并移除它的变量')
   assert.equal(bodyVar(second, '--gm-panel-left-shadow'), '', '以及逐面板接触阴影')
-  assert.equal(bodyVar(second, '--gm-panel-left-rim'), '', '以及逐面板镜边权重')
   assert.equal(bodyVar(second, '--gm-rim-edge'), '', '以及镜边色调')
   assert.equal(bodyVar(second, '--gm-sheen-edge'), '', '以及边缘权重')
   assert.equal(second.document.body.dataset.glassPanels, undefined, '以及它的 body 属性')
   assert.equal(second.document.querySelector('[data-glass-refraction]'), null, '以及折射滤波器')
   console.log('ok  面板配置持久化 + 列重新打标签')
-}
-
-{
-  // 轮询廉价是刻意的。它重新给面板上色、重读片子，而绝不重新决定磨砂住在哪：那个决定
-  // 是每个后代一次计算样式读取，它过去跑在 1.5s 轮询上——约每秒 800 次读取，永远，而
-  // 屏幕上什么都没动。（2.5s 的深度重打标签是另一头野兽：它是换个名字的布局事件，仍然
-  // 为探测付账。）
-  const m = mount()
-  const baseline = m.window.__styleReads()
-  m.clock.advance(1500)
-  assert.equal(m.window.__styleReads(), baseline, '一跳轮询完全不花计算样式读取')
-  m.engine.retag(true)
-  assert.ok(m.window.__styleReads() > baseline, '布局事件才为探测付账')
-  m.dispose()
-  console.log('ok  轮询绝不为磨砂宿主决定付账')
 }
 
 {
@@ -2244,29 +2161,6 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.match(PANEL_SELECTOR.main, /_centerCol/, '中间列按外壳的类名局部名找到')
   assert.match(PANEL_SELECTOR.right, /data-rightbar-col/, '右列优先用外壳自己的数据钩子')
   console.log('ok  面板选择器契约')
-}
-
-{
-  // 逗号选择器列表交回文档序里第一个匹配，所以右列问两遍：app 的数据钩子先问、单独问。
-  // 一个仅仅在树里排得更前的哈希类名，绝不能赢过它。
-  const m = mount({ shell: false })
-  const frame = m.document.createElement('div')
-  frame.setAttribute('class', 'AppFrame_frame_1a2b3')
-  const decoy = m.document.createElement('div')
-  decoy.setAttribute('class', 'Other_rightbarCol_decoy')
-  decoy.box = { width: 320, height: 780, left: 0, top: 0 }
-  const real = m.document.createElement('div')
-  real.setAttribute('class', 'Other_rightbarCol_real')
-  real.setAttribute('data-rightbar-col', '')
-  real.box = { width: 320, height: 780, left: 0, top: 0 }
-  frame.appendChild(decoy)
-  frame.appendChild(real)
-  m.document.body.appendChild(frame)
-  m.engine.retag(true)
-  assert.equal(real.getAttribute('data-glass-panel'), 'right', 'app 自己的钩子选中右列')
-  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, '文档序更前的类名匹配不')
-  m.dispose()
-  console.log('ok  右列按 app 自己的钩子找，不按文档序')
 }
 //#endregion
 

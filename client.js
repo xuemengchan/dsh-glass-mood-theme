@@ -83,13 +83,6 @@ window.__ModuleLoader__.load({
 	var REPORT_URL = "http://127.0.0.1:8791/glass-report";
 	var REPORT_KEY = "dsh-glass-mood:last-report";
 	var REPORT_MAX_POSTS = 14;
-	/**
-	 * 报告是一件调试仪器，所以它在有人打开之前是关的：这个键没设时，任何布局事件
-	 * 都不发东西、也不存东西。手动入口（`__dshGlassMood.postReport()`，或自动报告的
-	 * `setReports(true)`）就是这个开关存在的意义——没人要过的仪器不是诊断，是
-	 * 一次未记录的联网加一份存在存储里的 200KB DOM 快照。
-	 */
-	var REPORT_ENABLE_KEY = "dsh-glass-mood:report";
 		/** 一次性表面交叉淡变的窗口开多久（最慢的淡变 + 余量）。 */
 		var FADE_WINDOW_MS = 1100;
 		/**
@@ -97,7 +90,7 @@ window.__ModuleLoader__.load({
 		 * 根本没加载"混为一谈：屏幕上是谁，在 UI 里就看得见；另有一项测试把它
 		 * 与 package.json 锁在一起。
 		 */
-		var BUILD = "1.53.1";
+		var BUILD = "1.52.1";
 		/** 停在用户交互上的一轮仍然是工作（这一轮还没结束）。 */
 		var COUNT_PENDING_AS_WORK = true;
 		/** 通透度拉满时还剩多少情绪染色（0 = 完全没有）。 */
@@ -113,14 +106,8 @@ window.__ModuleLoader__.load({
 	/** 外壳三列，按 DOM 顺序，连同每一列绘制的 token。 */
 	var PANEL_KEYS = ["left", "main", "right"];
 	/**
-	 * 每个面板的变量后缀全集，收在一个列表里，好让写方和两个清洁工（sweep 与
-	 * dispose）永远不可能对"存在哪些"各说各话。`rim` 那条就是曾经写下去、然后被两个
-	 * 清洁工都忘掉的——实效上无害，但变量审计没法信它。
-	 */
-	var PANEL_VAR_SUFFIXES = ["blur", "sheen", "fill", "alpha", "shadow", "rim"];
-		/**
-		 * 每一列的表面是从哪个官方别名推导出来的。左列画
-		 * `--dsw-specific-sidebar-fill`；外框在中间列和右列身后画
+	 * 每一列的表面是从哪个官方别名推导出来的。左列画
+	 * `--dsw-specific-sidebar-fill`；外框在中间列和右列身后画
 		 * `--dsw-alias-bg-base`。
 		 */
 		var PANEL_BASE_TOKEN = {
@@ -1512,7 +1499,6 @@ window.__ModuleLoader__.load({
 		 * 或一个拒绝了写入的存储，过去都无声通过——人只在下次重启丢了一个他记得做过的
 		 * 选择时才发现。
 		 */
-		var wallpaperNotice = "";
 			var panels = normalizePanels(null);
 			var panelListeners = [];
 		/** 每个面板当前作画的 alpha，供设置行读数。 */
@@ -1605,10 +1591,7 @@ window.__ModuleLoader__.load({
 				if (readSlot(SLOTS[i], force)) read = true;
 			}
 			publishMedia();
-			// 一次新读数只重新给面板上色。全套重发布还会重新决定每个面板的磨砂住在哪，
-			// 而那个决定是一次有测量的探测（每个后代一次计算样式读取）：它属于布局事件，
-			// 绝不属于一个什么都没动时也在跑的计时器。
-			if (read) publishPanelColors();
+			syncPanels();
 			return read;
 		}
 
@@ -1762,9 +1745,11 @@ window.__ModuleLoader__.load({
 				"--gm-wall-scale", "--gm-tint"];
 				for (var v = 0; v < vars.length; v++) doc.body.style.removeProperty(vars[v]);
 			for (var k = 0; k < PANEL_KEYS.length; k++) {
-				for (var s = 0; s < PANEL_VAR_SUFFIXES.length; s++) {
-					doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-" + PANEL_VAR_SUFFIXES[s]);
-				}
+				doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-blur");
+				doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-sheen");
+				doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-fill");
+				doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-alpha");
+				doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[k] + "-shadow");
 			}
 				delete doc.body.dataset.glassPanels;
 				delete doc.body.dataset.glassGap;
@@ -1856,14 +1841,6 @@ window.__ModuleLoader__.load({
 			var refractionMounted = false;
 			var retagTimer = 0;
 			var disposed = false;
-
-		/**
-		 * @returns 诊断报告是否被打开。实时读，所以翻这个键在下一个布局事件即生效，
-		 * 不需要重启。
-		 */
-		function reportsEnabled() {
-			return readKey(REPORT_ENABLE_KEY) === "1";
-		}
 
 		/** 一次受保护的读：存储在隐私模式下、loopback 之外会抛错。 */
 		function readKey(key) {
@@ -2017,24 +1994,13 @@ window.__ModuleLoader__.load({
 		 * 为当前心情发布 token 层，有壁纸时削薄面板。情绪机和滑杆共用一个漏斗。
 		 *
 		 * 新层叠上之前，旧层先收回。宿主的文档是一源一层、每次变更重叠；如果那其实
-		 * 意味着"堆叠"而不是"替换"，收回就是让旧值不在底下幸存的东西——而一个已
-		 * dispose 的引擎绝不能重新加层，这就是那个守卫的用途（否则一行比 `off()`
-		 * 活得久的设置会复活半个主题）。
+		 * 意味着"堆叠"而不是"替换"，收回就是让旧值不在底下幸存的东西。
 		 */
 		function applyTokens() {
-			if (disposed) return;
 			var pair = pairFor(mood === null ? "idle" : mood);
 			if (hasWallpaperConfig(wallpaper)) pair = dimPair(pair, wallpaper.clarity);
 			if (prefers.reducedTransparency) pair = solidifySurfaces(pair);
 			if (prefers.moreContrast) pair = boostContrast(pair);
-			/* 宿主按 source 替换层——`overrides` 是一张以 source 为键的 Map，同一
-			   source 再设一次就换掉旧的，而旧层的清理器带身份守卫（新层已占位时它是
-			   空操作）。所以换 token 就是直接再设一次，没有泄漏可收。
-			   曾经在这里先 dispose 再设，本意是"收回旧层"，结果每次都多出一个没有本
-			   主题层的中间快照：呈现端把每个快照都同步应用到 DOM——删掉它写过的每一个
-			   token 变量、写回官方值——再被下一次 publish 拉回。整个界面因此朝官方色跳
-			   一下再回来，每次心情切换都闪一次（用户报的"界面一闪一闪"）。旧的清理器
-			   留到卸载时用即可。 */
 			layerDispose = theme.overrideTokens(SOURCE, pair);
 		}
 
@@ -2233,7 +2199,8 @@ window.__ModuleLoader__.load({
 		function observeColumns() {
 			if (resizeObserver === null || typeof doc.querySelector !== "function") return;
 			for (var i = 0; i < PANEL_KEYS.length; i++) {
-				var node = findColumn(PANEL_KEYS[i]);
+				var node = null;
+				try { node = doc.querySelector(PANEL_SELECTOR[PANEL_KEYS[i]]); } catch (error) { node = null; }
 				if (node === null || node === undefined) continue;
 				if (observedNodes.indexOf(node) !== -1) continue;
 				try {
@@ -2319,8 +2286,7 @@ window.__ModuleLoader__.load({
 					blur: wallpaper.blur,
 					tint: wallpaper.tint,
 				clarity: wallpaper.clarity,
-				autoDim: wallpaper.autoDim,
-				notice: wallpaperNotice
+				autoDim: wallpaper.autoDim
 			};
 		}
 
@@ -2540,13 +2506,8 @@ window.__ModuleLoader__.load({
 				applyTokens();
 				syncPanels();
 			if (clip.source !== "file" || blob === undefined || blob === null) return Promise.resolve(videoConfig());
-			return writeStoredClip(slot, blob).then(function () { return videoConfig(); }, function () {
-				// 配额、隐私模式、一个拒绝了写入的存储：片子在本会话从它的对象 URL 播放，
-				// 设置行把这一点说出来，而不是让下次重启悄悄丢掉这个选择。
-				wallpaperNotice = "文件仅在本次会话生效：浏览器存储不可用或空间不足";
-				return videoConfig();
-			});
-			}
+			return writeStoredClip(slot, blob).then(function () { return videoConfig(); }, function () { return videoConfig(); });
+		}
 
 			/**
 			 * 合并一个配置补丁，持久化，重绘。片子字段指向一个槽（`slot`，默认
@@ -2601,8 +2562,6 @@ window.__ModuleLoader__.load({
 			 */
 		function setWallpaperFile(file, name, slot) {
 			var target = slot === "work" ? "work" : "idle";
-			// 一次新选就是一次新尝试：上一次留不住的东西，不再是设置行该说的话。
-			wallpaperNotice = "";
 			return installClip(target, {
 					source: "file",
 					url: "",
@@ -2649,7 +2608,6 @@ window.__ModuleLoader__.load({
 			 * @returns 一个在恢复尝试完成时落定的 promise。
 			 */
 		function restoreWallpaper() {
-			wallpaperNotice = "";
 			var raw = readKey(VIDEO_KEY);
 				var parsed = null;
 				if (raw !== null && raw !== "") {
@@ -2671,10 +2629,7 @@ window.__ModuleLoader__.load({
 					return read.then(function (result) {
 						if (disposed) return undefined;
 					// 存储本身不可用：保住配置，让舞台显示渐变，而不是删掉一个正当的选择。
-						if (result.available !== true) {
-							wallpaperNotice = "浏览器存储不可用：已保存的壁纸文件无法恢复，可重新选择文件";
-							return undefined;
-						}							if (result.blob === null) return dropSlot(target);
+						if (result.available !== true) return undefined;							if (result.blob === null) return dropSlot(target);
 							return installClip(target, wallpaper.clips[target], result.blob).then(function (config) {
 								if (useLegacy && target === "idle") return dropLegacyClip().then(function () { return config; });
 								return config;
@@ -2687,7 +2642,6 @@ window.__ModuleLoader__.load({
 
 		/** 清掉一个字节丢了的槽。 */
 		function dropSlot(slot) {
-			wallpaperNotice = "有状态的壁纸文件已丢失（可能在别处被清理），该状态已重置";
 			var clips = {
 					idle: { source: wallpaper.clips.idle.source, url: wallpaper.clips.idle.url, name: wallpaper.clips.idle.name },
 					work: { source: wallpaper.clips.work.source, url: wallpaper.clips.work.url, name: wallpaper.clips.work.name }
@@ -3266,22 +3220,6 @@ window.__ModuleLoader__.load({
 			} catch (error) { /* 没人在听 */ }
 			}
 
-		/**
-		 * 找一个外壳列。右列刻意问两遍：逗号列表交回文档序里第一个匹配，所以 app 自己
-		 * 的数据钩子可能输给一个仅仅在树里排得更前的哈希类名。数据钩子是 app 对这一列的
-		 * 叫法，所以先单独问它；类名是兜底。
-		 * @param key - 面板键。
-		 * @returns 列元素，或 null。
-		 */
-		function findColumn(key) {
-		if (key === "right") {
-			var marked = null;
-			try { marked = doc.querySelector("[data-rightbar-col]"); } catch (error) { marked = null; }
-			if (marked !== null && marked !== undefined) return marked;
-		}
-		try { return doc.querySelector(PANEL_SELECTOR[key]); } catch (error) { return null; }
-	}
-
 	/**
 	 * 找到三个外壳列，在它们身上盖上本插件自己的钩子。外壳的类名局部名是查找方式，
 	 * 我们的属性是契约：此后每条样式规则都读一个本插件拥有的名字。
@@ -3300,30 +3238,25 @@ window.__ModuleLoader__.load({
 			   列在任何模式下都是列——app 在全屏面板下面保留它的网格轨道——所以这里什么都不
 			   重新指派。那个模式里变的只是材质画在哪里，而那由 `discoverSurfaces()` 从 app
 			   自己的标记决定。 */
-			/* 每份自动报告都在开关后面。尤其是普通布局那份快照，过去每会话自发一次、
-			   没有说不了的机会——一件调试仪器成了运行本主题的默认成本的一部分。
-			   `wasExpanded` 照样跟踪模式，所以会话中途打开报告，下一份仍能接到。 */
-			if (reportsEnabled()) {
-				// 那个被反复报坏的模式，进人时测一次、稍后再测一次，好把迟到的布局算进来。
-				if (rightbarExpanded() === true && deep === true && reportTimer === 0) {
-					reportTimer = setTimer(function () { reportTimer = 0; postDomReport("expanded"); }, 900);
-				}
-				// 普通布局，每会话一次，且只在它还是普通布局时。
-				if (deep === true && initialReported === false && rightbarExpanded() !== true) {
-					initialReported = true;
-					setTimer(function () { postDomReport("initial", true); }, 1500);
-				}
-				/* 刚收起之后。这是"旧面板的阴影还在那里"那个问题需要的快照：幸存于切换的
-				   一切，此刻还在屏幕上，而没有别的东西在看它。 */
-				if (deep === true && wasExpanded === true && rightbarExpanded() !== true) {
-					setTimer(function () { postDomReport("collapse", true); }, 400);
-				}
+			// 那个被反复报坏的模式，进人时测一次、稍后再测一次，好把迟到的布局算进来。
+			if (rightbarExpanded() === true && deep === true && reportTimer === 0) {
+				reportTimer = setTimer(function () { reportTimer = 0; postDomReport("expanded"); }, 900);
 			}
-				wasExpanded = rightbarExpanded();
+			// 普通布局，每会话一次，且只在它还是普通布局时。
+			if (deep === true && initialReported === false && rightbarExpanded() !== true) {
+				initialReported = true;
+				setTimer(function () { postDomReport("initial", true); }, 1500);
+			}
+			/* 刚收起之后。这是"旧面板的阴影还在那里"那个问题需要的快照：幸存于切换的
+			   一切，此刻还在屏幕上，而没有别的东西在看它。 */
+			if (deep === true && wasExpanded === true && rightbarExpanded() !== true) {
+				setTimer(function () { postDomReport("collapse", true); }, 400);
+			}
+			wasExpanded = rightbarExpanded();
 				var rebuilt = false;
 			for (var i = 0; i < PANEL_KEYS.length; i++) {
 				var key = PANEL_KEYS[i];
-				var node = findColumn(key);
+				var node = doc.querySelector(PANEL_SELECTOR[key]);
 				// 之前谁占着这个面板，谁就把钩子还回来：一个陈宿主绝不能在面板已经不在的
 				// 地方继续画一块窗格。
 				var previous = panelNodes[key];
@@ -3569,25 +3502,15 @@ window.__ModuleLoader__.load({
 		 */
 		function syncPanels() {
 			if (disposed) return;
-			doc.body.dataset.glassPanels = "on";
-			doc.body.dataset.glassGap = panels.gap > 0 ? "on" : "off";
-			doc.body.dataset.glassPress = panels.press ? "on" : "off";
-			// 每面板每个后代一次计算样式读取：这个函数的全部成本就在这一行，这正是
-			// 轮询路径改调 publishPanelColors 的原因。
-			for (var bk = 0; bk < PANEL_KEYS.length; bk++) aimBlur(PANEL_KEYS[bk]);
-			publishPanelColors();
-		}
 
-		/**
-		 * 只有变量，不探测。一次新的帧读数通过这里重新给面板上色：1.5s 轮询绝不能
-		 * 为一次只有布局事件才能改变的磨砂宿主决定付账。
-		 */
-		function publishPanelColors() {
-			if (disposed) return;
 			var style = doc.body.style;
 			var scheme = currentScheme();
 			var moodNow = mood === null ? "idle" : mood;
 			var wallpaperOn = hasWallpaperConfig(wallpaper);
+			doc.body.dataset.glassPanels = "on";
+			doc.body.dataset.glassGap = panels.gap > 0 ? "on" : "off";
+			doc.body.dataset.glassPress = panels.press ? "on" : "off";
+			for (var bk = 0; bk < PANEL_KEYS.length; bk++) aimBlur(PANEL_KEYS[bk]);
 			style.setProperty("--gm-gap", panels.gap + "px");
 				style.setProperty("--gm-frame-radius", panels.frameRadius + "px");
 				style.setProperty("--gm-radius", panels.panelRadius + "px");
@@ -3648,7 +3571,21 @@ window.__ModuleLoader__.load({
 			style.setProperty("--gm-rim-catch", rim.catch);
 			style.setProperty("--gm-rim-shade", rim.shade);
 			style.setProperty("--gm-divider", rim.divider(panels.divider));
-			}
+			
+}
+
+		
+
+	/**
+	 * 一个子树里是否住着 `position: fixed` 的元素。带着 backdrop-filter 的元素会成为
+	 * 恰好这些后代的包含块，所以这是唯一一种磨砂必须留在伪元素上（它没有后代）而不是
+	 * 元素上的条件。
+	 * @param node - 子树根。
+	 * @returns 有 fixed 后代时为 true，问不了浏览器时（保守答案）同为 true。
+	 */
+		function hasFixedDescendant(node) {
+			return fixedDescendants(node).length > 0;
+		}
 
 	/**
 	 * 指名 fixed 后代，而不只是数数：把模糊放到一个元素上，重新锚定的正是这些，所以
@@ -3656,7 +3593,7 @@ window.__ModuleLoader__.load({
 	 * @param node - 子树根。
 	 * @returns 至多两个 `tag.class` 标签；答不了时为 ["(unknown)"]。
 	 */
-			function fixedDescendants(node) {
+		function fixedDescendants(node) {
 				var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle : null;
 				if (read === null || node === null || node === undefined || typeof node.querySelectorAll !== "function") return ["(unknown)"];
 				var all = null;
@@ -3834,6 +3771,7 @@ window.__ModuleLoader__.load({
 				renderWallpaper();
 				restoreWallpaper();
 
+
 			win.__dshGlassMood = {
 				/** @returns 当前画着的心情。 */
 				current: function () { return mood; },
@@ -3943,9 +3881,11 @@ window.__ModuleLoader__.load({
 					if (refraction !== null && refraction !== undefined) refraction.remove();
 					refractionMounted = false;
 					for (var p = 0; p < PANEL_KEYS.length; p++) {
-						for (var s = 0; s < PANEL_VAR_SUFFIXES.length; s++) {
-							doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-" + PANEL_VAR_SUFFIXES[s]);
-						}
+						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-blur");
+						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-sheen");
+						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-fill");
+						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-alpha");
+						doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-shadow");
 					}
 					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge", "--gm-divider"].forEach(function (name) {
 						doc.body.style.removeProperty(name);
@@ -4063,24 +4003,11 @@ window.__ModuleLoader__.load({
 					}
 					return lines;
 				},
-			/** 诊断构建发的那份 DOM 报告；也可按需读取。 */
-			domReport: domReport,
-			/** 立刻发一份（右栏展开时由设置行使用）。 */
-			postReport: function () { postDomReport("manual"); return reportPosts; },
-			/**
-			 * 把自动诊断报告打开或关上。默认关着；`postReport()` 两种状态都能发一份，
-			 * 因为那正是这个开关要区分的显式请求。
-			 * @param on - true 启用自动报告。
-			 * @returns 现在是否为开。
-			 */
-			setReports: function (on) {
-				try {
-					if (on === true) storage.setItem(REPORT_ENABLE_KEY, "1");
-					else storage.removeItem(REPORT_ENABLE_KEY);
-			} catch (error) { /* 存储不可用：这个开关就是不持久化而已 */ }
-			return reportsEnabled();
-		},
-			/** 设置行打印的构建号。 */
+		/** 诊断构建发的那份 DOM 报告；也可按需读取。 */
+		domReport: domReport,
+		/** 立刻发一份（右栏展开时由设置行使用）。 */
+		postReport: function () { postDomReport("manual"); return reportPosts; },
+		/** 设置行打印的构建号。 */
 			build: function () { return BUILD; },
 			/**
 			 * 布局此刻量出来什么，为展开的右栏。材质必须落在一个跨满这个模式的元素上，
@@ -4285,9 +4212,6 @@ window.__ModuleLoader__.load({
 						h("div", { className: "gm-row-title" }, "玻璃主题 · 动态壁纸"),
 						h("div", { className: "gm-row-hint" }, "两个状态可各用一段视频，切换时交叉淡入；可见度是唯一的“看得清”旋钮（它同时调整视频强度与面板通透度）")
 					),
-					// 存储留不住东西时，把它留不住的事说出来：一次无声的失败，过去会以
-					// "壁纸莫名其妙没了"的形式重新出现。
-					config.notice ? h("div", { className: "gm-row-hint" }, config.notice) : null,
 					clipRow("idle"),
 					clipRow("work"),
 					h("div", { className: "gm-fields" },
@@ -4499,16 +4423,14 @@ window.__ModuleLoader__.load({
 		ctx.effect(function () {
 			var dispose = engine.start();
 			window.__dshGlassMoodTeardown = dispose;
-			// 两行设置属于这个 effect 的作用域，所以一次卸载——或下一次热重载挂载——
-			// 会连引擎一起把它们收走，而不是留下两行跟一个已 dispose 的引擎说话。
-			registerWallpaperRow(ctx, engine);
-			registerPanelsRow(ctx, engine);
 			return function () {
 				dispose();
 				if (window.__dshGlassMoodTeardown === dispose) delete window.__dshGlassMoodTeardown;
 			};
 		}, "glass-mood: mood engine");
-		}
+		registerWallpaperRow(ctx, engine);
+		registerPanelsRow(ctx, engine);
+	}
 
 		exports.apply = apply;
 		exports.inject = ["theme"];
