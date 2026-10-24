@@ -353,10 +353,26 @@ function mount(options = {}) {
   const { loaded, window } = loadBundle(document, storage, options.requireImpl)
 
   const layers = []
+  // 真实宿主语义，照 app.asar 的 ThemeRuntime 建模：层按 source 存进一张 Map，
+  // 同一 source 再设一次就替换；每次 set / dispose 都 publish 一次；旧层的清理器
+  // 带身份守卫——同一个 source 已被更新的层占位时，它是空操作。
+  // `published` 记下每次 publish 时本主题的层在不在，好让"换 token 的过程中出现了
+  // 一个没有本主题的快照"这种回归可测。
+  const published = []
+  const overrideLayers = new Map()
+  let overrideSeq = 0
   const theme = {
     overrideTokens(source, tokens) {
+      const layer = { seq: overrideSeq++, tokens }
+      overrideLayers.set(source, layer)
       layers.push({ source, tokens })
-      return () => { layers.push({ source, tokens: null, disposed: true }) }
+      published.push({ ours: true, seq: layer.seq })
+      return () => {
+        if (overrideLayers.get(source) !== layer) return
+        overrideLayers.delete(source)
+        layers.push({ source, tokens: null, disposed: true })
+        published.push({ ours: false, seq: layer.seq })
+      }
     }
   }
   const sessionStatus = createObservable(new Map())
@@ -448,7 +464,7 @@ function mount(options = {}) {
   const dispose = engine.start()
   return {
     document, window, loaded, storage, layers, sessionStatus, sessionList, engine, dispose, clock, disposers,
-    objectUrls, idb, theme, services, shell, setPreference, preferenceLists,
+    objectUrls, idb, theme, services, shell, setPreference, preferenceLists, published,
     /** 照真实服务的样子送达一次 theme/change。 */
     emitThemeChange: () => { for (const listener of themeListeners) listener({}) }
   }
@@ -610,6 +626,36 @@ const SHIPPED_TOKENS = [
   m.dispose()
   assert.equal(m.window.__dshGlassMood, undefined, '卸载移除调试句柄')
   console.log('ok  强制心情')
+}
+
+{
+  // 宿主按 source 替换层（app.asar 的 ThemeRuntime：层存在以 source 为键的 Map 里，
+  // 同一 source 再设一次就换掉旧的，旧的清理器有身份守卫、天然是空操作）。所以换
+  // token 的正确做法就是直接再设一次——先 dispose 再设会多一个没有本主题层的中间
+  // 快照，而呈现端把每个快照都同步应用到 DOM：删掉自己写过的每个 token 变量、写回
+  // 官方值。那个中间态让整个界面朝官方色跳一下再被拉回，每次心情切换都闪一次——
+  // 用户报的"界面一闪一闪"。这里锁两件事：一次变更只 publish 一次；每一次 publish
+  // 都带着本主题的层（卸载那次除外）。
+  const m = mount()
+  const beforeSwitch = m.published.length
+  m.sessionStatus.set(new Map([['s1', { running: true }]]))
+  m.clock.advance(120)
+  const onSwitch = m.published.slice(beforeSwitch)
+  assert.equal(onSwitch.length, 1, '一次心情切换只发布一次 token 层')
+  assert.equal(onSwitch[0].ours, true, '切换过程中不出现没有本主题层的快照')
+
+  const beforeWall = m.published.length
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4' })
+  const onWall = m.published.slice(beforeWall)
+  assert.equal(onWall.length, 1, '一次壁纸变更只发布一次')
+  assert.equal(onWall[0].ours, true, '壁纸变更过程中也不出现裸身快照')
+
+  const beforeClear = m.published.length
+  m.engine.setWallpaper({ clarity: 1 })
+  assert.equal(m.published.slice(beforeClear).length, 1, '一次旋钮变更同样只发布一次')
+  m.dispose()
+  assert.equal(m.published[m.published.length - 1].ours, false, '卸载时层被真正收回')
+  console.log('ok  token 层按 source 替换，不经没有主题的中间态')
 }
 
 {

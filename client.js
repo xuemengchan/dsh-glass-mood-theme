@@ -97,7 +97,7 @@ window.__ModuleLoader__.load({
 		 * 根本没加载"混为一谈：屏幕上是谁，在 UI 里就看得见；另有一项测试把它
 		 * 与 package.json 锁在一起。
 		 */
-		var BUILD = "1.53.0";
+		var BUILD = "1.53.1";
 		/** 停在用户交互上的一轮仍然是工作（这一轮还没结束）。 */
 		var COUNT_PENDING_AS_WORK = true;
 		/** 通透度拉满时还剩多少情绪染色（0 = 完全没有）。 */
@@ -2027,10 +2027,14 @@ window.__ModuleLoader__.load({
 			if (hasWallpaperConfig(wallpaper)) pair = dimPair(pair, wallpaper.clarity);
 			if (prefers.reducedTransparency) pair = solidifySurfaces(pair);
 			if (prefers.moreContrast) pair = boostContrast(pair);
-			if (layerDispose !== null) {
-				try { layerDispose(); } catch (error) { /* 注册表可能已经没了 */ }
-				layerDispose = null;
-			}
+			/* 宿主按 source 替换层——`overrides` 是一张以 source 为键的 Map，同一
+			   source 再设一次就换掉旧的，而旧层的清理器带身份守卫（新层已占位时它是
+			   空操作）。所以换 token 就是直接再设一次，没有泄漏可收。
+			   曾经在这里先 dispose 再设，本意是"收回旧层"，结果每次都多出一个没有本
+			   主题层的中间快照：呈现端把每个快照都同步应用到 DOM——删掉它写过的每一个
+			   token 变量、写回官方值——再被下一次 publish 拉回。整个界面因此朝官方色跳
+			   一下再回来，每次心情切换都闪一次（用户报的"界面一闪一闪"）。旧的清理器
+			   留到卸载时用即可。 */
 			layerDispose = theme.overrideTokens(SOURCE, pair);
 		}
 
