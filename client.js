@@ -46,6 +46,7 @@ window.__ModuleLoader__.load({
 		var SOURCE = "dsh-glass-mood";
 		var STYLE_ID = "dsh-glass-mood-style";
 		var STAGE_ID = "dsh-glass-mood-bg";
+		var STAGE_CANVAS_ID = "dsh-glass-mood-canvas";
 		var FORCE_KEY = "dsh-glass-mood:force";
 		var NOBLUR_KEY = "dsh-glass-mood:no-blur";
 		var VIDEO_KEY = "dsh-glass-mood:video";
@@ -92,11 +93,13 @@ window.__ModuleLoader__.load({
 	var REPORT_ENABLE_KEY = "dsh-glass-mood:report";
 		/** 一次性表面交叉淡变的窗口开多久（最慢的淡变 + 余量）。 */
 		var FADE_WINDOW_MS = 1100;
+		/** 一条永远坏掉的片子反复重装源的代价上限：自愈不能变成每 1.5 秒重新加载一次。 */
+		var PLAYBACK_BACKOFF_MAX = 60000;
 		/**
 		 * 诊断报告里记的构建号。一份报告要能说清自己来自哪一版；另有一项测试把它
 		 * 与 package.json 锁在一起。
 		 */
-		var BUILD = "1.53.3";
+		var BUILD = "1.55.0";
 		/** 停在用户交互上的一轮仍然是工作（这一轮还没结束）。 */
 		var COUNT_PENDING_AS_WORK = true;
 		/** 通透度拉满时还剩多少情绪染色（0 = 完全没有）。 */
@@ -221,6 +224,11 @@ window.__ModuleLoader__.load({
 		var DIM_MAX = 0.35;
 		/** 内容自己的色相把玻璃拉向它多少（0 = 从不）。 */
 		var SPILL_MIX = 0.45;
+		/**
+		 * 按压光池跟内容跟得更远。镜边是常驻的材质，它只能沾一点内容的色相；一小团
+		 * 只在按下时出现的光留着和画面毫无关系的蓝，读起来是控件坏了，不是材质。
+		 */
+		var TAP_SPILL_MIX = 0.8;
 		/** 染色瞄准的饱和度：够看的彩度，读得出是颜色。 */
 		var SPILL_SATURATION = 0.34;
 		/** 浅色面板先退到这个亮度，染色才有地方站；深色面板不动。 */
@@ -243,6 +251,20 @@ window.__ModuleLoader__.load({
 		 * 过渡的地方）弯折背后的画面，中心不受影响。
 		 */
 		var REFRACTION_ID = "dsh-glass-mood-refraction";
+		/** 面板边缘的液态透镜：只弯折面板边缘背后的内容，中心不受影响。 */
+		var EDGE_LENS_ID = "dsh-glass-mood-edge-lens";
+		/** 边缘透镜挂在材质宿主里的子元素，负层级，所以文字永远在它上面。 */
+		var LENS_ATTR = "data-glass-lens";
+		/** 面板填充层：WebGL 透镜工作时，它在边缘让出空档，让透镜真正露出来。 */
+		var FILL_ATTR = "data-glass-fill";
+		/** 按压光池：一个复用的 fixed 覆盖层，跟着触点走。 */
+		var PRESS_LIGHT_ID = "dsh-glass-mood-press-light";
+		/**
+		 * 边缘透镜的最大位移（CSS 像素）。带宽 44 时，位移剖面在边框处的斜率是
+		 * 6.75*uBend/44，必须小于 1，否则映射会折回去、边上出现一道镜像重影；
+		 * 4.0 留着一倍余量，对应边框处约 2.6 倍放大。
+		 */
+		var LENS_BEND_PX = 4.0;
 		/**
 		 * 是一枚干净的透镜，不是一团糊：单个八度、低振幅的湍流位移背景，没有
 		 * 预模糊。当年在这里加 feGaussianBlur，正是这个开关读起来像"更模糊"
@@ -251,16 +273,24 @@ window.__ModuleLoader__.load({
 		 * 它能做什么、不能做什么，说平铺直叙：位移图把整张背景按一个场整体搬移，
 		 * 所以铺在一片平滑模糊的壁纸上它几乎看不见——菲涅尔是逐像素、向边缘
 		 * 增长的场，湍流不是。可见的边缘功夫因此由 CSS 完成（`::after` 上的四条
-		 * 菲涅尔带）；这个滤波器只给它承载的表面添一点不均匀的手工感，且它只骑
-		 * 在输入卡、气泡和设置表面上——绝不骑面板列，那里一个浏览器拒绝的
-		 * `url()` 会连整层磨砂一起带走。
+		 * 菲涅尔带）；这个滤波器只给它承载的小表面添一点不均匀的手工感，且它只骑
+		 * 在输入卡、气泡和设置表面上。面板列走下面那只专门的边缘透镜——它只覆盖
+		 * 边缘，且挂在负层级的子元素上，整层磨砂不会被一个过滤器带走。
 		 */
 		var REFRACTION_SVG =
 			'<svg id="' + REFRACTION_ID + '" width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">' +
 			'<filter id="' + REFRACTION_ID + '-filter" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">' +
 			'<feTurbulence type="fractalNoise" baseFrequency="0.016 0.02" numOctaves="1" seed="7" result="noise"/>' +
 			'<feDisplacementMap in="SourceGraphic" in2="noise" scale="5" xChannelSelector="R" yChannelSelector="G"/>' +
-			"</filter></svg>";
+			'</filter>' +
+		/* 面板的透镜是 WebGL 那一版的兜底：只有舞台上没有 WebGL、或片子是跨源
+		   且污染了快照时它才上场。低频湍流给出连续的、波长约两百像素的起伏，
+		   位移只作用在边缘遮罩里，所以视频在边框附近被轻轻推弯，面板中心与文字
+		   保持原样。振幅刻意留在 26：再高，边缘带就从"玻璃在弯光"变成"一条糊"。 */
+			'<filter id="' + EDGE_LENS_ID + '" x="-18%" y="-18%" width="136%" height="136%" color-interpolation-filters="sRGB">' +
+			'<feTurbulence type="fractalNoise" baseFrequency="0.007 0.011" numOctaves="2" seed="5" result="lens"/>' +
+			'<feDisplacementMap in="SourceGraphic" in2="lens" scale="26" xChannelSelector="R" yChannelSelector="G"/>' +
+			'</filter></svg>';
 		/**
 		 * `clarity` 可以把每个 token 的 alpha 削薄多少，以及它永不允许跌到的
 		 * alpha。画布和侧边栏揭开片子；任何能承载文字的都保有一个高地板，因为
@@ -611,7 +641,7 @@ window.__ModuleLoader__.load({
 		var CSS = [
 			/* ---- 舞台：fixed，片子 + 渐变，垫在被抬起的 app 外框下面 ---- */
 			"#" + STAGE_ID + "{position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden;contain:layout paint style}",
-			"#" + STAGE_ID + ">[data-glass-layer]{position:absolute;inset:-4%;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1);will-change:opacity}",
+			"#" + STAGE_ID + ">[data-glass-layer]{position:absolute;inset:-4%;z-index:2;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1);will-change:opacity}",
 			"#" + STAGE_ID + ">[data-glass-layer=idle]{background-image:" + IDLE_STAGE_LIGHT + "}",
 			"body[data-ds-dark-theme] #" + STAGE_ID + ">[data-glass-layer=idle]{background-image:" + IDLE_STAGE_DARK + "}",
 			"#" + STAGE_ID + ">[data-glass-layer=work]{background-image:" + WORK_STAGE_LIGHT + ";opacity:0}",
@@ -631,7 +661,12 @@ window.__ModuleLoader__.load({
 		/* ---- 片子：每心情槽一个元素，由心情属性交叉淡变 ----
 		   两者都保持播放，所以切换从不等解码器；没有自己片子的槽标为 `both`，
 		   服务当前激活的心情。 */
-			"#" + STAGE_ID + ">video[data-glass-clip]{position:absolute;inset:0;width:100%;height:100%;object-fit:var(--gm-wall-fit,cover);object-position:center;opacity:0;filter:blur(var(--gm-wall-blur,0px));transform:scale(var(--gm-wall-scale,1));transform-origin:center;pointer-events:none;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1)}",
+			"#" + STAGE_ID + ">video[data-glass-clip]{position:absolute;inset:0;width:100%;height:100%;object-fit:var(--gm-wall-fit,cover);object-position:center;opacity:0;filter:blur(var(--gm-wall-blur,0px));transform:scale(var(--gm-wall-scale,1));transform-origin:center;pointer-events:none;z-index:0;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1)}",
+			/* 边缘透镜的主实现：一张全屏 canvas 骑在视频之上、渐变/压暗层之下。它只画
+			   面板边缘带，所以面板的填充、镜边、圆角与接缝完全不受影响。 */
+			"#" + STAGE_CANVAS_ID + "{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:block;z-index:1}",
+			/* WebGL 版在工作时，CSS 兜底透镜完全退场，避免两层折射叠加。 */
+			"body[data-glass-weblens=on] [data-glass-lens]{display:none}",
 			"body[data-glass-mood=idle] #" + STAGE_ID + ">video[data-glass-clip=idle],body[data-glass-mood=idle] #" + STAGE_ID + ">video[data-glass-clip=both]{opacity:var(--gm-wall-opacity,0.6)}",
 			"body[data-glass-mood=work] #" + STAGE_ID + ">video[data-glass-clip=work],body[data-glass-mood=work] #" + STAGE_ID + ">video[data-glass-clip=both]{opacity:var(--gm-wall-opacity,0.6)}",
 			/* 情绪染色骑在片子之上，随通透度升高而淡出。 */
@@ -731,6 +766,8 @@ window.__ModuleLoader__.load({
 		/* 列就是表面：它的布局包装绝不能在它之上再画一层填充，否则不透明度旋钮
 		   会看不见。 */
 			"body[data-glass-panels] [data-glass-panel] > *{background-color:transparent}",
+			/* 我们自己注入的填充层必须保住它的颜色；它不是 app 的“里面又一层颜料”。 */
+			"body[data-glass-panels] [data-glass-panel] > [data-glass-fill]{background-color:var(--gm-fill,transparent)}",
 		/* 探测找到更深的内层表面时，颜料和磨砂搬到它身上，列退到一边——否则两层
 		   叠起来，旋钮只移动得到那个看不见的。 */
 			"body[data-glass-panels] [data-glass-panel][data-glass-delegate=on]{background-color:transparent}",
@@ -749,7 +786,7 @@ window.__ModuleLoader__.load({
 		   `position:relative`，把它掉回列的流里——那不只是放错材质，而是撤销 app
 		   正在绘制的呈现。这个宿主因此保留 app 给它的位置；多出来的那个属性就是
 		   赢得特异性较量的东西。 */
-			"body[data-glass-panels] [data-glass-surface][data-glass-fullscreen]{position:absolute}",
+			"body[data-glass-panels] [data-glass-surface][data-glass-fullscreen]{position:absolute;z-index:0}",
 		/* 外形跟着材质走。两件事让它读起来是一张卡，而不是一张卡套一张卡：
 
 		   1. 它裁。app 给里面的窗格自己的 `--dsh-windows-content-radius`，且只在
@@ -802,9 +839,9 @@ window.__ModuleLoader__.load({
 		   小的原因，尽管两者都量着 12px。这里列拥有外形，表面只画颜料。（中间列的
 		   表面恰好是它列的尺寸，所以它自己的 12px 重合、不花代价——但一个叠在列上
 		   的表面绝不能圆。） */
-			"body[data-glass-panels] [data-glass-surface=left]{--gm-panel-blur:var(--gm-panel-left-blur);background-color:var(--gm-panel-left-fill);border-radius:0}",
-			"body[data-glass-panels] [data-glass-surface=main]{--gm-panel-blur:var(--gm-panel-main-blur);background-color:var(--gm-panel-main-fill)}",
-			"body[data-glass-panels] [data-glass-surface=right]{--gm-panel-blur:var(--gm-panel-right-blur);background-color:var(--gm-panel-right-fill)}",
+			"body[data-glass-panels] [data-glass-surface=left]{--gm-panel-blur:var(--gm-panel-left-blur);--gm-fill:var(--gm-panel-left-fill);background-color:transparent;border-radius:0}",
+			"body[data-glass-panels] [data-glass-surface=main]{--gm-panel-blur:var(--gm-panel-main-blur);--gm-fill:var(--gm-panel-main-fill);background-color:transparent}",
+			"body[data-glass-panels] [data-glass-surface=right]{--gm-panel-blur:var(--gm-panel-right-blur);--gm-fill:var(--gm-panel-right-fill);background-color:transparent}",
 		/* 磨砂刻意不挂在透明度偏好上。跳过它看起来像白捡（实心面板没什么可看透），
 		   但这也意味着一次偏好读取就能悄悄禁用模糊旋钮——而实心面板上的模糊本来就
 		   看不见。 */
@@ -829,9 +866,36 @@ window.__ModuleLoader__.load({
 				"content:\"\";position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;background:transparent;" +
 				"-webkit-backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03));" +
 				"backdrop-filter:blur(var(--gm-panel-blur)) saturate(var(--gm-sat)) contrast(var(--gm-contrast,1.03))}",
-			"body[data-glass-panels] [data-glass-panel=left]{--gm-panel-blur:var(--gm-panel-left-blur);--gm-sheen:calc(var(--gm-panel-left-sheen) * var(--gm-panel-left-rim,1));--gm-panel-shadow:var(--gm-panel-left-shadow);margin-left:var(--gm-gap);background-color:var(--gm-panel-left-fill)}",
-			"body[data-glass-panels] [data-glass-panel=main]{--gm-panel-blur:var(--gm-panel-main-blur);--gm-sheen:calc(var(--gm-panel-main-sheen) * var(--gm-panel-main-rim,1));--gm-panel-shadow:var(--gm-panel-main-shadow);background-color:var(--gm-panel-main-fill)}",
-			"body[data-glass-panels] [data-glass-panel=right]{--gm-panel-blur:var(--gm-panel-right-blur);--gm-sheen:calc(var(--gm-panel-right-sheen) * var(--gm-panel-right-rim,1));--gm-panel-shadow:var(--gm-panel-right-shadow);margin-right:var(--gm-gap);background-color:var(--gm-panel-right-fill)}",
+			"body[data-glass-panels] [data-glass-panel=left]{--gm-panel-blur:var(--gm-panel-left-blur);--gm-fill:var(--gm-panel-left-fill);--gm-sheen:calc(var(--gm-panel-left-sheen) * var(--gm-panel-left-rim,1));--gm-panel-shadow:var(--gm-panel-left-shadow);margin-left:var(--gm-gap);background-color:transparent}",
+			/* ---- 玻璃填充层 ----
+			   填充单独成层，是为了让舞台上的折射从它背后透出来。它刻意不在边缘让出
+			   空档：一旦让，那一圈就比中心清楚，读起来是一圈白边——华为那张参考图里
+			   没有这种东西。折射靠的是画面在边缘被放大弯折，不是靠把玻璃磨薄。 */
+			"[data-glass-fill]{position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:-2;background-color:var(--gm-fill,transparent);transition:background-color 220ms cubic-bezier(.4,0,.2,1)}",
+			/* ---- 液态玻璃的边缘透镜 ----
+			   一条只存在于边缘的折射带：视频/内容经过它时会被低频位移轻轻推弯，而中心
+			   保持原样。它挂在材质宿主的负层级子元素上，所以文字与控件永远在它上面；
+			   遮罩把滤波器裁到四条边带，并在两端留出圆角的长度——透镜绝不碰圆角或
+			   镜边，所以不会在角上切出缺口，也不会把轮廓线弄成锯齿。 */
+			"[data-glass-lens]{position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:-1;opacity:0;transition:opacity 240ms ease;" +
+				"-webkit-mask:linear-gradient(to bottom,#000 0,#000 36%,transparent 100%) top center/calc(100% - var(--gm-lens-corner,40px)) var(--gm-lens-band,36px) no-repeat," +
+				"linear-gradient(to top,#000 0,#000 36%,transparent 100%) bottom center/calc(100% - var(--gm-lens-corner,40px)) var(--gm-lens-band,36px) no-repeat," +
+				"linear-gradient(to right,#000 0,#000 36%,transparent 100%) center left/var(--gm-lens-band,36px) calc(100% - var(--gm-lens-corner,40px)) no-repeat," +
+				"linear-gradient(to left,#000 0,#000 36%,transparent 100%) center right/var(--gm-lens-band,36px) calc(100% - var(--gm-lens-corner,40px)) no-repeat;" +
+				"mask:linear-gradient(to bottom,#000 0,#000 36%,transparent 100%) top center/calc(100% - var(--gm-lens-corner,40px)) var(--gm-lens-band,36px) no-repeat," +
+				"linear-gradient(to top,#000 0,#000 36%,transparent 100%) bottom center/calc(100% - var(--gm-lens-corner,40px)) var(--gm-lens-band,36px) no-repeat," +
+				"linear-gradient(to right,#000 0,#000 36%,transparent 100%) center left/var(--gm-lens-band,36px) calc(100% - var(--gm-lens-corner,40px)) no-repeat," +
+				"linear-gradient(to left,#000 0,#000 36%,transparent 100%) center right/var(--gm-lens-band,36px) calc(100% - var(--gm-lens-corner,40px)) no-repeat}",
+			"body[data-glass-refract=on] [data-glass-lens]{opacity:1}",
+			/* 降低透明度时玻璃是实底，透镜没有可弯折的内容；直接收起来，也别付 GPU。 */
+			"body[data-glass-transparency=reduced] [data-glass-lens]{visibility:hidden}",
+			/* 没有壁纸时，背景是一层平滑渐变；位移它看不见，所以干脆别付这份 GPU。
+			   这里只弯折，不提对比度也不提饱和：边缘一旦比中心"更清楚"，那一圈就从
+			   玻璃读成了贴片。 */
+			"body[data-glass-refract=on][data-glass-wallpaper=on] [data-glass-lens]{" +
+				"-webkit-backdrop-filter:url(#" + EDGE_LENS_ID + ");backdrop-filter:url(#" + EDGE_LENS_ID + ")}",
+			"body[data-glass-panels] [data-glass-panel=main]{--gm-panel-blur:var(--gm-panel-main-blur);--gm-fill:var(--gm-panel-main-fill);--gm-sheen:calc(var(--gm-panel-main-sheen) * var(--gm-panel-main-rim,1));--gm-panel-shadow:var(--gm-panel-main-shadow);background-color:transparent}",
+			"body[data-glass-panels] [data-glass-panel=right]{--gm-panel-blur:var(--gm-panel-right-blur);--gm-fill:var(--gm-panel-right-fill);--gm-sheen:calc(var(--gm-panel-right-sheen) * var(--gm-panel-right-rim,1));--gm-panel-shadow:var(--gm-panel-right-shadow);margin-right:var(--gm-gap);background-color:transparent}",
 		/* 配色在 JS 里解析（每面板一个已发布的填充跟随呈现器），所以这里刻意没有
 		   按配色的变体。 */
 		/* 收起的右列让中间面板成为最后一个表面。 */
@@ -889,6 +953,19 @@ window.__ModuleLoader__.load({
 			"@media (prefers-reduced-motion: reduce){body[data-glass-press=on] button:active," +
 				"body[data-glass-press=on] [role=button]:active,body[data-glass-press=on] [role=tab]:active," +
 				"body[data-glass-press=on] [role=menuitem]:active{animation:none}}",
+			/* 松开不是"弹回"，是液体的回弹：先越过原尺寸一点再落定。 */
+			"@keyframes gm-release{0%{scale:.972}58%{scale:1.012}100%{scale:1}}",
+			"body[data-glass-press=on] [data-gm-release]{animation:gm-release 280ms cubic-bezier(.2,.8,.2,1)}",
+			"@media (prefers-reduced-motion: reduce){body[data-glass-press=on] [data-gm-release]{animation:none}}",
+			/* 按压光池：一个跟着触点的光斑，形状贴合控件本身。白核 + 心情色光晕 +
+			   一圈亮边；底下的 brightness 把控件整体提亮一点，像被光擦过。 */
+			"#"+PRESS_LIGHT_ID+"{position:fixed;left:0;top:0;width:0;height:0;border-radius:12px;pointer-events:none;z-index:2147483000;opacity:0;transform:scale(.97);" +
+				"transition:opacity 240ms ease-out,transform 240ms cubic-bezier(.34,1.56,.64,1);" +
+				"background:radial-gradient(150% 170% at var(--gm-tap-x,50%) var(--gm-tap-y,50%),var(--gm-tap-core,rgba(255,255,255,.62)) 0,var(--gm-tap-glow,rgba(170,215,255,.24)) 38%,transparent 72%);" +
+				"box-shadow:inset 0 1px 0 var(--gm-tap-rim,rgba(255,255,255,.62)),inset 0 0 0 1px var(--gm-tap-edge,rgba(190,225,255,.32)),0 0 28px var(--gm-tap-glow,rgba(150,205,255,.38));" +
+				"-webkit-backdrop-filter:brightness(1.06) saturate(1.08);backdrop-filter:brightness(1.06) saturate(1.08)}",
+			"#"+PRESS_LIGHT_ID+"[data-on]{opacity:1;transform:scale(1)}",
+			"@media (prefers-reduced-motion: reduce){#"+PRESS_LIGHT_ID+"{transition:opacity 120ms linear;transform:none}}",
 			/* ---- 壁纸设置行：只消费官方别名 token ---- */
 			".gm-row{display:flex;flex-direction:column;gap:10px;padding:14px 16px;border-radius:12px;background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.08));box-shadow:inset 0 0 0 1px var(--dsw-alias-settings-card-stroke,rgba(127,127,127,.2));color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5}",
 			".gm-row-title{font-size:14px;font-weight:500}",
@@ -1044,6 +1121,24 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * 属性是否挂在元素上。真实 DOM 在缺失时给 null，桩 DOM 给 undefined，所以两边
+		 * 都得认——`getAttribute(x) !== undefined` 在浏览器里恒为真，`=== undefined` 恒为假。
+		 * @param node - 元素。
+		 * @param name - 属性名。
+		 * @returns 是否设置了这个属性。
+		 */
+		function attrOn(node, name) {
+			if (node === undefined || node === null || typeof node.getAttribute !== "function") return false;
+			var value = node.getAttribute(name);
+			return value !== undefined && value !== null;
+		}
+
+		/** 本插件注入的图层不是 app 的材质表面；发现画手时必须跳过。 */
+		function isPluginLayer(node) {
+			return attrOn(node, FILL_ATTR) || attrOn(node, LENS_ATTR);
+		}
+
+		/**
 		 * 一列中每个跨满它并且画了东西的元素，最浅的在前。
 		 * @param win - 窗口（提供 getComputedStyle）。
 		 * @param column - 列元素。
@@ -1067,6 +1162,7 @@ window.__ModuleLoader__.load({
 					if (child === undefined || child === null) continue;
 					if (child.nodeType !== undefined && child.nodeType !== 1) continue;
 					if (insideModal(child)) continue;
+					if (isPluginLayer(child)) continue;
 					queue.push({ node: child, depth: entry.depth + 1 });
 					if (typeof child.getBoundingClientRect !== "function") continue;
 					var childBox = child.getBoundingClientRect();
@@ -1096,6 +1192,7 @@ window.__ModuleLoader__.load({
 		function surfaceStillCovers(win, column, node) {
 			if (win === undefined || win === null || typeof win.getComputedStyle !== "function") return false;
 			if (node === undefined || node === null || typeof node.getBoundingClientRect !== "function") return false;
+			if (isPluginLayer(node)) return false;
 			if (column === undefined || column === null || typeof column.getBoundingClientRect !== "function") return false;
 			var columnBox = column.getBoundingClientRect();
 			if (!(columnBox.width > 0) || !(columnBox.height > 0)) return false;
@@ -1465,6 +1562,33 @@ window.__ModuleLoader__.load({
 				}
 			};
 		}
+
+		/**
+		 * 按压光池的四色。底色仍是心情的（空闲偏暖、工作偏冷），可一旦屏幕上那条片子
+		 * 给了色相，光就往它身上靠——光池是画面上最亮的一小团，它不跟着环境走，用户
+		 * 看到的就是"这个按钮是蓝的"，而不是"玻璃在反光"。
+		 * @param mood - 'idle' 或 'work'。
+		 * @param scheme - 'dark' 或 'light'。
+		 * @param sample - 屏幕那条片子的读数（可空；内容取色关掉时也是空）。
+		 * @param rim - 同一次 applyTokens 的镜边，光池的边缘线借它的色散。
+		 * @returns { core, glow, rim, edge }。
+		 */
+		function pressTap(mood, scheme, sample, rim) {
+			var dark = scheme === "dark";
+			var work = mood === "work";
+			var hue = sample !== undefined && sample !== null && sample.ready ? sample.hue : null;
+			var mix = hue === null || hue === undefined ? 0 : TAP_SPILL_MIX;
+			var base = dark
+				? (work ? "rgba(140,200,255,.55)" : "rgba(255,222,190,.48)")
+				: (work ? "rgba(96,160,240,.50)" : "rgba(120,145,195,.40)");
+			return {
+				// 光核是白热的：光的中心从来不是环境色，只有它周围那团晕是。
+				core: dark ? "rgba(255,255,255,.52)" : "rgba(255,255,255,.82)",
+				glow: biasColorString(base, hue, mix),
+				rim: rim.a,
+				edge: biasColorString(rim.disp, hue, mix)
+			};
+		}
 		//#endregion
 
 		//#region engine
@@ -1493,8 +1617,12 @@ window.__ModuleLoader__.load({
 		/** 那个一次性计时器，让交叉淡变已经用完的片子停下。 */
 		var parkTimer = 0;
 		var visibilityWatched = false;
+		/** `visibilitychange` 之外的第二条唤醒路径，见 `watchVisibility`。 */
+		var focusWatched = false;
 		/** 盯外壳三列的尺寸，好让正在展开的侧边栏立刻被打上标签。 */
 			var resizeObserver = null;
+			/** app 换掉材质宿主时的结构变化观察者。 */
+			var materialObserver = null;
 			var resizeTimer = 0;
 			var lastResizeAt = -Infinity;
 			var observedNodes = [];
@@ -1544,7 +1672,7 @@ window.__ModuleLoader__.load({
 
 	/**
 	 * @param slot - 要读的心情槽。
-	 * @returns 服务它的片子元素（一条片子覆盖两个心情时是另一槽的），没有帧可读时
+	 * @returns 服务它的片子元素（一条片子覆盖两个心情时是另一槽的），没有服务它的片子时
 	 * 返回 null。
 	 *
 	 * 读恰好排在前面的那个槽，正是材质不再跟随壁纸的原因：两条片子都配了时，取样器
@@ -1557,7 +1685,6 @@ window.__ModuleLoader__.load({
 				var video = videos[order[i]];
 				if (video === undefined || video === null) continue;
 				if (video.getAttribute("data-glass-clip") === "none") continue;
-				if (typeof video.readyState === "number" && video.readyState < 2) continue;
 				return video;
 			}
 			return null;
@@ -1626,6 +1753,8 @@ window.__ModuleLoader__.load({
 					}
 					return false;
 				}
+				// 循环接缝和缓冲只是暂时没有新帧，不是上一帧的颜色失效。
+				if (typeof video.readyState === "number" && video.readyState < 2) return false;
 				var at = deps.now();
 				if (force !== true && at - mediaSamples[slot].sampledAt < SAMPLE_INTERVAL_MS) return false;
 				mediaSamples[slot].sampledAt = at;
@@ -1634,9 +1763,13 @@ window.__ModuleLoader__.load({
 				var context = null;
 				try { context = canvas.getContext("2d"); } catch (error) { context = null; }
 				if (context === null || context === undefined || typeof context.drawImage !== "function") return false;
-				var pixels = null;
 				try {
 					context.drawImage(video, 0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
+				} catch (error) {
+					return false;
+				}
+				var pixels = null;
+				try {
 					var image = context.getImageData(0, 0, SAMPLE_WIDTH, SAMPLE_HEIGHT);
 					pixels = image === undefined || image === null ? null : image.data;
 				} catch (error) {
@@ -1754,11 +1887,26 @@ window.__ModuleLoader__.load({
 						if (typeof nodes[n].removeAttribute === "function") nodes[n].removeAttribute(stray[i].slice(1, -1));
 					}
 				}
+				var lenses = doc.querySelectorAll("[data-glass-lens]");
+				for (var ln = 0; ln < lenses.length; ln++) {
+					if (typeof lenses[ln].remove === "function") lenses[ln].remove();
+				}
+				panelLenses = { left: null, main: null, right: null };
+				var fills = doc.querySelectorAll("[data-glass-fill]");
+				for (var fl = 0; fl < fills.length; fl++) {
+					if (typeof fills[fl].remove === "function") fills[fl].remove();
+				}
+				panelFills = { left: null, main: null, right: null };
+				var strayLight = doc.getElementById(PRESS_LIGHT_ID);
+				while (strayLight !== null && strayLight !== undefined) {
+					if (typeof strayLight.remove === "function") strayLight.remove();
+					strayLight = doc.getElementById(PRESS_LIGHT_ID);
+				}
 			var vars = ["--gm-media-dim", "--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract",
 				"--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao",
 				"--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge",
 				"--gm-divider", "--gm-wall-fit", "--gm-wall-opacity", "--gm-wall-blur",
-				"--gm-wall-scale", "--gm-tint"];
+				"--gm-wall-scale", "--gm-tint", "--gm-lens-band", "--gm-lens-corner", "--gm-tap-core", "--gm-tap-glow", "--gm-tap-rim", "--gm-tap-edge"];
 				for (var v = 0; v < vars.length; v++) doc.body.style.removeProperty(vars[v]);
 			for (var k = 0; k < PANEL_KEYS.length; k++) {
 				for (var s = 0; s < PANEL_VAR_SUFFIXES.length; s++) {
@@ -1771,6 +1919,8 @@ window.__ModuleLoader__.load({
 				delete doc.body.dataset.glassBlur;
 				delete doc.body.dataset.glassFading;
 				delete doc.body.dataset.glassWallpaper;
+				delete doc.body.dataset.glassRefract;
+				delete doc.body.dataset.glassWeblens;
 				return removed;
 			}
 
@@ -1788,6 +1938,10 @@ window.__ModuleLoader__.load({
 		var panelBlurHost = { left: null, main: null, right: null };
 		/** 一个 fixed 后代迫使改用伪元素排布时设置。 */
 		var panelBlurNote = { left: [], main: [], right: [] };
+		/** 每个面板材质宿主里的边缘透镜子元素。 */
+		var panelLenses = { left: null, main: null, right: null };
+		/** 每个材质宿主里的填充层；WebGL 透镜工作时它在边缘让出空档。 */
+		var panelFills = { left: null, main: null, right: null };
 		var reportPosts = 0;
 		var reportTimer = 0;
 		/**
@@ -1853,6 +2007,20 @@ window.__ModuleLoader__.load({
 			panelBlurNote[key] = fixed.length === 0 ? [] : ["含 fixed 子元素：" + fixed.join("、")];
 			}
 			var refractionMounted = false;
+			/** 按压光池与它当前的控件；指针移到哪，光就落到哪。 */
+			var pressLight = null;
+			var pressControl = null;
+			var pressWatched = false;
+			var releaseControl = null;
+			var releaseTimer = 0;
+			/** 舞台上的 WebGL 边缘透镜：一张 canvas，只画面板边缘带。 */
+			var webgl = null;
+			var webglFailed = false;
+			var webglRunning = false;
+			var webglLoop = 0;
+			var webglPanels = [];
+				/** 发布出去的空档宽度；publishPanelColors 是唯一写它的地方。 */
+				var lensBandPx = 44;
 			var retagTimer = 0;
 			var disposed = false;
 
@@ -2099,6 +2267,7 @@ window.__ModuleLoader__.load({
 		if (poll !== 0) return;
 		poll = deps.setInterval(function () {
 			evaluate();
+			keepPlayback();
 			sampleMedia(false);
 		}, POLL_MS);
 	}
@@ -2181,12 +2350,213 @@ window.__ModuleLoader__.load({
 			for (var i = 0; i < SLOTS.length; i++) parkSlot(SLOTS[i]);
 		}
 
+		/** 每条片子最后一次"画面确实在走"的读数，用来抓停在同一帧的那条。 */
+		var playbackWatch = { idle: null, work: null };
+		/** 每个槽已经为同一次停下按过几次播放键；两轮不奏效就重装源。 */
+		var playbackRetry = { idle: 0, work: 0 };
+		/** 每个槽的自愈退避窗口与上一次动手的时刻；画面一走就清零。 */
+		var playbackBackoff = { idle: POLL_MS, work: POLL_MS };
+		var playbackActedAt = { idle: 0, work: 0 };
+		/** 自愈动作的账本，留给 `__dshGlassMood.playback()`：一次"视频停了"要拿证据说话。 */
+		var playbackEvents = [];
+		var playbackCounts = { play: 0, reload: 0 };
+
+		/**
+		 * @returns 窗口此刻是不是"没人在看"。遮挡检测会骗人（驱动、虚拟桌面、锁屏），
+		 * 而一个拿到键盘焦点的窗口不可能没在被看——所以焦点优先于 `hidden`。
+		 */
+		function isAway() {
+			if (doc === undefined || doc === null || doc.hidden !== true) return false;
+			if (typeof doc.hasFocus === "function") {
+				try {
+					if (doc.hasFocus() === true) return false;
+				} catch (error) { /* 读不到焦点就信 hidden */ }
+			}
+			return true;
+		}
+
+		/** @returns 这个槽该播的地址；没得播时空串。和 `renderWallpaper()` 取同一个源。 */
+		function clipSrcFor(slot, clip) {
+			if (clip === undefined || clip === null) return "";
+			if (clip.source === "url") return typeof clip.url === "string" ? clip.url : "";
+			var stored = clipUrls[slot];
+			return typeof stored === "string" ? stored : "";
+		}
+
+		/** @returns 这个元素的媒体管线是否已经死了——报错，或加载器手上没有源了。 */
+		function sourceIsDead(video) {
+			if (video.error !== undefined && video.error !== null) return true;
+			// NETWORK_NO_SOURCE(3)：地址还写在属性上，加载器却不认它。
+			return video.networkState === 3;
+		}
+
+		/**
+		 * 重装源并播起来。管线死了的时候 `play()` 救不回来——它只会对着一个没有源的
+		 * 元素以 NotSupportedError 落空，而重新发起加载是唯一能把解码器叫回来的动作。
+		 */
+		function rearmSlot(slot, video, src) {
+			if (video.getAttribute("src") !== src) video.setAttribute("src", src);
+			video.src = src;
+			if (typeof video.load === "function") {
+				try { video.load(); } catch (error) { /* 没有源可重置 */ }
+			}
+			startPlayback(video);
+		}
+
+		/** 记一笔自愈，只留最近 12 条。 */
+		function notePlayback(kind, slot, video) {
+			playbackEvents.push({
+				at: Math.round(now()),
+				kind: kind,
+				slot: slot,
+				paused: video.paused === true,
+				time: typeof video.currentTime === "number" ? Math.round(video.currentTime * 10) / 10 : null,
+				ready: video.readyState,
+				network: video.networkState,
+				error: video.error === undefined || video.error === null ? null : video.error.code
+			});
+			if (playbackEvents.length > 12) playbackEvents.shift();
+			if (kind === "reload") playbackCounts.reload += 1;
+			else playbackCounts.play += 1;
+		}
+
+		/**
+		 * 把此刻该在播的那条拉回播放。让它停下的原因不只一个，而且都不是主题要的：一次
+		 * `play()` 落空（自动播放被拒，或 promise 被别的第一次触碰打断）、一条片子的
+		 * `loop` 没能回到开头、媒体管线自己中止（解码器被回收、源不再可用）、一次窗口从
+		 * 被遮挡里回来却没发 `visibilitychange`。少了这一眼，它们都长成同一件事：壁纸冻
+		 * 住，直到下一次换心情或改配置。
+		 *
+		 * 冻住还有第二种形状：`paused` 仍是 false，`currentTime` 却不走。分清它和一条真
+		 * 在缓冲的片子要读 `readyState`，可两者该做的都是再按一次播放键，所以不必分辨
+		 * ——对一个还在加载的元素 `play()` 无害。
+		 */
+		function keepPlayback() {
+			if (disposed) return;
+			if (isAway() === true) return;
+			var plan = planClips();
+			var target = mood === "work" ? "work" : "idle";
+			for (var i = 0; i < SLOTS.length; i++) {
+				var slot = SLOTS[i];
+				var entry = plan === undefined || plan === null ? null : plan[slot];
+				if (entry === null || entry === undefined || entry.clip === null) continue;
+				// 不在显示、且只服务一种心情的那条归 paceSlots 管：它停在淡变之后，
+				// 等下次切换再预热。把它拉回来等于两台解码器整天在跑。
+				if (slot !== target && entry.slot !== "both") continue;
+				var video = videos[slot];
+				if (video === undefined || video === null) continue;
+				if (video.getAttribute("data-glass-clip") === "none") continue;
+				var want = clipSrcFor(slot, entry.clip);
+				if (want === "") continue;
+				// 先记录画面走到哪儿：它在走，退避就该清零。
+				var frozen = watchClip(slot, video);
+				if (now() - playbackActedAt[slot] < playbackBackoff[slot]) continue;
+				// 源已经不在这个元素上了：按播放键没有意义，直接重新发起加载。
+				if (video.getAttribute("src") !== want || sourceIsDead(video) === true) {
+					armReload(slot);
+					notePlayback("reload", slot, video);
+					rearmSlot(slot, video, want);
+					continue;
+				}
+				if (video.paused !== true && frozen !== true) continue;
+				playbackRetry[slot] += 1;
+				playbackActedAt[slot] = now();
+				notePlayback(video.paused === true ? "pause" : "freeze", slot, video);
+				if (playbackRetry[slot] >= 2) {
+					// 按过一次没救回来：那不是"还没来得及播"，是播不起来。重装源。
+					armReload(slot);
+					notePlayback("reload", slot, video);
+					rearmSlot(slot, video, want);
+					continue;
+				}
+				startPlayback(video);
+			}
+		}
+
+		/** 记下一次重装源，并把退避翻倍：一条永远坏掉的片子不该每 1.5 秒重新加载一次。 */
+		function armReload(slot) {
+			playbackActedAt[slot] = now();
+			playbackBackoff[slot] = Math.min(PLAYBACK_BACKOFF_MAX, playbackBackoff[slot] * 2);
+		}
+
+		/**
+		 * @param slot - 一个心情槽。
+		 * @param video - 服务它的元素。
+		 * @returns 这条片子是否已经连着两轮停在同一个位置。
+		 */
+		function watchClip(slot, video) {
+			var at = typeof video.currentTime === "number" ? video.currentTime : -1;
+			if (at < 0) {
+				// 读不到位置（元素还没上帧）：不作判断，免得把一次正常的加载当成卡死。
+				playbackWatch[slot] = null;
+				return false;
+			}
+			var seen = playbackWatch[slot];
+			if (seen === undefined || seen === null) {
+				// 还没有基准读数。记下位置，但不据此宣布"画面在走"——那等于把刚刚建立起
+				// 来的退避清零，一条永远坏掉的片子就会每跳重装一次。
+				playbackWatch[slot] = { at: at, since: now() };
+				return false;
+			}
+			if (seen.at !== at) {
+				// 画面在走：这一槽的自愈记账与退避全部清零。
+				playbackWatch[slot] = { at: at, since: now() };
+				playbackRetry[slot] = 0;
+				playbackBackoff[slot] = POLL_MS;
+				playbackActedAt[slot] = 0;
+				return false;
+			}
+			if (now() - seen.since < POLL_MS * 2) return false;
+			// 重新计时：按过播放键之后，要给解码器一整个窗口证明自己回来了。
+			seen.since = now();
+			return true;
+		}
+
+		/** @returns 每个槽的播放现场，加上自愈账本。给控制台，不给界面。 */
+		function playbackReport() {
+			var plan = planClips();
+			var report = {
+				mood: mood,
+				hidden: doc === undefined || doc === null ? null : doc.hidden === true,
+				focused: typeof doc.hasFocus === "function" ? doc.hasFocus() : null,
+				away: isAway(),
+				pollAlive: poll !== 0,
+				retagAlive: retagTimer !== 0,
+				counts: { play: playbackCounts.play, reload: playbackCounts.reload },
+				slots: {}
+			};
+			for (var i = 0; i < SLOTS.length; i++) {
+				var slot = SLOTS[i];
+				var video = videos[slot];
+				var entry = plan === undefined || plan === null ? null : plan[slot];
+				if (video === undefined || video === null) {
+					report.slots[slot] = { mounted: false };
+					continue;
+				}
+				report.slots[slot] = {
+					mounted: true,
+					clip: video.getAttribute("data-glass-clip"),
+					want: entry === null || entry === undefined ? "" : clipSrcFor(slot, entry.clip),
+					has: video.getAttribute("src"),
+					paused: video.paused === true,
+					time: typeof video.currentTime === "number" ? Math.round(video.currentTime * 10) / 10 : null,
+					ready: video.readyState,
+					network: video.networkState,
+					error: video.error === undefined || video.error === null ? null : video.error.code,
+					retry: playbackRetry[slot],
+					backoff: playbackBackoff[slot]
+				};
+			}
+			report.last = playbackEvents.slice(-12);
+			return report;
+		}
+
 		/**
 		 * 标签页隐藏期间停掉每个时钟和解码器，在下一个可见帧带回来。壁纸是最不该
 		 * 在一个没人在看的窗口上耗电的东西。
 		 */
 		function applyVisibility() {
-			if (doc !== undefined && doc !== null && doc.hidden === true) {
+			if (isAway() === true) {
 				stopPolling();
 				stopRetag();
 				pauseSlots();
@@ -2210,21 +2580,113 @@ window.__ModuleLoader__.load({
 		function watchColumns() {
 			if (win === undefined || win === null || typeof win.ResizeObserver !== "function") return;
 			if (resizeObserver !== null) return;
-			resizeObserver = new win.ResizeObserver(function () {
-				if (disposed) return;
-				// 前沿先走，然后每个节流窗口至多一趟。纯尾沿去抖只在动画停下时才发——
-				// 那恰恰是"素列在末尾瞬变"这个要防的东西。
-				if (resizeTimer !== 0) return;
-				var since = now() - lastResizeAt;
-				if (since >= RESIZE_THROTTLE_MS) {
-					runResizePass();
-					return;
+			resizeObserver = new win.ResizeObserver(schedulePanelPass);
+		}
+
+		/**
+		 * 一次「重打标签 + 重发布」，前沿先走，然后每个节流窗口至多一趟。纯尾沿去抖
+		 * 只在动画停下时才发，而那恰恰是"素列在末尾瞬变"要防的东西。列缩放和 app 换
+		 * 会话时的结构变化共用这一个窗口：同一个窗口里两件事都发生，也只付一趟探测。
+		 */
+		function schedulePanelPass() {
+			if (disposed) return;
+			if (resizeTimer !== 0) return;
+			var since = now() - lastResizeAt;
+			if (since >= RESIZE_THROTTLE_MS) {
+				runResizePass();
+				return;
+			}
+			resizeTimer = setTimer(function () {
+				resizeTimer = 0;
+				runResizePass();
+			}, RESIZE_THROTTLE_MS - since);
+		}
+
+		/** @returns 这个节点是不是某一列的外壳列。 */
+		function isPanelColumn(node) {
+			if (node === null || node === undefined) return false;
+			for (var i = 0; i < PANEL_KEYS.length; i++) {
+				if (panelNodes[PANEL_KEYS[i]] === node) return true;
+			}
+			return false;
+		}
+
+		/**
+		 * 面板材质现在有没有可能已经画错了地方。
+		 *
+		 * app 换会话时把中间列的内容根整个换掉：材质的宿主随之离开文档，列交回 app 自己
+		 * 的颜料，屏幕上那块玻璃要等下一趟深扫（2.5s）才回来。而换会话时列的盒子没有变，
+		 * 所以缩放观察者一声不响——结构变化得自己说话。
+		 *
+		 * 探针必须便宜：流式回答时每批 DOM 改动都会走到它，所以它只读指针和属性，一次
+		 * 几何都不量、一次计算样式都不读。
+		 * @param records - 一批 MutationObserver 记录。
+		 * @returns 是否需要立刻重打标签。
+		 */
+		function panelMaterialStale(records) {
+			for (var i = 0; i < PANEL_KEYS.length; i++) {
+				var key = PANEL_KEYS[i];
+				var column = panelNodes[key];
+				if (column === null || column === undefined) continue;
+				if (!attrOn(column, "data-glass-panel")) return true;
+				var surface = panelSurfaces[key];
+				var host = surface === null || surface === undefined ? column : surface;
+				if (surface !== null && surface !== undefined) {
+					if (!surfaceAttached(surface)) return true;
+					if (!attrOn(surface, "data-glass-surface")) return true;
 				}
-				resizeTimer = setTimer(function () {
-					resizeTimer = 0;
-					runResizePass();
-				}, RESIZE_THROTTLE_MS - since);
+				var fill = panelFills[key];
+				if (fill !== null && fill !== undefined && parentOf(fill) !== host) return true;
+				var lens = panelLenses[key];
+				if (lens !== null && lens !== undefined && parentOf(lens) !== host) return true;
+			}
+			if (records === null || records === undefined) return false;
+			for (var r = 0; r < records.length; r++) {
+				var record = records[r];
+				if (record === null || record === undefined || record.type !== "childList") continue;
+				var removed = record.removedNodes;
+				if (removed !== null && removed !== undefined) {
+					for (var q = 0; q < removed.length; q++) {
+						// 一个不属于本插件的节点离开列的直接子层：app 换了它的布局包装。
+						if (isPluginLayer(removed[q]) || !isPanelColumn(record.target)) continue;
+						return true;
+					}
+				}
+				var added = record.addedNodes;
+				if (added !== null && added !== undefined) {
+					for (var n = 0; n < added.length; n++) {
+						if (isPluginLayer(added[n]) || !isPanelColumn(parentOf(added[n]))) continue;
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
+		/**
+		 * 盯住外壳的结构变化，只在材质真的丢了的时候才付一次有测量的重打标签；2.5s 的
+		 * 深扫仍然是兜底，这里补的是它的反应速度。
+		 */
+		function watchMaterial() {
+			if (win === undefined || win === null || typeof win.MutationObserver !== "function") return;
+			if (materialObserver !== null) return;
+			var frame = doc.querySelector('[class*="_frame"]');
+			var target = frame !== null && frame !== undefined ? frame : doc.body;
+			if (target === null || target === undefined) return;
+			materialObserver = new win.MutationObserver(function (records) {
+				if (disposed) return;
+				if (panelMaterialStale(records)) schedulePanelPass();
 			});
+			try {
+				// 只认 childList：属性（class、style、滚动位置）每帧都在变，而它们不动宿主。
+				materialObserver.observe(target, { childList: true, subtree: true });
+			} catch (error) { /* 没有观察者，深扫仍然兜住 */ }
+		}
+
+		function unwatchMaterial() {
+			if (materialObserver === null) return;
+			try { materialObserver.disconnect(); } catch (error) { /* 已经断了 */ }
+			materialObserver = null;
 		}
 
 		/**
@@ -2261,19 +2723,35 @@ window.__ModuleLoader__.load({
 		}
 
 		function watchVisibility() {
-			if (doc === undefined || doc === null || typeof doc.addEventListener !== "function") return;
-			try {
-				doc.addEventListener("visibilitychange", applyVisibility, false);
-				visibilityWatched = true;
-			} catch (error) { /* a document without events still gets the theme */ }
+			if (doc !== undefined && doc !== null && typeof doc.addEventListener === "function") {
+				try {
+					doc.addEventListener("visibilitychange", applyVisibility, false);
+					visibilityWatched = true;
+				} catch (error) { /* a document without events still gets the theme */ }
+			}
+			/* 遮挡状态回来时事件不一定到：切虚拟桌面、锁屏、从任务栏缩略图恢复，都有
+			   只发 focus 的路径。少了这一条，一次漏掉的 visibilitychange 就把时钟和解码器
+			   一起留在停的那一边，而用户看到的只是"壁纸不知道什么时候不动了"。 */
+			if (win !== undefined && win !== null && typeof win.addEventListener === "function") {
+				try {
+					win.addEventListener("focus", applyVisibility, false);
+					focusWatched = true;
+				} catch (error) { /* a window without events still gets the theme */ }
+			}
 		}
 
 		function unwatchVisibility() {
-			if (visibilityWatched !== true || typeof doc.removeEventListener !== "function") return;
+			if (visibilityWatched === true && typeof doc.removeEventListener === "function") {
+				try {
+					doc.removeEventListener("visibilitychange", applyVisibility, false);
+				} catch (error) { /* already gone */ }
+				visibilityWatched = false;
+			}
+			if (focusWatched !== true || win === undefined || win === null || typeof win.removeEventListener !== "function") return;
 			try {
-				doc.removeEventListener("visibilitychange", applyVisibility, false);
+				win.removeEventListener("focus", applyVisibility, false);
 			} catch (error) { /* already gone */ }
-			visibilityWatched = false;
+			focusWatched = false;
 		}
 
 		/** 订阅每个能报告活动的可观察源。 */
@@ -2497,8 +2975,8 @@ window.__ModuleLoader__.load({
 					}
 					video.setAttribute("data-glass-clip", active ? entry.slot : "none");
 					// 存下来的文件从这个槽的对象 URL 播放；链接直接播。
-					var next = clip.source === "url" ? clip.url : clipUrls[slot];
-					if (next === null || next === undefined || next === "") continue;
+					var next = clipSrcFor(slot, clip);
+					if (next === "") continue;
 					if (video.getAttribute("src") !== next) {
 						video.setAttribute("src", next);
 						video.src = next;
@@ -2506,6 +2984,7 @@ window.__ModuleLoader__.load({
 				// 两条活着的片子保持播放：这才让切换成为交叉淡变，而不是解码器卡顿。
 					startPlayback(video);
 				}
+				updateWebGLEnabled();
 			announceWallpaper();
 			schedulePace();
 			sampleMedia(true);
@@ -2781,7 +3260,7 @@ window.__ModuleLoader__.load({
 					var box = node.getBoundingClientRect();
 					if (viewportWidth > 0 && viewportHeight > 0 && box.width >= viewportWidth * BIG_SURFACE_RATIO && box.height >= viewportHeight * BIG_SURFACE_RATIO) {
 						if (node.getAttribute("data-glass-frost") !== "on") node.setAttribute("data-glass-frost", "on");
-					} else if (node.getAttribute("data-glass-frost") !== undefined && node.getAttribute("data-glass-frost") !== null) {
+					} else if (attrOn(node, "data-glass-frost")) {
 						node.removeAttribute("data-glass-frost");
 					}
 				}
@@ -3348,8 +3827,8 @@ window.__ModuleLoader__.load({
 					if (!columnUsable(node)) {
 						panelFound[key] = false;
 						panelNodes[key] = null;
-						if (node.getAttribute("data-glass-panel") !== undefined && node.getAttribute("data-glass-panel") !== null) node.removeAttribute("data-glass-panel");
-						if (node.getAttribute("data-glass-delegate") !== undefined && node.getAttribute("data-glass-delegate") !== null) node.removeAttribute("data-glass-delegate");
+						if (attrOn(node, "data-glass-panel")) node.removeAttribute("data-glass-panel");
+						if (attrOn(node, "data-glass-delegate")) node.removeAttribute("data-glass-delegate");
 						var stale = panelSurfaces[key];
 						if (stale !== null && stale !== undefined) {
 							stale.removeAttribute("data-glass-surface");
@@ -3366,6 +3845,11 @@ window.__ModuleLoader__.load({
 		if (deep === true || rebuilt) discoverSurfaces();
 		// 重建过的外壳，也需要把壁纸舞台挪回它内部。
 		ensureStageHost();
+		// 材质宿主刚刚可能变了（委托、全屏），透镜要立刻跟上，而不是等下一趟变量发布。
+		syncLenses();
+		// 舞台透镜只用面板的可视矩形，形状仍然归 DOM。
+		updateWebGLPanels();
+		updateWebGLEnabled();
 		// 无论这一轮找到了什么，下一次缩放都必须和它同一帧到达。
 		observeColumns();
 		return panelFound;
@@ -3477,7 +3961,7 @@ window.__ModuleLoader__.load({
 					   覆盖着列，所以它看起来会像一个完全合格的表面，在普通 `push` 模式下也
 					   留住材质——而在那里它还会失去 app 锚定它的绝对定位，因为标记保护的正是
 					   那个。列自己的规则从这里接管。 */
-						if (sticky !== null && sticky !== undefined && sticky.getAttribute("data-glass-fullscreen") !== undefined) {
+						if (sticky !== null && sticky !== undefined && attrOn(sticky, "data-glass-fullscreen")) {
 							sticky.removeAttribute("data-glass-fullscreen");
 							sticky.removeAttribute("data-glass-surface");
 							column.removeAttribute("data-glass-delegate");
@@ -3496,7 +3980,7 @@ window.__ModuleLoader__.load({
 						panelDiag[key] = backdropRoots(full);
 						panelSurfaces[key] = full;
 						if (full.getAttribute("data-glass-surface") !== key) full.setAttribute("data-glass-surface", key);
-						if (full.getAttribute("data-glass-fullscreen") === undefined || full.getAttribute("data-glass-fullscreen") === null) {
+						if (!attrOn(full, "data-glass-fullscreen")) {
 							full.setAttribute("data-glass-fullscreen", "");
 						}
 						aimBlur(key);
@@ -3554,6 +4038,77 @@ window.__ModuleLoader__.load({
 				}
 			}
 
+			/** 边缘透镜挂在真正承载材质的那个元素上，和镜边同一套宿主。 */
+			function lensHost(key) {
+				var surface = panelSurfaces[key];
+				if (surface !== null && surface !== undefined) return surface;
+				return panelNodes[key];
+			}
+
+			function detachLens(key) {
+				var lens = panelLenses[key];
+				panelLenses[key] = null;
+				if (lens === null || lens === undefined) return;
+				if (typeof lens.remove === "function") lens.remove();
+			}
+
+			function detachFill(key) {
+				var fill = panelFills[key];
+				panelFills[key] = null;
+				if (fill === null || fill === undefined) return;
+				if (typeof fill.remove === "function") fill.remove();
+			}
+
+			/** 填充层必须跟着材质宿主走：委托/全屏换宿主时，旧的填充一起收回。 */
+			function ensureFill(key, host) {
+				var fill = panelFills[key];
+				if (fill !== null && fill !== undefined && parentOf(fill) === host) return fill;
+				if (fill !== null && fill !== undefined) detachFill(key);
+				var existing = null;
+				try { existing = typeof host.querySelector === "function" ? host.querySelector("[" + FILL_ATTR + "]") : null; } catch (error) { existing = null; }
+				if (existing !== null && existing !== undefined && parentOf(existing) === host) {
+					panelFills[key] = existing;
+					return existing;
+				}
+				if (typeof host.insertBefore !== "function" && typeof host.appendChild !== "function") return null;
+				fill = doc.createElement("div");
+				fill.setAttribute(FILL_ATTR, "");
+				fill.setAttribute("aria-hidden", "true");
+				// 追加而不是插到最前：`:first-child` 在 app 的布局里比 `:last-child` 常见得多。
+				host.appendChild(fill);
+				panelFills[key] = fill;
+				return fill;
+			}
+
+			/**
+			 * 让每个面板的材质宿主恰好带一个边缘透镜。外壳重绘可能把它摘掉，或者把
+			 * 材质从一个元素挪到另一个（全屏右栏）；每趟面板同步都重新对一次，代价
+			 * 只是几个属性比较。
+			 */
+			function syncLenses() {
+				for (var i = 0; i < PANEL_KEYS.length; i++) {
+					var key = PANEL_KEYS[i];
+					var host = lensHost(key);
+					if (host === null || host === undefined) { detachLens(key); detachFill(key); continue; }
+					ensureFill(key, host);
+					var lens = panelLenses[key];
+					if (lens !== null && lens !== undefined && parentOf(lens) === host) continue;
+					if (lens !== null && lens !== undefined) detachLens(key);
+					var existing = null;
+					try { existing = typeof host.querySelector === "function" ? host.querySelector("[" + LENS_ATTR + "]") : null; } catch (error) { existing = null; }
+					if (existing !== null && existing !== undefined && parentOf(existing) === host) {
+						panelLenses[key] = existing;
+						continue;
+					}
+					if (typeof host.appendChild !== "function") continue;
+					lens = doc.createElement("div");
+					lens.setAttribute(LENS_ATTR, key);
+					lens.setAttribute("aria-hidden", "true");
+					host.appendChild(lens);
+					panelLenses[key] = lens;
+				}
+			}
+
 			/** @returns 呈现器此刻在 body 上的配色。 */
 			function currentScheme() {
 				try {
@@ -3576,7 +4131,9 @@ window.__ModuleLoader__.load({
 			// 每面板每个后代一次计算样式读取：这个函数的全部成本就在这一行，这正是
 			// 轮询路径改调 publishPanelColors 的原因。
 			for (var bk = 0; bk < PANEL_KEYS.length; bk++) aimBlur(PANEL_KEYS[bk]);
+			syncLenses();
 			publishPanelColors();
+			updateWebGLEnabled();
 		}
 
 		/**
@@ -3645,10 +4202,26 @@ window.__ModuleLoader__.load({
 			style.setProperty("--gm-rim-band", refracting ? rim.band : rim.softBand);
 			style.setProperty("--gm-rim-disp", refracting ? rim.disp : "transparent");
 			style.setProperty("--gm-rim-warm", refracting ? rim.warm : "transparent");
-			style.setProperty("--gm-sheen-edge", refracting ? "1.15" : "0.82");
+			style.setProperty("--gm-sheen-edge", refracting ? "1" : "0.82");
 			style.setProperty("--gm-rim-catch", rim.catch);
 			style.setProperty("--gm-rim-shade", rim.shade);
 			style.setProperty("--gm-divider", rim.divider(panels.divider));
+			/* 透镜带与按压光池都跟着心情走：工作态是一道更紧的透镜，光池则借用
+			   镜边的颜色。它们共用同一套光学语言，不会在换心情时各说各话。 */
+			doc.body.dataset.glassRefract = refracting ? "on" : "off";
+			style.setProperty("--gm-lens-band", (moodNow === "work" ? 28 : 36) + "px");
+			/* WebGL 透镜的折射带：宽了读起来是一圈，窄了折射没有地方发生。
+			   工作态收紧一档，和镜边同一个节奏。 */
+			lensBandPx = moodNow === "work" ? 36 : 44;
+			/* 透镜永远不碰圆角：CSS 兜底的遮罩在两头各留出一个半径的长度，避免位移把
+			   圆角处的填充拉走，切出一个像缺口一样的洞。 */
+			style.setProperty("--gm-lens-corner", Math.max(24, panels.panelRadius * 2) + "px");
+			/* 底色按心情，色相跟片子：见 pressTap()。 */
+			var tap = pressTap(moodNow, scheme, spillSample, rim);
+			style.setProperty("--gm-tap-core", tap.core);
+			style.setProperty("--gm-tap-glow", tap.glow);
+			style.setProperty("--gm-tap-rim", tap.rim);
+			style.setProperty("--gm-tap-edge", tap.edge);
 			}
 
 	/**
@@ -3746,6 +4319,11 @@ window.__ModuleLoader__.load({
 			if (given.blurFallback !== undefined) merged.blurFallback = given.blurFallback;
 			if (given.fixedGuard !== undefined) merged.fixedGuard = given.fixedGuard;
 			panels = normalizePanels(merged);
+				if (panels.press !== true) {
+					pressControl = null;
+					endRelease();
+					if (pressLight !== null && pressLight !== undefined) pressLight.removeAttribute("data-on");
+				}
 				writeKey(PANEL_KEY, JSON.stringify(panels));
 				tagPanels(true);
 				syncPanels();
@@ -3775,6 +4353,519 @@ window.__ModuleLoader__.load({
 				host.innerHTML = REFRACTION_SVG;
 				doc.body.appendChild(host);
 				refractionMounted = true;
+			}
+
+			/** 向上找真正可按的控件；走 parentOf，桩 DOM 与真实 DOM 都通。 */
+			function pressTarget(node) {
+				var current = node;
+				while (current !== null && current !== undefined) {
+					var tag = typeof current.tagName === "string" ? current.tagName.toLowerCase() : "";
+					var role = typeof current.getAttribute === "function" ? current.getAttribute("role") : null;
+					if (tag === "button" || role === "button" || role === "tab" || role === "menuitem") {
+						if (current.disabled === true) return null;
+						if (typeof current.getAttribute === "function" && current.getAttribute("aria-disabled") === "true") return null;
+						return current;
+					}
+					current = parentOf(current);
+				}
+				return null;
+			}
+
+			function ensurePressLight() {
+				if (pressLight !== null && pressLight !== undefined && parentOf(pressLight) === doc.body) return pressLight;
+				var existing = typeof doc.getElementById === "function" ? doc.getElementById(PRESS_LIGHT_ID) : null;
+				if (existing !== null && existing !== undefined) {
+					pressLight = existing;
+					return existing;
+				}
+				var light = doc.createElement("div");
+				light.id = PRESS_LIGHT_ID;
+				light.setAttribute("aria-hidden", "true");
+				doc.body.appendChild(light);
+				pressLight = light;
+				return light;
+			}
+
+			/** 把光池贴到控件上，并把光核放在触点（缺省时放在中心）。 */
+			function placePressLight(control, clientX, clientY) {
+				var box = typeof control.getBoundingClientRect === "function" ? control.getBoundingClientRect() : null;
+				if (box === null || box === undefined || !(box.width > 0) || !(box.height > 0)) return;
+				var light = ensurePressLight();
+				var x = clientX === undefined || clientX === null ? box.left + box.width / 2 : clientX;
+				var y = clientY === undefined || clientY === null ? box.top + box.height / 2 : clientY;
+				var radius = "12px";
+				try {
+					var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle(control) : null;
+					if (read !== null && read !== undefined && typeof read.borderRadius === "string" && read.borderRadius !== "") radius = read.borderRadius;
+				} catch (error) { /* 量不出圆角就用默认值 */ }
+				light.style.setProperty("left", Math.round(box.left) + "px");
+				light.style.setProperty("top", Math.round(box.top) + "px");
+				light.style.setProperty("width", Math.round(box.width) + "px");
+				light.style.setProperty("height", Math.round(box.height) + "px");
+				light.style.setProperty("border-radius", radius);
+				light.style.setProperty("--gm-tap-x", Math.max(0, Math.min(100, ((x - box.left) / box.width) * 100)) + "%");
+				light.style.setProperty("--gm-tap-y", Math.max(0, Math.min(100, ((y - box.top) / box.height) * 100)) + "%");
+				if (!attrOn(light, "data-on")) light.setAttribute("data-on", "");
+			}
+
+			function endRelease() {
+				if (releaseTimer !== 0) { clearTimer(releaseTimer); releaseTimer = 0; }
+				if (releaseControl !== null && releaseControl !== undefined && typeof releaseControl.removeAttribute === "function") {
+					releaseControl.removeAttribute("data-gm-release");
+				}
+				releaseControl = null;
+			}
+
+			function pressDown(event) {
+				if (disposed || panels.press !== true) return;
+				if (event !== undefined && event !== null && event.button !== undefined && event.button !== 0) return;
+				var control = pressTarget(event === undefined || event === null ? null : event.target);
+				if (control === null) return;
+				endRelease();
+				pressControl = control;
+				placePressLight(
+					control,
+					event === undefined || event === null ? undefined : event.clientX,
+					event === undefined || event === null ? undefined : event.clientY
+				);
+			}
+
+			function pressMove(event) {
+				if (pressControl === null || pressControl === undefined || event === undefined || event === null) return;
+				placePressLight(pressControl, event.clientX, event.clientY);
+			}
+
+			function pressUp() {
+				if (disposed || pressControl === null || pressControl === undefined) return;
+				var control = pressControl;
+				pressControl = null;
+				if (pressLight !== null && pressLight !== undefined) pressLight.removeAttribute("data-on");
+				if (panels.press !== true) return;
+				endRelease();
+				releaseControl = control;
+				if (typeof control.setAttribute === "function") control.setAttribute("data-gm-release", "");
+				releaseTimer = setTimer(function () {
+					releaseTimer = 0;
+					if (releaseControl === control) {
+						if (typeof control.removeAttribute === "function") control.removeAttribute("data-gm-release");
+						releaseControl = null;
+					}
+				}, 300);
+			}
+
+			function watchPress() {
+				if (pressWatched || typeof doc.addEventListener !== "function") return;
+				doc.addEventListener("pointerdown", pressDown, true);
+				doc.addEventListener("pointermove", pressMove, true);
+				doc.addEventListener("pointerup", pressUp, true);
+				doc.addEventListener("pointercancel", pressUp, true);
+				// 按住时切走窗口，不会再有 pointerup：光池必须自己退场。
+				if (win !== undefined && win !== null && typeof win.addEventListener === "function") {
+					try { win.addEventListener("blur", pressUp, false); } catch (error) { /* 没有窗口事件 */ }
+				}
+				pressWatched = true;
+			}
+
+			function unwatchPress() {
+				if (pressWatched && typeof doc.removeEventListener === "function") {
+					try {
+						doc.removeEventListener("pointerdown", pressDown, true);
+						doc.removeEventListener("pointermove", pressMove, true);
+						doc.removeEventListener("pointerup", pressUp, true);
+						doc.removeEventListener("pointercancel", pressUp, true);
+					} catch (error) { /* 一个已经消失的文档 */ }
+				}
+				if (win !== undefined && win !== null && typeof win.removeEventListener === "function") {
+					try { win.removeEventListener("blur", pressUp, false); } catch (error) { /* 没有窗口事件 */ }
+				}
+				pressWatched = false;
+				pressControl = null;
+				endRelease();
+				if (pressLight !== null && pressLight !== undefined) {
+					if (typeof pressLight.remove === "function") pressLight.remove();
+					pressLight = null;
+				}
+			}
+			//#endregion
+
+			//#region stage webgl lens
+			/**
+			 * 舞台透镜：把当前视频帧画进一张离屏快照，再用 WebGL 在面板边缘带里做
+			 * 一次静态的折射——只把背后的画面沿法线轻轻推弯，不加高光、不加色散、
+			 * 不动对比度。canvas 骑在视频之上、渐变/压暗层之下，所以面板的填充、
+			 * 镜边、圆角与接缝完全不被触碰——这也正是 CSS backdrop-filter 那一版
+			 * 做不到、会切出缺口的地方。
+			 */
+			var WEBGL_VS = [
+				"attribute vec2 aPos;",
+				"varying vec2 vUv;",
+				"void main(){ vUv = vec2(aPos.x, 1.0 - aPos.y); gl_Position = vec4(aPos * 2.0 - 1.0, 0.0, 1.0); }"
+			].join("\n");
+			var WEBGL_FS = [
+				"precision highp float;",
+				"varying vec2 vUv;",
+				"uniform sampler2D uVideo;",
+				"uniform vec2 uViewport;",
+				"uniform vec4 uPanel[3];",
+				"uniform float uRadius;",
+				"uniform float uBand;",
+				"uniform float uBend;",
+				"float sdRoundRect(vec2 p, vec2 halfSize, float r) {",
+				"  vec2 q = abs(p) - (halfSize - r);",
+				"  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;",
+				"}",
+				/* 圆角矩形的距离场有一条对角脊：贴着脊的两侧，梯度一边是横、一边是竖，
+				   跳整整 90 度。脊就在角心往里那一侧，正好落在折射带里，直接拿它
+				   当法线，画面会在角上撕开一道口子，横竖两条边线拐成直角。解法是把算
+				   方向用的半径放大一个带宽：脊被推到带子外面，带子里只剩弧，角上自然
+				   是圆润地转过去，不是折过去。深度 x 仍按真实半径算，折射的强弱不变。 */
+				"vec2 lensNormal(vec2 p, vec2 halfSize, float r) {",
+				"  vec2 s = sign(p) + vec2(1e-5);",
+				"  vec2 q = abs(p) - (halfSize - r);",
+				"  if (q.x > 0.0 && q.y > 0.0) return s * normalize(q + vec2(1e-5));",
+				"  if (q.x > q.y) return vec2(s.x, 0.0);",
+				"  return vec2(0.0, s.y);",
+				"}",
+				"vec4 sampleAt(vec2 screen) {",
+				"  vec2 uv = screen / uViewport;",
+				"  return texture2D(uVideo, clamp(uv, 0.0, 1.0));",
+				"}",
+				"void main() {",
+				"  vec2 screen = vUv * uViewport;",
+				"  vec4 base = sampleAt(screen);",
+				"  if (base.a < 0.01) discard;",
+				"  float best = 0.0;",
+				"  vec2 disp = vec2(0.0);",
+				"  for (int i = 0; i < 3; i++) {",
+				"    vec4 panel = uPanel[i];",
+				"    vec2 size = panel.zw;",
+				"    if (size.x <= 1.0 || size.y <= 1.0) continue;",
+				"    vec2 local = screen - panel.xy;",
+				"    if (local.x < 0.0 || local.y < 0.0 || local.x > size.x || local.y > size.y) continue;",
+				"    vec2 p = local - size * 0.5;",
+				/* 窄面板（收起侧栏）装不下一条完整的折射带：带子宽过三成，整块玻璃
+				   都在弯，读起来是面板变形了，不是有厚度。所以每块面板自己截一份。 */
+				"    float band = min(uBand, min(size.x, size.y) * 0.35);",
+				"    float x = -sdRoundRect(p, size * 0.5, uRadius);",
+				/* 带子只在面板内侧。位移在边框上为零、在带子内沿也为零，所以画面跨过
+				   边框不断开；但边框处的斜率被压低，等于把背后的画面放大一圈——这才
+				   是厚玻璃边读起来的样子，而不是把整条边朝外挪走一截。 */
+				"    if (x <= 0.0 || x >= band) continue;",
+				"    float u = x / band;",
+				"    float w = u * (1.0 - u) * (1.0 - u) * 6.75;",
+				"    float k = clamp(uRadius + band, 1.0, min(size.x, size.y) * 0.5 - 1.0);",
+				"    vec2 n = lensNormal(p, size * 0.5, k);",
+				/* 相邻面板的带子在 8px 间隙上会重叠。取最大会在切换处留下一道台阶，
+				   所以这里把各片的位移按权重加起来，长度再夹到 1。 */
+				"    disp += normalize(n + vec2(1e-5)) * w;",
+				"    best = max(best, w);",
+				"  }",
+				"  if (best <= 0.0) discard;",
+				"  float m = length(disp);",
+				"  if (m > 1.0) disp /= m;",
+				"  gl_FragColor = vec4(sampleAt(screen + disp * uBend).rgb, base.a);",
+				"}"
+			].join("\n");
+
+			function compileWebGL(gl, type, source) {
+				var shader = gl.createShader(type);
+				gl.shaderSource(shader, source);
+				gl.compileShader(shader);
+				if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) return null;
+				return shader;
+			}
+
+			function initWebGL(stage) {
+				if (webgl !== null || webglFailed || stage === null || stage === undefined) return;
+				var canvas = doc.createElement("canvas");
+				canvas.id = STAGE_CANVAS_ID;
+				canvas.setAttribute("aria-hidden", "true");
+				try {
+					canvas.addEventListener("webglcontextlost", function (event) {
+						if (event !== undefined && event !== null && typeof event.preventDefault === "function") event.preventDefault();
+						webglFailed = true;
+						updateWebGLEnabled();
+					}, false);
+				} catch (error) { /* 没有 canvas 事件就跳过 */ }
+				var gl = null;
+				try {
+					gl = canvas.getContext("webgl", {
+						alpha: true, premultipliedAlpha: false, antialias: false,
+						depth: false, stencil: false, powerPreference: "low-power"
+					});
+				} catch (error) { gl = null; }
+				// 桩 DOM 的 canvas 只有一个 2D 替身；没有 WebGL 方法就安静地退回 CSS 透镜。
+				if (gl === null || typeof gl.createShader !== "function" || typeof gl.createProgram !== "function") {
+					webglFailed = true;
+					return;
+				}
+				var vs = compileWebGL(gl, gl.VERTEX_SHADER, WEBGL_VS);
+				var fs = compileWebGL(gl, gl.FRAGMENT_SHADER, WEBGL_FS);
+				if (vs === null || fs === null) { webglFailed = true; return; }
+				var prog = gl.createProgram();
+				gl.attachShader(prog, vs);
+				gl.attachShader(prog, fs);
+				gl.linkProgram(prog);
+				if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { webglFailed = true; return; }
+				gl.useProgram(prog);
+
+				var buffer = gl.createBuffer();
+				gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+				gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 0,1, 1,0, 1,1]), gl.STATIC_DRAW);
+				var aPos = gl.getAttribLocation(prog, "aPos");
+				gl.enableVertexAttribArray(aPos);
+				gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+				var tex = gl.createTexture();
+				gl.bindTexture(gl.TEXTURE_2D, tex);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+				gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+
+				var panelsLoc = gl.getUniformLocation(prog, "uPanel[0]") || gl.getUniformLocation(prog, "uPanel");
+				var u = {
+					video: gl.getUniformLocation(prog, "uVideo"),
+					viewport: gl.getUniformLocation(prog, "uViewport"),
+					panels: panelsLoc,
+					radius: gl.getUniformLocation(prog, "uRadius"),
+					band: gl.getUniformLocation(prog, "uBand"),
+					bend: gl.getUniformLocation(prog, "uBend")
+				};
+				if (u.video === null || u.panels === null || u.viewport === null) { webglFailed = true; return; }
+				gl.uniform1i(u.video, 0);
+
+				var snapshot = doc.createElement("canvas");
+				var ctx = null;
+				try { ctx = snapshot.getContext("2d", { alpha: true, desynchronized: true }); } catch (error) { ctx = null; }
+				if (ctx === null) { webglFailed = true; return; }
+
+				webgl = {
+					canvas: canvas, gl: gl, prog: prog, buffer: buffer, tex: tex,
+					snapshot: snapshot, ctx: ctx, u: u,
+					snapshotSignature: "", geometrySignature: ""
+				};
+				stage.appendChild(canvas);
+				updateWebGLPanels();
+				updateWebGLEnabled();
+			}
+
+			/** 面板的边缘带用列/全屏宿主的可视矩形；镜边和接缝都归 DOM，这里只取形状。 */
+			function updateWebGLPanels() {
+				if (webgl === null) { webglPanels = []; return; }
+				var list = [];
+				var expanded = rightbarExpanded();
+				for (var i = 0; i < PANEL_KEYS.length; i++) {
+					var key = PANEL_KEYS[i];
+					if (expanded === true && key === "main") continue;
+					var node = panelNodes[key];
+					if (key === "right" && panelSurfaces[key] !== null && panelSurfaces[key] !== undefined &&
+						attrOn(panelSurfaces[key], "data-glass-fullscreen")) {
+						node = panelSurfaces[key];
+					}
+					if (node === null || node === undefined || typeof node.getBoundingClientRect !== "function") continue;
+					var box = node.getBoundingClientRect();
+					if (!(box.width > 1) || !(box.height > 1)) continue;
+					var style = null;
+					try { style = win.getComputedStyle(node); } catch (error) { style = null; }
+					if (style !== null && style !== undefined && (style.visibility === "hidden" || style.display === "none")) continue;
+					list.push({ x: box.left, y: box.top, w: box.width, h: box.height });
+				}
+				webglPanels = list;
+			}
+
+			function webglWanted() {
+				return webgl !== null && webglFailed !== true && panels.refraction === true &&
+					hasWallpaperConfig(wallpaper) && prefers.reducedTransparency !== true &&
+					webglPanels.length > 0 && disposed !== true;
+			}
+
+			/** 开关到达 DOM：WebGL 在场时 CSS 兜底透镜退场，失败时它接管。 */
+			function updateWebGLEnabled() {
+				var on = webglWanted();
+				doc.body.dataset.glassWeblens = on ? "on" : "off";
+				if (on) startWebGLLoop();
+				else stopWebGLLoop(true);
+			}
+
+			function startWebGLLoop() {
+				if (webglRunning || webgl === null) return;
+				webglRunning = true;
+				webglLoop = 0;
+				scheduleWebGL();
+			}
+
+			function scheduleWebGL() {
+				if (!webglRunning || disposed) return;
+				if (typeof win.requestAnimationFrame === "function") {
+					webglLoop = win.requestAnimationFrame(function () { webglLoop = 0; webglTick(); });
+				} else {
+					webglLoop = setTimer(function () { webglLoop = 0; webglTick(); }, 16);
+				}
+			}
+
+			function webglTick() {
+				if (!webglRunning || disposed) return;
+				drawWebGL();
+				scheduleWebGL();
+			}
+
+			function stopWebGLLoop(clear) {
+				webglRunning = false;
+				if (webglLoop !== 0) {
+					if (typeof win.requestAnimationFrame === "function" && typeof win.cancelAnimationFrame === "function") {
+						try { win.cancelAnimationFrame(webglLoop); } catch (error) { /* 已消失 */ }
+					} else {
+						clearTimer(webglLoop);
+					}
+					webglLoop = 0;
+				}
+				if (clear === true) clearWebGL();
+			}
+
+			function clearWebGL() {
+				if (webgl === null) return;
+				try {
+					webgl.gl.clearColor(0, 0, 0, 0);
+					webgl.gl.clear(webgl.gl.COLOR_BUFFER_BIT);
+				} catch (error) { /* 上下文可能已丢失 */ }
+				webgl.geometrySignature = "";
+			}
+
+			/** 把当前可见的视频压成一张离屏快照；返回是否有新像素要上传。 */
+			function drawWebGLSnapshot(viewW, viewH) {
+				if (webgl === null) return null;
+				var snap = webgl.snapshot;
+				var offW = Math.max(1, Math.min(1920, Math.round(viewW)));
+				var offH = Math.max(1, Math.round(offW * viewH / Math.max(1, viewW)));
+				var seen = [];
+				var items = [];
+				var total = 0;
+				var signature = [offW, offH, wallpaper.fit, wallpaper.blur].join("|");
+				for (var i = 0; i < SLOTS.length; i++) {
+					var video = videos[SLOTS[i]];
+					if (video === null || video === undefined || seen.indexOf(video) !== -1) continue;
+					seen.push(video);
+					if (video.readyState !== undefined && video.readyState < 2) continue;
+					if (!(video.videoWidth > 0) || !(video.videoHeight > 0)) continue;
+					var weight = 0;
+					try { weight = parseFloat(win.getComputedStyle(video).opacity); } catch (error) { weight = 0; }
+					if (!(weight > 0.005)) continue;
+					items.push({ video: video, weight: weight });
+					total += weight;
+					var frame = video.currentTime;
+					if (typeof video.getVideoPlaybackQuality === "function") {
+						try {
+							var quality = video.getVideoPlaybackQuality();
+							if (quality !== null && quality !== undefined && typeof quality.totalVideoFrames === "number") frame = quality.totalVideoFrames;
+						} catch (error) { /* 老浏览器用 currentTime */ }
+					}
+					signature += "|" + video.getAttribute("src") + ":" + frame + ":" + weight;
+				}
+				// 没帧可读时保留上一张；循环接缝不该把折射带闪没。
+				if (items.length === 0 || total < 0.005) return null;
+				if (signature === webgl.snapshotSignature) return false;
+				if (snap.width !== offW || snap.height !== offH) {
+					snap.width = offW;
+					snap.height = offH;
+				}
+				var ctx = webgl.ctx;
+				ctx.clearRect(0, 0, offW, offH);
+				var sx = offW / Math.max(1, viewW);
+				var sy = offH / Math.max(1, viewH);
+				var wallScale = 1 + (wallpaper.blur / 32) * 0.08;
+				for (var j = 0; j < items.length; j++) {
+					var item = items[j];
+					var vw = item.video.videoWidth;
+					var vh = item.video.videoHeight;
+					var dw;
+					var dh;
+					if (wallpaper.fit === "fill") {
+						dw = viewW * wallScale;
+						dh = viewH * wallScale;
+					} else {
+						var scale = wallpaper.fit === "contain" ? Math.min(viewW / vw, viewH / vh) : Math.max(viewW / vw, viewH / vh);
+						dw = vw * scale * wallScale;
+						dh = vh * scale * wallScale;
+					}
+					var dx = (viewW - dw) / 2;
+					var dy = (viewH - dh) / 2;
+					ctx.globalAlpha = Math.min(1, item.weight);
+					try { ctx.drawImage(item.video, dx * sx, dy * sy, dw * sx, dh * sy); } catch (error) { /* 纹理上传会报告污染 */ }
+				}
+				ctx.globalAlpha = 1;
+				webgl.snapshotSignature = signature;
+				return true;
+			}
+
+			function drawWebGL() {
+				if (webgl === null || disposed) return;
+				var gl = webgl.gl;
+				var viewW = win.innerWidth;
+				var viewH = win.innerHeight;
+				var dpr = Math.min(2, Math.max(1, win.devicePixelRatio || 1));
+				var cw = Math.max(1, Math.round(viewW * dpr));
+				var ch = Math.max(1, Math.round(viewH * dpr));
+				var newFrame = drawWebGLSnapshot(viewW, viewH);
+				if (newFrame === null) return;
+				var geometry = [cw, ch, viewW, viewH, panels.panelRadius, lensBandPx].join("|");
+				var panelsArr = new Float32Array(12);
+				for (var i = 0; i < 3; i++) {
+					var panel = webglPanels[i];
+					if (panel === undefined) continue;
+					panelsArr[i * 4] = panel.x;
+					panelsArr[i * 4 + 1] = panel.y;
+					panelsArr[i * 4 + 2] = panel.w;
+					panelsArr[i * 4 + 3] = panel.h;
+					geometry += "|" + [panel.x, panel.y, panel.w, panel.h].join(",");
+				}
+				if (newFrame === false && geometry === webgl.geometrySignature) return;
+				webgl.geometrySignature = geometry;
+				if (webgl.canvas.width !== cw || webgl.canvas.height !== ch) {
+					webgl.canvas.width = cw;
+					webgl.canvas.height = ch;
+					gl.viewport(0, 0, cw, ch);
+				}
+				try {
+					gl.clearColor(0, 0, 0, 0);
+					gl.clear(gl.COLOR_BUFFER_BIT);
+				} catch (error) { return; }
+				if (webglPanels.length === 0) return;
+				gl.bindTexture(gl.TEXTURE_2D, webgl.tex);
+				if (newFrame === true) {
+					try {
+						gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, webgl.snapshot);
+					} catch (error) {
+						// 跨源视频污染了 2D 快照：WebGL 无法读它，交回 CSS 兜底透镜。
+						webglFailed = true;
+						updateWebGLEnabled();
+						return;
+					}
+				}
+				gl.uniform4fv(webgl.u.panels, panelsArr);
+				gl.uniform2f(webgl.u.viewport, viewW, viewH);
+				gl.uniform1f(webgl.u.radius, panels.panelRadius);
+				gl.uniform1f(webgl.u.band, lensBandPx);
+				gl.uniform1f(webgl.u.bend, LENS_BEND_PX);
+				gl.drawArrays(gl.TRIANGLES, 0, 6);
+			}
+			function disposeWebGL() {
+				stopWebGLLoop(false);
+				if (webgl !== null) {
+					try {
+						var lose = webgl.gl.getExtension("WEBGL_lose_context");
+						if (lose !== null && lose !== undefined && typeof lose.loseContext === "function") lose.loseContext();
+					} catch (error) { /* 已丢失 */ }
+					if (webgl.canvas.parentNode !== undefined && webgl.canvas.parentNode !== null) {
+						try { webgl.canvas.parentNode.removeChild(webgl.canvas); } catch (error) { /* 已移除 */ }
+					}
+					webgl = null;
+				}
+				webglRunning = false;
+				webglPanels = [];
+				webglFailed = false;
+				delete doc.body.dataset.glassWeblens;
 			}
 			//#endregion
 
@@ -3806,6 +4897,8 @@ window.__ModuleLoader__.load({
 					stage.appendChild(video);
 					videos[SLOTS[v]] = video;
 				}
+			// 舞台 canvas 插在视频之后、渐变/压暗之前：只覆盖面板边缘带。
+			initWebGL(stage);
 			// `dim` 刻意最后追加：它是罩在整个媒体栈上的一层可读性遮挡，正如 Apple 为
 			// 明亮媒体上的玻璃所规定。
 				var layers = ["idle", "work", "pulse", "dim"];
@@ -3823,9 +4916,11 @@ window.__ModuleLoader__.load({
 		// 后台标签页既不养时钟，也不养解码器。
 		watchVisibility();
 		watchColumns();
+		watchMaterial();
 			// 面板材质是主题的一部分，不是一个模式：随引擎挂载，并在外壳重建列时
 			// 重新找列。
 			mountRefraction();
+			watchPress();
 			restorePanels();
 			tagBigSurfaces();
 		ensureStageHost();
@@ -3863,7 +4958,9 @@ window.__ModuleLoader__.load({
 				/** 合并一个面板补丁，例如 { main: { blur: 24 }, gap: 0 }。 */
 				setPanels: setPanels,
 				/** 重新找外壳列（布局变化后）。 */
-				retag: tagPanels
+				retag: tagPanels,
+				/** 播放现场与自愈账本：`__dshGlassMood.playback()`。 */
+				playback: playbackReport
 			};
 
 				return shutdown;
@@ -3887,6 +4984,9 @@ window.__ModuleLoader__.load({
 					}
 					unwatchVisibility();
 					unwatchColumns();
+					unwatchMaterial();
+					unwatchPress();
+					disposeWebGL();
 					if (resizeTimer !== 0) {
 						clearTimer(resizeTimer);
 						resizeTimer = 0;
@@ -3931,6 +5031,12 @@ window.__ModuleLoader__.load({
 					panelDiag = { left: [], main: [], right: [] };
 					panelBlurHost = { left: null, main: null, right: null };
 					panelBlurNote = { left: [], main: [], right: [] };
+					var lenses = doc.querySelectorAll("[data-glass-lens]");
+					for (var ln = 0; ln < lenses.length; ln++) lenses[ln].remove();
+					panelLenses = { left: null, main: null, right: null };
+					var fills = doc.querySelectorAll("[data-glass-fill]");
+					for (var fl = 0; fl < fills.length; fl++) fills[fl].remove();
+					panelFills = { left: null, main: null, right: null };
 					for (var df = 0; df < tagged.length; df++) tagged[df].removeAttribute("data-glass-delegate");
 					var hollowed = doc.querySelectorAll("[data-glass-hollow]");
 					for (var hl = 0; hl < hollowed.length; hl++) hollowed[hl].removeAttribute("data-glass-hollow");
@@ -3948,7 +5054,7 @@ window.__ModuleLoader__.load({
 							doc.body.style.removeProperty("--gm-panel-" + PANEL_KEYS[p] + "-" + PANEL_VAR_SUFFIXES[s]);
 						}
 					}
-					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge", "--gm-divider"].forEach(function (name) {
+					["--gm-gap", "--gm-frame-radius", "--gm-radius", "--gm-refract", "--gm-rim-a", "--gm-rim-b", "--gm-rim-c", "--gm-rim-edge", "--gm-rim-ao", "--gm-rim-contact", "--gm-rim-disp", "--gm-rim-warm", "--gm-rim-catch", "--gm-rim-shade", "--gm-rim-band", "--gm-sheen-edge", "--gm-divider", "--gm-lens-band", "--gm-lens-corner", "--gm-tap-core", "--gm-tap-glow", "--gm-tap-rim", "--gm-tap-edge"].forEach(function (name) {
 						doc.body.style.removeProperty(name);
 					});
 					doc.body.style.removeProperty("--gm-media-dim");
@@ -3963,6 +5069,8 @@ window.__ModuleLoader__.load({
 					delete doc.body.dataset.glassFading;
 					delete doc.body.dataset.glassWallpaper;
 					delete doc.body.dataset.glassPress;
+					delete doc.body.dataset.glassRefract;
+					delete doc.body.dataset.glassWeblens;
 					delete doc.body.dataset.glassTransparency;
 					delete doc.body.dataset.glassContrast;
 					delete doc.body.dataset.glassSelftest;
@@ -4000,6 +5108,8 @@ window.__ModuleLoader__.load({
 				setPanels: setPanels,
 				panelStatus: panelStatus,
 				retag: tagPanels,
+			/** 每个槽的播放现场与自愈账本：「视频停了」当场取证用。 */
+			playback: playbackReport,
 			/** 布局变化后，重新探测内层表面。 */
 			probe: discoverSurfaces,
 			/** 重新扫描值得上磨砂的页面级表面。 */
@@ -4103,7 +5213,7 @@ window.__ModuleLoader__.load({
 						var hostBox = typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : null;
 						var width = function (box) { return box === null || box === undefined ? "?" : Math.round(box.width); };
 						var left = function (box) { return box === null || box === undefined ? "?" : Math.round(box.left); };
-						var where = host.getAttribute !== undefined && host.getAttribute("data-glass-fullscreen") !== undefined
+						var where = attrOn(host, "data-glass-fullscreen")
 							? "全屏层"
 							: (panelSurfaces[key] !== null && panelSurfaces[key] !== undefined
 								? (typeof host.tagName === "string" ? host.tagName.toLowerCase() : "?") + "." + String(host.getAttribute === undefined ? "" : (host.getAttribute("class") ?? ""))
@@ -4426,7 +5536,7 @@ window.__ModuleLoader__.load({
 					h("div", { className: "gm-fields" },
 						toggle("边缘折射", config.refraction, function (value) { setConfig(engine.setPanels({ refraction: value })) }),
 						toggle("内容取色", config.rimSpill !== false, function (value) { setConfig(engine.setPanels({ rimSpill: value })) }),
-						toggle("按压形变", config.press !== false, function (value) { setConfig(engine.setPanels({ press: value })) })
+						toggle("按压光感", config.press !== false, function (value) { setConfig(engine.setPanels({ press: value })) })
 					)
 				);
 			};
@@ -4506,6 +5616,8 @@ window.__ModuleLoader__.load({
 		exports.normalizePanels = normalizePanels;
 		exports.panelFill = panelFill;
 		exports.panelRim = panelRim;
+		exports.pressTap = pressTap;
+		exports.TAP_SPILL_MIX = TAP_SPILL_MIX;
 		exports.hasWallpaperConfig = hasWallpaperConfig;
 		exports.TOKEN_KEYS = TOKEN_KEYS;
 		exports.PALETTES = PALETTES;

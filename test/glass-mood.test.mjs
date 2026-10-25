@@ -44,6 +44,8 @@ function createDocument(fixture = {}) {
     /** 媒体表面：刚够引擎的静音自动播放路径。 */
     played: 0,
     paused: true,
+    /** 片子走到哪儿。测试自己推进它，好区分"在播"和"播着但画面冻住"。 */
+    currentTime: 0,
     play() {
       this.played += 1
       this.paused = false
@@ -52,15 +54,23 @@ function createDocument(fixture = {}) {
     pause() { this.paused = true },
     load() { this.loaded = (this.loaded ?? 0) + 1 },
     setAttribute(name, value) { this.attributes[name] = value },
-    getAttribute(name) { return this.attributes[name] },
+    /** 浏览器在属性缺失时给 null，不给 undefined：替身必须一样，否则只在真机发作的
+     *  「getAttribute 和 undefined 比」这类错会一路绿到用户屏幕上。 */
+    getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null },
     hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) },
     removeAttribute(name) { delete this.attributes[name] },
-    appendChild(child) { this.children.push(child); child.parent = this; return child },
+    appendChild(child) {
+      this.children.push(child)
+      child.parent = this
+      noteChildList(this, [child], [])
+      return child
+    },
     insertBefore(child, ref) {
       const index = ref === null || ref === undefined ? -1 : this.children.indexOf(ref)
       if (index >= 0) this.children.splice(index, 0, child)
       else this.children.push(child)
       child.parent = this
+      noteChildList(this, [child], [])
       return child
     },
     get firstChild() { return this.children[0] ?? null },
@@ -75,9 +85,25 @@ function createDocument(fixture = {}) {
       if (index >= 0) this.parent.children.splice(index, 1)
       // 一个被摘下的节点没有父节点、也不再连着，和真实 DOM 一样：表面探测同时靠这两点
       // 察觉它的元素没了。
+      const previous = this.parent
       this.parent = null
+      noteChildList(previous, [], [this])
     }
   })
+  /**
+   * MutationObserver 的替身注册表。浏览器在微任务末尾按批投递，所以这里也不在
+   * appendChild 当场调用回调：一次会话切换是"旧内容根离开 + 新内容根挂上"两条记录，
+   * 它们必须进同一批——分成两批会让主题在两步中间多跑一趟探测，而真实浏览器里那一趟
+   * 根本不会发生。测试用 flushMutations() 走那个检查点。
+   */
+  const mutationWatchers = []
+  function noteChildList(parent, added, removed) {
+    if (parent === undefined || parent === null || mutationWatchers.length === 0) return
+    for (const watcher of [...mutationWatchers]) {
+      if (!watcher.watches(parent)) continue
+      watcher.pending.push({ type: 'childList', target: parent, addedNodes: [...added], removedNodes: [...removed] })
+    }
+  }
   const body = make('body')
   body.parent = undefined
   const head = make('head')
@@ -147,6 +173,18 @@ function createDocument(fixture = {}) {
       listeners[type] = listeners[type].filter((entry) => entry !== listener)
     },
     emit(type, event) { for (const listener of [...(listeners[type] ?? [])]) listener(event) },
+    /** 窗口焦点。遮挡检测会骗人，而主题的可见性判断要能读到它。 */
+    focused: false,
+    hasFocus() { return this.focused === true },
+    __mutationWatchers: mutationWatchers,
+    /** 像微任务检查点那样，把每个观察者攒下的记录一次送出。 */
+    __flushMutations() {
+      for (const watcher of [...mutationWatchers]) {
+        if (watcher.pending.length === 0) continue
+        const batch = watcher.pending.splice(0, watcher.pending.length)
+        watcher.callback(batch, watcher.observer)
+      }
+    },
     querySelector: query,
     querySelectorAll(selector) { return all.filter((el) => !el.removed && selector.split(',').some((one) => matches(el, one))) }
   }
@@ -241,7 +279,54 @@ function loadBundle(document, storage, requireImpl) {
       disconnect() { this.targets = [] }
       /** 照浏览器的样子发：一次，带齐每个条目。 */
       emit() { this.callback(this.targets.map((target) => ({ target })), this) }
-    }
+    },
+    /**
+     * DOM 结构变化的观察者，浏览器那套形状：observe(target, { childList, subtree })，
+     * 记录按批投递，被移除的节点在回调里已经没有父节点（所以主题的探针用 record.target
+     * 认它来自哪一列）。投递由 document.__flushMutations() 触发，模拟微任务检查点。
+     */
+    MutationObserver: class {
+      constructor(callback) { this.callback = callback }
+      observe(target, options) {
+        const subtree = options !== undefined && options.subtree === true
+        const childList = options === undefined || options.childList === true
+        const watcher = {
+          observer: this,
+          callback: this.callback,
+          target,
+          pending: [],
+          watches(node) {
+            if (!childList) return false
+            let walk = node
+            for (;;) {
+              if (walk === null || walk === undefined) return false
+              if (walk === target) return true
+              if (!subtree) return false
+              walk = walk.parent === undefined ? null : walk.parent
+            }
+          }
+        }
+        document.__mutationWatchers.push(watcher)
+      }
+      disconnect() {
+        const at = document.__mutationWatchers.findIndex((entry) => entry.observer === this)
+        if (at >= 0) document.__mutationWatchers.splice(at, 1)
+      }
+    },
+    /**
+     * 和 document 同一套监听器：窗口的 focus 是遮挡状态回来时唯一一定到达的信号，
+     * 所以测试要能发它。
+     */
+    listeners: {},
+    addEventListener(type, listener) {
+      this.listeners[type] = this.listeners[type] ?? []
+      this.listeners[type].push(listener)
+    },
+    removeEventListener(type, listener) {
+      if (!this.listeners[type]) return
+      this.listeners[type] = this.listeners[type].filter((entry) => entry !== listener)
+    },
+    emit(type, event) { for (const listener of [...(this.listeners[type] ?? [])]) listener(event) }
   }
   window.observers = observers
   /** @returns 引擎至今付过多少次计算样式读取。 */
@@ -464,6 +549,8 @@ function mount(options = {}) {
   const dispose = engine.start()
   return {
     document, window, loaded, storage, layers, sessionStatus, sessionList, engine, dispose, clock, disposers,
+    /** 走到 DOM 变化的微任务检查点：一批记录一次投递，和浏览器一样。 */
+    flushMutations: () => document.__flushMutations(),
     objectUrls, idb, theme, services, shell, setPreference, preferenceLists, published,
     /** 照真实服务的样子送达一次 theme/change。 */
     emitThemeChange: () => { for (const listener of themeListeners) listener({}) }
@@ -675,6 +762,20 @@ const SHIPPED_TOKENS = [
 const settle = async () => { for (let i = 0; i < 6; i++) await new Promise((resolve) => setImmediate(resolve)) }
 const stageEl = (m) => m.document.getElementById('dsh-glass-mood-bg')
 const videoEl = (m, slot) => stageEl(m).children.find((c) => c.tagName === 'video' && c.getAttribute('data-glass-slot') === slot) ?? null
+/**
+ * 属性确实不在元素上。写成 `getAttribute(x) === undefined` 在替身上会一直成立，而真实
+ * DOM 给的是 null——这类断言只会绿在测试里，不会绿在用户屏幕上。
+ */
+const noAttr = (node, name) => node === null || node.getAttribute(name) === null
+/** 一个会话的内容根：跨满中间列，并且自己画了东西——材质探测要的就是这种元素。 */
+const conversationRoot = (m) => {
+  const root = m.document.createElement('div')
+  root.setAttribute('class', 'Conversation_root_a1b2c')
+  root.setAttribute('data-phase', 'active')
+  root.computed = { backgroundColor: 'rgba(243, 235, 231, 0.1)' }
+  root.box = { width: 620, height: 780, left: 264, top: 0 }
+  return root
+}
 const clipOf = (m, slot) => videoEl(m, slot).getAttribute('data-glass-clip')
 /** rgba() 颜色的 alpha；不透明形式（十六进制）算 1。 */
 const alphaOf = (color) => {
@@ -688,7 +789,7 @@ const alphaOf = (color) => {
   assert.equal(clipOf(m, 'idle'), 'none', '什么都没配时空闲片子不活跃')
   assert.equal(clipOf(m, 'work'), 'none', '什么都没配时工作片子不活跃')
   assert.equal(m.document.body.dataset.glassWallpaper, 'off', '挂载时没配壁纸')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), undefined, '设壁纸前没有源')
+  assert.ok(noAttr(videoEl(m, 'idle'), 'src'), '设壁纸前没有源')
   // tint 0.35 被 clarity 0.45 淡出到 30% => 0.24
   assert.equal(m.document.body.style.getPropertyValue('--gm-tint'), '0.24', '情绪染色有它的默认值')
   m.dispose()
@@ -822,7 +923,7 @@ const alphaOf = (color) => {
   await m.engine.clearWallpaper('idle')
   assert.equal(clipOf(m, 'idle'), 'none', '清除唯一的片子停用舞台')
   assert.equal(m.document.body.dataset.glassWallpaper, 'off', '并关掉壁纸')
-  assert.equal(videoEl(m, 'idle').getAttribute('src'), undefined, '清除丢掉源')
+  assert.ok(noAttr(videoEl(m, 'idle'), 'src'), '清除丢掉源')
   assert.deepEqual(m.objectUrls.revoked, [url], '对象 URL 被放开')
   assert.equal(m.idb.rows.has('wallpaper:idle'), false, '存下的 blob 被移除')
   assert.equal(m.engine.getWallpaper().clips.idle.source, '', '槽被重置')
@@ -863,7 +964,7 @@ const alphaOf = (color) => {
   m.engine.clearWallpaper('work')
   assert.equal(clipOf(m, 'work'), 'none', '清掉的槽变暗')
   assert.equal(clipOf(m, 'idle'), 'both', '幸存者重新覆盖两个心情')
-  assert.equal(videoEl(m, 'work').getAttribute('src'), undefined, '清掉的槽释放了它的源')
+  assert.ok(noAttr(videoEl(m, 'work'), 'src'), '清掉的槽释放了它的源')
   assert.equal(videoEl(m, 'idle').getAttribute('src'), 'https://cdn.example.com/calm.mp4', '幸存者继续播放')
   m.dispose()
   console.log('ok  单独一条片子回退到两个心情')
@@ -972,7 +1073,7 @@ const framePixels = (r, g, b) => {
   for (let i = 0; i < 24 * 14; i++) pixels.push(r, g, b, 255)
   return pixels
 }
-const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Number)
+const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).slice(1).map(Number)
 
 {
   // 取样器读到的必须是屏幕上的那条。取而取排在前面的那个槽，意味着两条片子都配了时，
@@ -1017,6 +1118,207 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(videoEl(m, 'work').paused, true, '冷的那条随之停下')
   m.dispose()
   console.log('ok  读数跟随屏幕上的片子，一次一个解码器')
+}
+
+{
+  // 原生 loop 回到开头时 readyState 会短暂掉回 1。那只是还没交到下一帧，
+  // 不是上一帧的颜色失效；丢掉读数就会让镜边和侧栏闪回心情底色。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/gold.mp4', slot: 'idle' })
+  const video = videoEl(m, 'idle')
+  const rim = bodyVar(m, '--gm-rim-b')
+  const idleFill = bodyVar(m, '--gm-panel-left-fill')
+  const hue = m.engine.media().hue
+  video.readyState = 1
+  m.clock.advance(4000)
+  assert.equal(m.engine.media().ready, true, '循环接缝保留最后一份有效读数')
+  assert.equal(bodyVar(m, '--gm-rim-b'), rim, '镜边不在接缝闪回本色')
+  assert.equal(bodyVar(m, '--gm-panel-left-fill'), idleFill, '侧栏也不闪回本色')
+
+  // 同一条片子覆盖两种心情时，工作态本身可以切换，但内容的色相不能在下一个
+  // 取样窗口被擦掉——否则金色片子上就会短暂出现一块没有依据的工作蓝。
+  m.sessionStatus.set(new Map([['s1', { running: true }]]))
+  m.clock.advance(120)
+  assert.equal(currentMood(m), 'work', '心情切换本身仍然生效')
+  const workFill = bodyVar(m, '--gm-panel-left-fill')
+  m.clock.advance(4000)
+  assert.equal(bodyVar(m, '--gm-panel-left-fill'), workFill, '无帧窗口不把工作态的内容色洗成底色')
+  assert.equal(m.engine.media().hue, hue, '内容色相在整个无帧窗口里保持')
+
+  video.readyState = 4
+  canvas.pixels = framePixels(90, 140, 220)
+  m.clock.advance(4000)
+  assert.notEqual(bodyVar(m, '--gm-rim-b'), rim, '下一帧到了以后取样照常更新')
+  m.dispose()
+  console.log('ok  循环接缝保留最后有效帧色，不闪边、不错色')
+}
+
+{
+  // 背景视频"有时候不动了"的真实形状：停下它的不是主题。一次 play() 落空（自动播放
+  // 被拒，或 promise 被别的第一次触碰打断）、一条片子的 loop 没回到开头、一次遮挡状态
+  // 回来没发 visibilitychange——少了自愈，每一种都冻到下一次换心情为止。
+  const m = mount()
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/on-screen.mp4', slot: 'idle' })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/parked.mp4', slot: 'work' })
+  m.clock.advance(120)
+  const shown = videoEl(m, 'idle')
+  const parked = videoEl(m, 'work')
+  assert.equal(currentMood(m), 'idle', '屏幕上的是平静那条')
+  m.clock.advance(1300)
+  assert.equal(parked.paused, true, '不在显示的淡变结束后停下')
+  const played = shown.played
+  shown.pause()
+  m.clock.advance(1600)
+  assert.equal(shown.paused, false, '屏幕上的那条自己回到播放')
+  assert.ok(shown.played > played, '靠的是一次新的 play()，不是属性')
+  assert.equal(parked.paused, true, '而自愈不把它变成第二台整天在跑的解码器')
+  m.dispose()
+
+  // 一条片子覆盖两种心情时，它住在哪个槽都必须在播：屏幕上是另一槽的空位，不是它停下
+  // 的理由。
+  const single = mount()
+  single.engine.setWallpaper({ url: 'https://cdn.example.com/only.mp4', slot: 'idle' })
+  single.clock.advance(120)
+  single.sessionStatus.set(new Map([['s1', { running: true }]]))
+  single.clock.advance(1400)
+  assert.equal(currentMood(single), 'work', '心情换到了没有专属片子的那一边')
+  const both = videoEl(single, 'idle')
+  assert.equal(both.getAttribute('data-glass-clip'), 'both', '这条片子一个人扛两个心情')
+  const bothPlayed = both.played
+  both.pause()
+  single.clock.advance(1600)
+  assert.equal(both.paused, false, '覆盖两边的那条也自愈')
+  assert.ok(both.played > bothPlayed, '并且真的重播了')
+  single.dispose()
+
+  // 第三种冻法：paused 仍是 false，画面却停在同一帧。在推进的片子不能被反复按播放键，
+  // 连着两轮不动的那条才该被拉一次。
+  const stuck = mount()
+  stuck.engine.setWallpaper({ url: 'https://cdn.example.com/stuck.mp4', slot: 'idle' })
+  stuck.clock.advance(120)
+  const el = videoEl(stuck, 'idle')
+  el.currentTime = 5
+  const healthy = el.played
+  stuck.clock.advance(1600)
+  el.currentTime = 6
+  assert.equal(el.played, healthy, '在推进的片子没人碰它')
+  const poked = el.played
+  stuck.clock.advance(4600)
+  assert.ok(el.played > poked, '连着两轮停在 6s 的片子被重新按下播放')
+  stuck.dispose()
+
+  // 源已经不在这个元素上了（blob 被回收、管线中止）：`play()` 只会对着一个没有源的
+  // 元素落空，唯一的出路是重新发起加载。
+  const lost = mount()
+  lost.engine.setWallpaper({ url: 'https://cdn.example.com/lost.mp4', slot: 'idle' })
+  lost.clock.advance(120)
+  const lostVideo = videoEl(lost, 'idle')
+  const lostLoaded = lostVideo.loaded ?? 0
+  lostVideo.removeAttribute('src')
+  lost.clock.advance(1600)
+  assert.equal(lostVideo.getAttribute('src'), 'https://cdn.example.com/lost.mp4', '源被重装回元素')
+  assert.equal(lostVideo.loaded, lostLoaded + 1, '并且只重新发起了一次加载')
+  assert.equal(lostVideo.paused, false, '重装之后立刻播上')
+  lost.dispose()
+
+  // 管线报了错也一样：元素的 error 一挂上，`play()` 永远不会有结果。
+  const dead = mount()
+  dead.engine.setWallpaper({ url: 'https://cdn.example.com/dead.mp4', slot: 'idle' })
+  dead.clock.advance(120)
+  const deadVideo = videoEl(dead, 'idle')
+  const deadLoaded = deadVideo.loaded ?? 0
+  deadVideo.error = { code: 4 }
+  dead.clock.advance(1600)
+  assert.equal(deadVideo.loaded, deadLoaded + 1, '报错的片子被重新加载，而不是反复按播放键')
+  assert.equal(deadVideo.paused, false, '重新加载后回到播放')
+  dead.dispose()
+
+  // 按下去没反应的那种死法：第一轮先按播放键，第二轮才升级成重装源，然后退避——
+  // 一条永远坏掉的片子不该每 1.5s 重新加载一次。
+  const zombie = mount()
+  zombie.engine.setWallpaper({ url: 'https://cdn.example.com/zombie.mp4', slot: 'idle' })
+  zombie.clock.advance(120)
+  const z = videoEl(zombie, 'idle')
+  z.play = function () { this.played += 1; return { catch() {} } }
+  const zLoaded = z.loaded ?? 0
+  z.pause()
+  zombie.clock.advance(1600)
+  assert.equal(z.loaded, zLoaded, '第一次只是按播放键')
+  assert.ok(z.played > 0, '且确实按过了')
+  zombie.clock.advance(1600)
+  assert.equal(z.loaded, zLoaded + 1, '第二轮升级成重装源')
+  zombie.clock.advance(1600)
+  assert.equal(z.loaded, zLoaded + 1, '下一跳落在退避窗口里：不再每跳重加载一次')
+  zombie.clock.advance(1700)
+  assert.equal(z.loaded, zLoaded + 2, '退避到期后允许再一次尝试')
+  const zView = zombie.engine.playback()
+  assert.equal(zView.slots.idle.backoff, 1500 * 4, '每次重装把退避翻倍')
+  assert.ok(zView.counts.reload >= 2, '重装次数记在账本上')
+  zombie.dispose()
+
+  // 控制台探针：一次"视频停了"要能当场取证，而不是靠再猜一轮。
+  const probe = mount()
+  probe.engine.setWallpaper({ url: 'https://cdn.example.com/probe.mp4', slot: 'idle' })
+  probe.clock.advance(120)
+  const view = probe.engine.playback()
+  assert.equal(view.mood, 'idle', '报的是当前心情')
+  assert.equal(view.slots.idle.has, 'https://cdn.example.com/probe.mp4', '报的是元素上真正的源')
+  assert.equal(view.slots.idle.paused, false, '报的是播放状态')
+  assert.equal(view.pollAlive, true, '报的是时钟活着没有')
+  assert.ok(Array.isArray(view.last), '带着自愈账本')
+  probe.dispose()
+  console.log('ok  该在播的片子自愈回到播放，不该播的留在停')
+}
+
+{
+  // 遮挡状态回来时 visibilitychange 不一定到（切虚拟桌面、锁屏、任务栏缩略图恢复都有
+  // 只发 focus 的路径）。focus 是唯一兜得住的唤醒信号：漏了它，隐藏时停掉的时钟和解码器
+  // 就一起留在停的那边。
+  const m = mount()
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/loop.mp4', slot: 'idle' })
+  m.clock.advance(120)
+  const idle = videoEl(m, 'idle')
+  assert.equal(idle.paused, false, '可见时正在播放')
+  m.document.hidden = true
+  m.document.emit('visibilitychange')
+  assert.equal(idle.paused, true, '隐藏时释放解码器')
+  // 窗口回来了，可这次只有 focus：文档的 hidden 已经翻回 false，事件却没发。
+  m.document.hidden = false
+  m.window.emit('focus')
+  assert.equal(idle.paused, false, 'focus 把它带回来')
+  // 卸载要把这条监听也收掉，否则第二次挂载会在一个死引擎上留一个引用。
+  m.dispose()
+  assert.equal((m.window.listeners.focus ?? []).length, 0, '卸载收掉 focus 监听')
+  console.log('ok  漏掉的 visibilitychange 由 focus 兜住')
+}
+
+{
+  // 遮挡检测会骗人（驱动、虚拟桌面、锁屏之后常见）。一个拿到键盘焦点的窗口不可能
+  // 没在被看，所以 `hidden` 单独不足以停掉解码器——否则窗口明明在屏幕上，壁纸却是死的。
+  const m = mount()
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/awake.mp4', slot: 'idle' })
+  m.clock.advance(120)
+  m.document.hidden = true
+  m.document.focused = true
+  m.document.emit('visibilitychange')
+  assert.equal(videoEl(m, 'idle').paused, false, '带着焦点的窗口不因为 hidden 释放解码器')
+  m.clock.advance(1600)
+  assert.equal(videoEl(m, 'idle').paused, false, '轮询也没把它停掉')
+  m.document.focused = false
+  m.document.emit('visibilitychange')
+  assert.equal(videoEl(m, 'idle').paused, true, '焦点与可见性都没了才真的释放')
+  // 人不在这扇窗口前，自愈就不许把解码器叫回来——省电那笔账不能被自愈自己推翻。
+  const awayPlayed = videoEl(m, 'idle').played
+  m.clock.advance(4600)
+  assert.equal(videoEl(m, 'idle').paused, true, '走开期间自愈不碰它')
+  assert.equal(videoEl(m, 'idle').played, awayPlayed, '连播放键都没按过一次')
+  m.document.hidden = false
+  m.document.focused = true
+  m.window.emit('focus')
+  assert.equal(videoEl(m, 'idle').paused, false, '回来了才重新播上')
+  m.dispose()
+  console.log('ok  焦点优先于会骗人的遮挡状态')
 }
 
 {
@@ -1077,6 +1379,47 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 }
 
 {
+  // 按压光池是画面上最亮的一小团。它要是留着一团和片子毫无关系的蓝，用户读到的就是
+  // "这个按钮是蓝的"，而不是"玻璃在反光"。所以它跟内容跟得比镜边远。
+  // 一片绿的片子：底色本来是冷蓝，光晕和边缘线都必须转过去。
+  const canvas = flatFrame(newCanvas(), 60, 200, 110)
+  const m = mount({ canvas })
+  const plainGlow = bodyVar(m, '--gm-tap-glow')
+  const plainEdge = bodyVar(m, '--gm-tap-edge')
+  const base = rgbOf(plainGlow)
+  assert.ok(base[2] > base[0], `浅色空闲态的底色本来是冷的（${plainGlow}）`)
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/green.mp4' })
+  const glow = rgbOf(bodyVar(m, '--gm-tap-glow'))
+  assert.ok(glow[1] > glow[0] && glow[1] > glow[2], `片子一上屏，光晕转过去（${bodyVar(m, '--gm-tap-glow')}）`)
+  const edge = rgbOf(bodyVar(m, '--gm-tap-edge'))
+  assert.notEqual(bodyVar(m, '--gm-tap-edge'), plainEdge, '边缘线也跟上，不留一圈和画面无关的白')
+  assert.ok(edge[1] > edge[0] && edge[1] > edge[2], `并染上内容的色相（${bodyVar(m, '--gm-tap-edge')}）`)
+  // 光核仍是白热的：光的中心从来不是环境色，只有它周围那团晕是。
+  assert.match(bodyVar(m, '--gm-tap-core'), /^rgba\(\s*255\s*,\s*255\s*,\s*255\s*,/, '光核保持白热：光的中心不是环境色')
+  // 同一个色相，镜边只"沾一点"，光池跟到底。
+  assert.ok(m.loaded.TAP_SPILL_MIX > m.loaded.SPILL_MIX, '光池比镜边更肯跟内容走')
+  // 内容取色关掉：光池回到心情自己的底色，和镜边同一个开关。
+  m.engine.setPanels({ rimSpill: false })
+  assert.equal(bodyVar(m, '--gm-tap-glow'), plainGlow, '开关关掉时光晕回到心情底色')
+  assert.equal(bodyVar(m, '--gm-tap-edge'), plainEdge, '边缘线也是')
+  m.engine.setPanels({ rimSpill: true })
+  assert.notEqual(bodyVar(m, '--gm-tap-glow'), plainGlow, '并再次跟上片子')
+  m.dispose()
+
+  // 没有片子可跟的时候，底色仍按心情分冷暖：那是主题自己的语言，不该变成灰色一团。
+  const bare = mount()
+  const idleTap = rgbOf(bodyVar(bare, '--gm-tap-glow'))
+  bare.engine.setWallpaper({ url: 'https://cdn.example.com/only.mp4', slot: 'work' })
+  bare.sessionStatus.set(new Map([['s1', { running: true }]]))
+  bare.clock.advance(1200)
+  assert.equal(currentMood(bare), 'work', '心情换到了工作')
+  const workTap = rgbOf(bodyVar(bare, '--gm-tap-glow'))
+  assert.ok(workTap[2] - workTap[0] > idleTap[2] - idleTap[0], `工作态的光更冷（${bodyVar(bare, '--gm-tap-glow')}）`)
+  bare.dispose()
+  console.log('ok  按压光池的颜色跟片子走')
+}
+
+{
   // 暗片子放任不管，灰片子没有色相可溢，而一条读不到的片子（跨源 URL 会污染画布）
   // 回退而不是猜。
   const dark = flatFrame(newCanvas(), 10, 12, 16)
@@ -1126,19 +1469,23 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 //#endregion
 
 {
-  // 交互反馈：一次让控件变形的按压，来自沉浸材质规范（`interactive`）。曾短暂住在
-  // 这里的指针光被去掉了——用它的人说它没有意义，而一个没人要的功能不该让三个元素和
-  // 一个指针监听器继续活着。
+  // 交互反馈：来自沉浸光感规范的两条——按压时的弹性形变，以及跟着触点的光池。
+  // 常驻的指针光依旧不做：光只在按下时出现，松开即退场。
   const m = mount()
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
-  assert.ok(!/data-glass-light/.test(css), '指针光从 CSS 里消失')
-  assert.equal(m.document.querySelectorAll('[data-glass-light]').length, 0, '以及从 DOM 里')
+  assert.ok(!/data-glass-light/.test(css), '常驻指针光仍然不在 CSS 里')
+  assert.equal(m.document.querySelectorAll('[data-glass-light]').length, 0, '也不在 DOM 里')
   assert.match(css, /@keyframes gm-press\{from\{scale:1\}to\{scale:\.972\}\}/, '按压动画被声明')
   assert.match(css, /body\[data-glass-press=on\] button:active/, '并挂在开关上')
   assert.match(css, /body\[data-glass-press=on\] \[role=menuitem\]:active\{animation:gm-press/, '只给真正可按的控件')
   // 它缩放而不变换，所以 app 的 transform 永远不会被砸掉。
   assert.ok(!/button:active\{[^}]*transform:/.test(css), '按压不碰 transform')
   assert.match(css, /prefers-reduced-motion[^}]*button:active[^}]*animation:none/, '且减弱动效取消它')
+  // 松开是液体的回弹，而不是瞬间归位。
+  assert.match(css, /@keyframes gm-release\{0%\{scale:\.972\}58%\{scale:1\.012\}100%\{scale:1\}\}/, '松开动画被声明')
+  // 光池：一个 fixed 覆盖层，底下的 brightness 把控件提亮一点。
+  assert.match(css, /#dsh-glass-mood-press-light\{[^}]*backdrop-filter:brightness/, '光池存在并提亮控件')
+  assert.match(css, /#dsh-glass-mood-press-light\[data-on\]\{opacity:1/, '点亮态被声明')
   // 减弱动效也必须砍掉心情交叉淡变，而覆盖必须写在它所覆盖的规则之后：特异性相等时
   // 最后一个赢，所以放在前面的覆盖会被悄悄取消。
   const fadeAt = css.indexOf('prefers-reduced-motion: reduce){body[data-glass-mood]{--gm-fade:1ms}')
@@ -1147,14 +1494,175 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.ok(baseAt > 0 && fadeAt > baseAt, '且覆盖声明在所覆盖规则之后')
 
   // 开关是活的，并到达 body。
-  assert.equal(m.document.body.dataset.glassPress, 'on', '按压形变默认开')
+  assert.equal(m.document.body.dataset.glassPress, 'on', '按压光感默认开')
   m.engine.setPanels({ press: false })
   assert.equal(m.document.body.dataset.glassPress, 'off', '且开关到达 body')
   m.engine.setPanels({ press: true })
   assert.equal(m.document.body.dataset.glassPress, 'on', '并重新打开')
+
+  // 光池跟着触点：按下时出现在控件形状里，移动时跟着走，松开后熄灭。
+  const button = m.document.createElement('button')
+  button.box = { width: 120, height: 36, left: 40, top: 60 }
+  button.computed = { borderRadius: '10px' }
+  m.document.body.appendChild(button)
+  m.document.emit('pointerdown', { target: button, button: 0, clientX: 60, clientY: 70 })
+  const light = m.document.getElementById('dsh-glass-mood-press-light')
+  assert.ok(light, '按下时出现光池')
+  assert.equal(light.getAttribute('data-on'), '', '光池点亮')
+  assert.equal(light.style.getPropertyValue('left'), '40px', '贴在控件左缘')
+  assert.equal(light.style.getPropertyValue('width'), '120px', '并量到控件宽度')
+  assert.equal(light.style.getPropertyValue('border-radius'), '10px', '沿用控件圆角')
+  const tapX = parseFloat(light.style.getPropertyValue('--gm-tap-x'))
+  const tapY = parseFloat(light.style.getPropertyValue('--gm-tap-y'))
+  assert.ok(Math.abs(tapX - 16.667) < 0.01, `光核落在触点的 x 上（${tapX}%）`)
+  assert.ok(Math.abs(tapY - 27.778) < 0.01, `光核落在触点的 y 上（${tapY}%）`)
+  m.document.emit('pointermove', { target: button, clientX: 140, clientY: 90 })
+  const movedX = parseFloat(light.style.getPropertyValue('--gm-tap-x'))
+  assert.ok(Math.abs(movedX - 83.333) < 0.01, `光核跟着触点移动（${movedX}%）`)
+  m.document.emit('pointerup', { target: button })
+  assert.ok(noAttr(light, 'data-on'), '松开后光池熄灭')
+  assert.equal(button.getAttribute('data-gm-release'), '', '并开始回弹')
+  m.clock.advance(320)
+  assert.ok(noAttr(button, 'data-gm-release'), '回弹结束即清标记')
+  assert.ok(m.document.getElementById('dsh-glass-mood-press-light') === light, '光池元素留着复用')
+
+  // 开关关闭、禁用、右键、普通元素：都不亮。按在按钮里的图标上则归到按钮。
+  m.engine.setPanels({ press: false })
+  m.document.emit('pointerdown', { target: button, button: 0 })
+  assert.ok(noAttr(light, 'data-on'), '开关关了就没有光')
+  m.engine.setPanels({ press: true })
+  button.disabled = true
+  m.document.emit('pointerdown', { target: button, button: 0 })
+  assert.ok(noAttr(light, 'data-on'), '禁用控件不亮')
+  button.disabled = false
+  m.document.emit('pointerdown', { target: button, button: 2 })
+  assert.ok(noAttr(light, 'data-on'), '右键不亮')
+  const plain = m.document.createElement('span')
+  m.document.emit('pointerdown', { target: plain, button: 0 })
+  assert.ok(noAttr(light, 'data-on'), '普通元素不亮')
+  const icon = m.document.createElement('span')
+  button.appendChild(icon)
+  m.document.emit('pointerdown', { target: icon, button: 0 })
+  assert.equal(light.getAttribute('data-on'), '', '按在图标上也归到按钮')
+  m.document.emit('pointerup', { target: icon })
+
   m.engine.off()
   assert.equal(m.document.body.dataset.glassPress, undefined, 'off() 清掉属性')
-  console.log('ok  按压形变，指针光不留')
+  assert.equal(m.document.getElementById('dsh-glass-mood-press-light'), null, '并清掉光池')
+  m.document.emit('pointerdown', { target: button, button: 0 })
+  assert.equal(m.document.getElementById('dsh-glass-mood-press-light'), null, '卸载后监听器不再响应')
+  console.log('ok  按压光池跟着触点，松开回弹')
+}
+
+{
+  // 液态玻璃的边缘透镜：只弯折边框附近的背景，中心与文字不受影响。它挂在材质的
+  // 实际宿主上，所以左侧栏委托给内层表面时也跟着走；全屏右栏的搬家由 presentation
+  // 那一块覆盖。
+  const m = mount()
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
+  assert.match(
+    css,
+    /\[data-glass-lens\]\{position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:-1/,
+    '透镜在内容之下，所以文字不会被扭曲'
+  )
+  assert.match(
+    css,
+    /-webkit-mask:linear-gradient\(to bottom,#000 0,#000 36%,transparent 100%\) top center\/calc\(100% - var\(--gm-lens-corner,40px\)\) var\(--gm-lens-band,36px\)/,
+    '只显示四条软边带，并在两端给圆角让路'
+  )
+  assert.match(
+    css,
+    /body\[data-glass-refract=on\]\[data-glass-wallpaper=on\] \[data-glass-lens\]\{[^}]*backdrop-filter:url\(#dsh-glass-mood-edge-lens\)/,
+    '有壁纸时才付边缘折射的成本'
+  )
+  // 镜边、圆角和接缝是既有的几何层，绝不能被透镜过滤器碰：把 ::after 也过一遍
+  // 位移会在角上切出缺口、把轮廓线打成锯齿（这正是这一轮报上来的"破损"）。
+  assert.ok(!/rim-warp/.test(css), '透镜只处理背景，不碰镜边覆盖层')
+  // 滤镜本体在挂载的 SVG 里，不在样式表里。
+  const refractionHost = m.document.querySelector('[data-glass-refraction]')
+  assert.ok(refractionHost, '折射 SVG 已挂载')
+  assert.match(refractionHost.innerHTML, /baseFrequency="0\.007 0\.011" numOctaves="2"[^>]*result="lens"/, '边缘透镜用更明显的低频场')
+  assert.match(refractionHost.innerHTML, /scale="26" xChannelSelector="R"/, '兜底透镜只轻轻推弯：再大的位移就读成一条糊')
+  assert.ok(!/rim-warp/.test(refractionHost.innerHTML), 'SVG 里也不留镜边过滤器')
+  assert.equal(m.document.body.style.getPropertyValue('--gm-lens-corner'), '40px', '圆角留给透镜的空档随半径走')
+  assert.match(css, /body\[data-glass-refract=on\] \[data-glass-lens\]\{opacity:1\}/, '边缘开关控制它的可见性')
+  assert.match(css, /body\[data-glass-transparency=reduced\] \[data-glass-lens\]\{visibility:hidden\}/, '降低透明度时收掉它，实底没什么可折射')
+  assert.equal(m.document.body.dataset.glassRefract, 'on', '折射默认开')
+  assert.equal(m.document.querySelectorAll('[data-glass-lens]').length, 3, '三个面板各一个透镜')
+  assert.ok(m.shell.leftSurface.querySelector('[data-glass-lens]'), '左侧栏的透镜挂在它的实际材质表面')
+  assert.ok(m.shell.center.querySelector('[data-glass-lens]'), '主面板的透镜挂在列上')
+  assert.ok(m.shell.right.querySelector('[data-glass-lens]'), '右栏的透镜挂在列上')
+  // 外壳重绘可能把子元素摘掉；下一趟重打标签必须补回，且不能叠出第二个。
+  const centerLens = m.shell.center.querySelector('[data-glass-lens]')
+  centerLens.remove()
+  m.engine.retag(true)
+  assert.ok(m.shell.center.querySelector('[data-glass-lens]'), '被摘掉的透镜会补回')
+  assert.equal(m.shell.center.querySelectorAll('[data-glass-lens]').length, 1, '且不会叠出第二个')
+  m.engine.setPanels({ refraction: false })
+  assert.equal(m.document.body.dataset.glassRefract, 'off', '关掉折射')
+  m.engine.setPanels({ refraction: true })
+  assert.equal(m.document.body.dataset.glassRefract, 'on', '再打开')
+  m.engine.off()
+  assert.equal(m.document.querySelectorAll('[data-glass-lens]').length, 0, '卸载收回所有透镜')
+  assert.equal(m.document.body.dataset.glassRefract, undefined, '并清掉开关属性')
+  console.log('ok  边缘透镜只弯折边框，并跟着材质宿主')
+}
+
+{
+  // 新架构：舞台 WebGL 透镜。桩 DOM 没有 WebGL，所以引擎必须安静地退回 CSS
+  // 透镜；填充层永远是一整块，不在边缘让空档——让出来那一圈就比中心清楚，
+  // 读起来是一圈白边。
+  const m = mount()
+  const css = m.document.getElementById('dsh-glass-mood-style').textContent
+  assert.match(
+    css,
+    /\[data-glass-fill\]\{position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:-2;background-color:var\(--gm-fill,transparent\)/,
+    '填充层是独立的一层，压在内容和镜边之下'
+  )
+  assert.ok(
+    !/\[data-glass-fill\]\{[^}]*mask/.test(css),
+    '填充层不带边缘遮罩：那一圈白边就是这么来的'
+  )
+  assert.match(css, /#dsh-glass-mood-canvas\{[^}]*z-index:1/, '舞台 canvas 在视频之上、渐变层之下')
+  assert.match(css, /#dsh-glass-mood-bg>video\[data-glass-clip\]\{[^}]*z-index:0/, '视频在 canvas 之下')
+  assert.match(css, /#dsh-glass-mood-bg>\[data-glass-layer\]\{[^}]*z-index:2/, '渐变/压暗层在 canvas 之上')
+  assert.equal(m.document.body.dataset.glassWeblens, 'off', '桩 DOM 没有 WebGL 时退回 CSS 透镜')
+  const stage = m.document.getElementById('dsh-glass-mood-bg')
+  assert.equal(stage.querySelectorAll('canvas').length, 0, '也不会往舞台里塞一个死 canvas')
+  assert.equal(m.document.querySelectorAll('[data-glass-fill]').length, 3, '三个材质宿主各有填充层')
+  assert.ok(m.shell.leftSurface.querySelector('[data-glass-fill]'), '左栏的填充层跟着材质宿主')
+  assert.ok(m.shell.center.querySelector('[data-glass-fill]'), '主面板也有')
+  // 注入的填充层不能被当成 app 的材质表面，否则材质会委托给它自己。
+  assert.equal(m.engine.panelStatus().found.main, true, '主面板仍然被正常发现')
+  m.engine.off()
+  assert.equal(m.document.querySelectorAll('[data-glass-fill]').length, 0, '卸载收回填充层')
+  console.log('ok  舞台透镜 + 完整填充层（无 WebGL 时退回 CSS）')
+}
+
+{
+  // 舞台透镜的着色器只许折射，不许作画：没有时间项就没有会游动的条纹，没有
+  // 高光/色散/补色就没有那一圈白边。它对颜色做的唯一一件事是换个坐标取样。
+  const shader = /var WEBGL_FS = \[([\s\S]*?)\]\.join/.exec(source)
+  assert.ok(shader, '找到舞台着色器')
+  assert.ok(!/uTime/.test(shader[1]), '着色器没有时间项：边缘不会自己动')
+  assert.ok(!/\bsin\(/.test(shader[1]), '也没有正弦波纹')
+  assert.ok(!/uAberration/.test(shader[1]), '不做色散：彩虹条纹就是这么来的')
+  assert.ok(!/edgeGlow/.test(shader[1]), '不加边缘高光')
+  assert.ok(!/uFill/.test(shader[1]), '不往带子里补色：补出来的那一圈就是白边')
+  assert.ok(!/uKeep/.test(shader[1]), '也不带保留量——填充层整块不动，没有要补的东西')
+  assert.match(shader[1], /sdRoundRect/, '用圆角矩形距离场定位边缘：角上是弧，不是直角')
+  assert.match(
+    shader[1],
+    /clamp\(uRadius \+ band/,
+    '算方向用的半径放大一个带宽：距离场的对角脊落在折射带外，角上不会撕开'
+  )
+  assert.match(
+    shader[1],
+    /min\(uBand, min\(size\.x, size\.y\) \* 0\.35\)/,
+    '窄面板自己截带子：收起侧栏不该整块都在弯'
+  )
+  assert.match(shader[1], /sampleAt\(screen \+ disp \* uBend\)/, '唯一的光学动作：换个坐标取样')
+  console.log('ok  舞台着色器只折射，不额外加光')
 }
 
 //#region accessibility
@@ -1174,8 +1682,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.clock.advance(200)
 
   assert.equal(m.engine.blurReport().left.delegated, false, '不再覆盖的表面把材质还回来')
-  assert.equal(m.shell.leftSurface.getAttribute('data-glass-surface'), undefined, '陈旧的表面被释放')
-  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, '且列不再礼让它')
+  assert.ok(noAttr(m.shell.leftSurface, 'data-glass-surface'), '陈旧的表面被释放')
+  assert.ok(noAttr(m.shell.left, 'data-glass-delegate'), '且列不再礼让它')
   assert.equal(
     m.engine.blurSummary().every((line) => !/未识别|fixed|降级/.test(line)),
     true,
@@ -1244,7 +1752,10 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
     /\[data-glass-blur=on\] \[data-glass-surface\]:not\(\[data-glass-blur-host=element\]\)::before\{[^}]*backdrop-filter/,
     '伪元素降级也一样'
   )
-  assert.ok(!/data-glass-transparency=reduced/.test(prefCss), '两者都不挂在减弱透明上')
+  // 模糊本身不挂在偏好读取上：一次读取绝不能有能力悄悄禁用模糊旋钮。边缘透镜是
+  // 例外——实底面板没有可折射的内容，收掉它是省 GPU，不是关掉一个设置。
+  assert.ok(!/data-glass-transparency=reduced[^}]*backdrop-filter/.test(prefCss), '模糊不挂在减弱透明上')
+  assert.match(prefCss, /body\[data-glass-transparency=reduced\] \[data-glass-lens\]\{visibility:hidden\}/, '实底下收掉边缘透镜')
   m.dispose()
 
   // 每个承载文字的表面变成不透明，可见度旋钮再也削不薄一块你必须透过它读的面板。
@@ -1309,14 +1820,9 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 
   const report = m.engine.domReport()
   assert.equal(m.engine.panelStatus().found.right, true, '右面板报成找到')
-  assert.equal(
-    m.shell.right.getAttribute('data-glass-panel'),
-    'right',
-    '且留在自己的列上'
-  )
-  assert.equal(
-    centreSurface.getAttribute('data-glass-panel'),
-    undefined,
+  assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', '且留在自己的列上')
+  assert.ok(
+    noAttr(centreSurface, 'data-glass-panel'),
     "the centre panel's own element is never handed the right panel's material"
   )
   assert.equal(
@@ -1332,7 +1838,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
     /\[data-rightbar-fullscreen\] \[data-glass-panel=main\]\{margin-right:0;visibility:hidden\}/,
     '且呈现期间它被隐藏，所以没法透过它显形'
   )
-  assert.ok(!/display:none/.test(css), '用 visibility 而不是 display：网格保住列，什么都不回流')
+  assert.ok(!/\[data-glass-panel=main\][^}]*display:none/.test(css), '用 visibility 而不是 display：网格保住列，什么都不回流')
 
   // 收起恢复一切。
   m.shell.frame.removeAttribute('data-rightbar-fullscreen')
@@ -1427,11 +1933,13 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
   m.engine.retag(true)
 
-  assert.equal(hidden.getAttribute('data-glass-surface'), undefined, '隐藏的会话子树永远接不到材质')
+  assert.ok(noAttr(hidden, 'data-glass-surface'), '隐藏的会话子树永远接不到材质')
 
   assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', '列在任何模式下都是右栏')
   assert.equal(layer.getAttribute('data-glass-surface'), 'right', 'app 自己的全屏层接走材质')
   assert.equal(layer.getAttribute('data-glass-fullscreen'), '', '且被标为全屏宿主')
+  assert.ok(layer.querySelector('[data-glass-lens]'), '边缘透镜跟着材质搬到全屏层')
+  assert.equal(m.shell.right.querySelectorAll('[data-glass-lens]').length, 0, '列上不留旧透镜')
   assert.equal(m.shell.right.getAttribute('data-glass-delegate'), 'on', '所以列退到一边，不在旧几何上画')
   assert.equal(m.engine.blurReport().right.delegated, true, '行报出授权')
   assert.equal(m.engine.blurReport().right.blurHost, 'element', '模糊在跨满模式的那一层上')
@@ -1442,20 +1950,17 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
      会让那一层取样一片空背景。在真实页面上实测：列那条 447px 模糊了，盖住框的 1183px
      那一层什么都没模糊。
      `aimBlur` 从前只碰当前宿主，所以列在授权之前挣到的标记从来没被摘掉过。 */
-  assert.equal(
-    m.shell.right.getAttribute('data-glass-blur-host'),
-    undefined,
-    '材质一移到里面那一层，列就交出自己对磨砂'
+  assert.ok(noAttr(m.shell.right, 'data-glass-blur-host'), '材质一移到里面那一层，列就交出自己对磨砂'
   )
   assert.equal(layer.getAttribute('data-glass-blur-host'), 'element', '且只有那一层扛它')
 
   for (const [name, node] of [['整 app 包装', wrapper], ['外壳覆盖层槽', toast]]) {
-    assert.equal(node.getAttribute('data-glass-panel'), undefined, `${name} 永远接不到面板`)
-    assert.equal(node.getAttribute('data-glass-surface'), undefined, `${name} 永远接不到任何材质`)
+    assert.ok(noAttr(node, 'data-glass-panel'), `${name} 永远接不到面板`)
+    assert.ok(noAttr(node, 'data-glass-surface'), `${name} 永远接不到任何材质`)
   }
   // 中间面板的元素名正言顺地带着中间面板的材质——那是它自己的表面。它绝不能被给的是
   // 右栏的。
-  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, '中间面板元素永远接不到右栏')
+  assert.ok(noAttr(decoy, 'data-glass-panel'), '中间面板元素永远接不到右栏')
   assert.equal(decoy.getAttribute('data-glass-surface'), 'main', '且只保住自己的面板材质')
 
   // 材质现在跨满面板，而不是它过去所在的那条轨道。
@@ -1471,12 +1976,13 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   )
 
   // 那一层保留 app 锚定它的定位：通用表面规则会答 `position:relative`，那会把它掉回列的
-  // 流里，撤销呈现本身。
+  // 流里，撤销呈现本身。`z-index:0` 只为让边缘透镜的负层级子元素待在宿主自己的
+  // 背景之上；它不改变这一层与兄弟的绘制顺序。
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
   assert.match(
     css,
-    /\[data-glass-surface\]\[data-glass-fullscreen\]\{position:absolute\}/,
-    '全屏宿主保留 app 给它的绝对定位'
+    /\[data-glass-surface\]\[data-glass-fullscreen\]\{position:absolute;z-index:0\}/,
+    '全屏宿主保留 app 给它的绝对定位，并形成自己的叠层'
   )
 
   // 活进展开模式的那道缝：列的镜边和分隔线是一个定位的 `::after`——最后一个子元素，
@@ -1581,10 +2087,12 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   layer.setAttribute('data-sidebar-right-panel', 'push')
   m.shell.frame.removeAttribute('data-rightbar-fullscreen')
   m.engine.retag(true)
-  assert.equal(layer.getAttribute('data-glass-surface'), undefined, '收起把材质从那一层拿走')
-  assert.equal(layer.getAttribute('data-glass-fullscreen'), undefined, '以及标记，好让它的定位还给 app')
-  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, '列重新自己画')
+  assert.ok(noAttr(layer, 'data-glass-surface'), '收起把材质从那一层拿走')
+  assert.ok(noAttr(layer, 'data-glass-fullscreen'), '以及标记，好让它的定位还给 app')
+  assert.ok(noAttr(m.shell.right, 'data-glass-delegate'), '列重新自己画')
   assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', '并保住面板')
+  assert.ok(m.shell.right.querySelector('[data-glass-lens]'), '收起后透镜回到列上')
+  assert.equal(layer.querySelectorAll('[data-glass-lens]').length, 0, '全屏层不留旧透镜')
   m.dispose()
   console.log('ok  全屏右栏寄宿在 app 自己渲染的那一层上')
 }
@@ -1612,8 +2120,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.shell.frame.setAttribute('data-rightbar-fullscreen', '')
   m.engine.retag(true)
   assert.equal(m.shell.right.getAttribute('data-glass-panel'), 'right', '展开的右栏仍然是它的列')
-  assert.equal(panel.getAttribute('data-glass-panel'), undefined, '覆盖层槽里跨满框的子元素不是面板')
-  assert.equal(panel.getAttribute('data-glass-surface'), undefined, '且永远接不到它的材质')
+  assert.ok(noAttr(panel, 'data-glass-panel'), '覆盖层槽里跨满框的子元素不是面板')
+  assert.ok(noAttr(panel, 'data-glass-surface'), '且永远接不到它的材质')
   assert.equal(m.engine.panelStatus().found.right, true, '且面板仍报成找到')
   m.dispose()
   console.log('ok  覆盖层槽永不被误当成展开的右栏')
@@ -1641,8 +2149,8 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.clock.advance(200)
 
   assert.equal(m.engine.blurReport().right.delegated, false, '展开的面板把材质留在列上')
-  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, '所以列不再礼让包装')
-  assert.equal(m.shell.rightWrapper.getAttribute('data-glass-surface'), undefined, '且窄包装被释放')
+  assert.ok(noAttr(m.shell.right, 'data-glass-delegate'), '所以列不再礼让包装')
+  assert.ok(noAttr(m.shell.rightWrapper, 'data-glass-surface'), '且窄包装被释放')
   assert.equal(m.engine.blurReport().right.blurHost, 'element', '模糊在跨满模式的元素上')
 
   // 模式开着时这一行说明测量结果，好让布局不必开控制台就能报出来。
@@ -1766,7 +2274,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   // 逃生舱，实时：它按需把伪元素排布放回来。
   guard.engine.setPanels({ blurFallback: true })
   assert.equal(guard.engine.blurReport().left.blurHost, 'pseudo', '降级开关把伪元素放回来')
-  assert.equal(guard.shell.leftSurface.getAttribute('data-glass-blur-host'), undefined, '且元素停止认领它')
+  assert.ok(noAttr(guard.shell.leftSurface, 'data-glass-blur-host'), '且元素停止认领它')
   guard.engine.setPanels({ blurFallback: false })
   floating.remove()
   guard.engine.retag(true)
@@ -1785,7 +2293,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.shell.left.box = { width: 0, height: 780 }
   m.engine.retag(true)
   assert.equal(m.engine.panelStatus().found.left, false, '收起的列被报成不是面板')
-  assert.equal(m.shell.left.getAttribute('data-glass-panel'), undefined, '且每个钩子都撤回')
+  assert.ok(noAttr(m.shell.left, 'data-glass-panel'), '且每个钩子都撤回')
   assert.equal(m.engine.panelStatus().surfaces.left, false, '包括任何被授权的表面')
   // app 自己的控件幸存：收起来期间什么都不被裁、不错位。
   const css = m.document.getElementById('dsh-glass-mood-style').textContent
@@ -1884,7 +2392,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   )
   assert.equal(fixed.hollowed, 1, '画手被掏空，好让列的材质显形')
   assert.equal(m.shell.leftSurface.getAttribute('data-glass-hollow'), '', '表面交出它的颜料')
-  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, '且列保住材质')
+  assert.ok(noAttr(m.shell.left, 'data-glass-delegate'), '且列保住材质')
   assert.equal(m.shell.left.getAttribute('data-glass-panel'), 'left', '同时仍是面板')
   assert.equal(m.engine.blurReport().main.backdropRoots.length, 0, '一个干净的面板报不出背景根')
 
@@ -1892,7 +2400,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.shell.leftSurface.computed = { backgroundColor: 'rgba(255, 255, 255, 0.52)' }
   m.engine.retag(true)
   assert.equal(m.engine.blurReport().left.delegated, true, '一个干净的画手重新被授权')
-  assert.equal(m.shell.leftSurface.getAttribute('data-glass-hollow'), undefined, '连同撤回的掏空')
+  assert.ok(noAttr(m.shell.leftSurface, 'data-glass-hollow'), '连同撤回的掏空')
   assert.equal(m.engine.blurReport().left.probeReason.length, 0, '且没什么要解释')
   m.dispose()
   console.log('ok  舞台坐在外壳内部 + 模糊诊断')
@@ -1949,12 +2457,12 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 
   m.engine.tagBigSurfaces()
   assert.equal(settings.getAttribute('data-glass-frost'), 'on', '页面级表面获得磨砂')
-  assert.equal(diff.getAttribute('data-glass-frost'), undefined, '小弹出层不')
+  assert.ok(noAttr(diff, 'data-glass-frost'), '小弹出层不')
 
   // 缩水的表面再次丢掉钩子（对话框可以被缩放或复用）。
   settings.box = { width: 300, height: 200 }
   m.engine.tagBigSurfaces()
-  assert.equal(settings.getAttribute('data-glass-frost'), undefined, '且它缩小时钩子撤回')
+  assert.ok(noAttr(settings, 'data-glass-frost'), '且它缩小时钩子撤回')
 
   m.dispose()
   assert.equal(m.document.querySelectorAll('[data-glass-frost]').length, 0, '卸载移除钩子')
@@ -1966,9 +2474,9 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   // 面板的不透明度和模糊旋钮挪动的是没人看得见的值——这正是过去真实发生的事。
   assert.equal(m.shell.leftSurface.getAttribute('data-glass-surface'), 'left', '嵌套的左表面被找到并打上标签')
   assert.equal(m.shell.left.getAttribute('data-glass-delegate'), 'on', '且列退到一边')
-  assert.equal(m.shell.center.getAttribute('data-glass-delegate'), undefined, '自己画画的列保住材质')
-  assert.equal(m.shell.right.getAttribute('data-glass-delegate'), undefined, '透明包装不会被误当成表面')
-  assert.equal(m.shell.rightWrapper.getAttribute('data-glass-surface'), undefined, '且留着不打标签')
+  assert.ok(noAttr(m.shell.center, 'data-glass-delegate'), '自己画画的列保住材质')
+  assert.ok(noAttr(m.shell.right, 'data-glass-delegate'), '透明包装不会被误当成表面')
+  assert.ok(noAttr(m.shell.rightWrapper, 'data-glass-surface'), '且留着不打标签')
   // 探测报出它找到了什么，好让一处不匹配能从 GUI 诊断出来。
   assert.equal(m.engine.panelStatus().surfaceDetail.left.className, 'Sidebar_root_7h6g5', '探测报出它把材质交给了哪个元素')
 
@@ -1986,7 +2494,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.shell.left.appendChild(dialog)
   m.shell.leftSurface.remove()
   m.engine.probe()
-  assert.equal(dialog.getAttribute('data-glass-surface'), undefined, '模态永远接不到面板材质')
+  assert.ok(noAttr(dialog, 'data-glass-surface'), '模态永远接不到面板材质')
   assert.equal(m.engine.panelStatus().surfaces.left, false, '所以那个面板报不出表面，而不是跟着模态走')
   dialog.remove()
 
@@ -1994,7 +2502,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.shell.leftSurface.remove()
   m.engine.probe()
   assert.equal(m.engine.panelStatus().surfaces.left, false, '元素一没，探测报不出表面')
-  assert.equal(m.shell.left.getAttribute('data-glass-delegate'), undefined, '且列把材质取回')
+  assert.ok(noAttr(m.shell.left, 'data-glass-delegate'), '且列把材质取回')
   m.dispose()
   assert.equal(m.document.querySelectorAll('[data-glass-surface]').length, 0, '卸载给表面摘标签')
   assert.equal(bodyVar(m, '--gm-panel-left-alpha'), '', '并移除已发布的 alpha')
@@ -2211,7 +2719,7 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   assert.equal(rebuilt.getAttribute('data-glass-panel'), 'right', '重建的列被重新打标签')
   assert.equal(second.engine.panelStatus().found.right, true, '并再次报成找到')
   second.dispose()
-  assert.equal(second.shell.left.getAttribute('data-glass-panel'), undefined, '卸载给列摘标签')
+  assert.ok(noAttr(second.shell.left, 'data-glass-panel'), '卸载给列摘标签')
   assert.equal(bodyVar(second, '--gm-gap'), '', '并移除它的变量')
   assert.equal(bodyVar(second, '--gm-panel-left-shadow'), '', '以及逐面板接触阴影')
   assert.equal(bodyVar(second, '--gm-panel-left-rim'), '', '以及逐面板镜边权重')
@@ -2264,10 +2772,64 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
   m.document.body.appendChild(frame)
   m.engine.retag(true)
   assert.equal(real.getAttribute('data-glass-panel'), 'right', 'app 自己的钩子选中右列')
-  assert.equal(decoy.getAttribute('data-glass-panel'), undefined, '文档序更前的类名匹配不')
+  assert.ok(noAttr(decoy, 'data-glass-panel'), '文档序更前的类名匹配不')
   m.dispose()
   console.log('ok  右列按 app 自己的钩子找，不按文档序')
 }
+{
+  // 换会话时 app 把中间列的内容根整个换掉：材质的宿主离开文档，列退回 app 自己的颜料，
+  // 而列的盒子一点没变——缩放观察者一声不响。于是那块玻璃要等下一趟深扫（2.5s）才回来，
+  // 读起来正是"切换会话后中间面板的不透明度过一会才加载出来"。
+  const m = mount()
+  const root = conversationRoot(m)
+  m.shell.center.appendChild(root)
+  // 现场由一次显式深扫建立：此后唯一的推动者必须是结构变化的观察者。
+  m.engine.retag(true)
+  assert.equal(root.getAttribute('data-glass-surface'), 'main', '中间面板的材质在内层内容根上')
+  assert.ok(root.querySelector('[data-glass-fill]'), '填充层住在宿主里面')
+
+  const next = conversationRoot(m)
+  root.remove()
+  m.shell.center.appendChild(next)
+  m.flushMutations()
+  // 两批 DOM 改动落在同一个节流窗口里，所以那一趟在窗口尾沿发出——仍然远早于 2.5s 的深扫。
+  m.clock.advance(140)
+  assert.equal(next.getAttribute('data-glass-surface'), 'main', '新会话的内容根一跳之内拿到材质，不等下一趟深扫')
+  assert.ok(next.querySelector('[data-glass-fill]'), '填充层跟着回来')
+  assert.equal(next.getAttribute('data-glass-blur-host'), 'element', '磨砂也搬到新的宿主上')
+  assert.ok(noAttr(root, 'data-glass-surface'), '旧的宿主把标记还回来')
+  assert.equal(m.engine.blurReport().main.delegated, true, '设置行报的还是授权，不是退回列上画')
+  m.dispose()
+  console.log('ok  切换会话时材质立刻跟上新内容根')
+}
+
+{
+  // 同一个观察者还要扛得住流式回答：消息节点在很深的位置进出，探针一次几何都不量、
+  // 一次计算样式都不读。否则省下的那点延迟会变成每批 DOM 改动一趟全屏测量。
+  const m = mount()
+  const root = conversationRoot(m)
+  m.shell.center.appendChild(root)
+  m.engine.retag(true)
+  const list = m.document.createElement('div')
+  list.setAttribute('class', 'MessageList_root_x9y8z')
+  list.box = { width: 620, height: 600, left: 264, top: 0 }
+  root.appendChild(list)
+  m.flushMutations()
+  const before = m.window.__styleReads()
+  for (let i = 0; i < 6; i++) {
+    const item = m.document.createElement('div')
+    item.setAttribute('class', 'Message_item_' + i)
+    item.box = { width: 600, height: 80, left: 270, top: 100 + i * 90 }
+    list.appendChild(item)
+    m.flushMutations()
+    m.clock.advance(120)
+  }
+  assert.equal(m.window.__styleReads(), before, '深处的 DOM 改动不触发有测量的重打标签')
+  assert.equal(root.getAttribute('data-glass-surface'), 'main', '且材质一动没动')
+  m.dispose()
+  console.log('ok  流式回答的 DOM 改动不掏测量的账')
+}
+
 //#endregion
 
 //#region settings row
@@ -2412,10 +2974,10 @@ function findNodes(node, predicate, found = []) {
   const toggles = findNodes(panelsTree, (node) => node.type === 'input' && node.props.type === 'checkbox')
   const panelText = findNodes(panelsTree, (node) => typeof node === 'string').join(' ')
   assert.equal(panelRanges.length, 13, '三面板 × 不透明度/模糊/高光，外加 4 个几何旋钮')
-  assert.equal(toggles.length, 3, '边缘折射 / 内容取色 / 按压形变：三个开关，全都实时生效——调试用的那些没了')
+  assert.equal(toggles.length, 3, '边缘折射 / 内容取色 / 按压光感：三个开关，全都实时生效——调试用的那些没了')
   assert.equal(toggles[0].props.checked, true, '折射默认开')
   assert.equal(toggles[1].props.checked, true, '内容染色也一样')
-  assert.equal(toggles[2].props.checked, true, '按压形变也一样')
+  assert.equal(toggles[2].props.checked, true, '按压光感也一样')
   // 自检和模糊降级是诊断：它们绝不可以重新变成行设置，不管它们在追模糊时多有用。
   assert.ok(!/棋盘格自检|模糊降级/.test(panelText), '行里不留调试开关')
   // 诊断文本也不进设置行：版本号、模糊挂载明细、展开右栏的布局读数都只留在引擎与报告里。
