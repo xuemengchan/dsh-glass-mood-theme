@@ -99,7 +99,7 @@ window.__ModuleLoader__.load({
 		 * 诊断报告里记的构建号。一份报告要能说清自己来自哪一版；另有一项测试把它
 		 * 与 package.json 锁在一起。
 		 */
-		var BUILD = "1.55.0";
+		var BUILD = "1.55.1";
 		/** 停在用户交互上的一轮仍然是工作（这一轮还没结束）。 */
 		var COUNT_PENDING_AS_WORK = true;
 		/** 通透度拉满时还剩多少情绪染色（0 = 完全没有）。 */
@@ -735,6 +735,10 @@ window.__ModuleLoader__.load({
 		   有间隙时，每列是一张被沟槽内缩的自己的卡；没间隙时，面板全部方正，
 		   外框自己的圆角把它们裁成一张连续的玻璃。 */
 			"body[data-glass-panels] [data-glass-panel]{position:relative;z-index:0;margin:var(--gm-gap) calc(var(--gm-gap) / 2) 0;border-radius:var(--gm-radius);overflow:hidden;box-shadow:var(--gm-panel-shadow,none);transition:border-radius 220ms cubic-bezier(.4,0,.2,1),background-color 220ms cubic-bezier(.4,0,.2,1),box-shadow 220ms cubic-bezier(.4,0,.2,1)}",
+		/* 别的插件的浮层（遮罩、对话框）住在列里面时，列自己的 z-index:0 会把它关在
+		   兄弟面板下面——实测症状是浮层"自己消失"：它跑到右栏底下去了，还被列的盒子裁掉。
+		   抬高这一列，浮层就回到它该在的层叠顺序上；只有当下住着浮层的那一列付这份账。 */
+			"body[data-glass-panels] [data-glass-panel][data-glass-floating]{z-index:1}",
 		/* 全屏的右栏是一层覆盖，不是一列，所以列必须停止画自己的卡——但它保留
 		   自己的沟槽，而这是承重墙。它内部那层贴着列的盒子定位 `top:0; right:0;
 		   bottom:0`，所以列自己的沟槽正是把展开的面板按在和其他每张卡同一个节奏
@@ -1879,7 +1883,7 @@ window.__ModuleLoader__.load({
 				}
 				var stray = [
 					"[data-glass-panel]", "[data-glass-surface]", "[data-glass-frost]",
-					"[data-glass-delegate]", "[data-glass-hollow]", "[data-glass-blur-host]", "[data-glass-selftest]", "[data-glass-frame]", "[data-glass-checker]"
+					"[data-glass-delegate]", "[data-glass-hollow]", "[data-glass-blur-host]", "[data-glass-selftest]", "[data-glass-frame]", "[data-glass-checker]", "[data-glass-floating]"
 				];
 				for (var i = 0; i < stray.length; i++) {
 					var nodes = doc.querySelectorAll(stray[i]);
@@ -1964,6 +1968,21 @@ window.__ModuleLoader__.load({
 		 * 挪到一个没用的地方，因为收起的列已经被 `columnUsable` 整个放过了。
 		 * @param key - 面板键。
 		 */
+		/**
+		 * 把"这一列里住着别人的浮层"记在列上，CSS 据此抬高它的层叠顺序。
+		 * @param key - 面板键。
+		 * @param on - 探测是否找到了一个盖住面板或带对话框身份的浮动层。
+		 */
+		function markFloatingLayer(key, on) {
+			var column = panelNodes[key];
+			if (column === null || column === undefined || typeof column.setAttribute !== "function") return;
+			if (on === true) {
+				if (!attrOn(column, "data-glass-floating")) column.setAttribute("data-glass-floating", "");
+				return;
+			}
+			column.removeAttribute("data-glass-floating");
+		}
+
 		function aimBlur(key) {
 				var host = panelSurfaces[key] !== null && panelSurfaces[key] !== undefined ? panelSurfaces[key] : panelNodes[key];
 				if (host === null || host === undefined || typeof host.setAttribute !== "function") return;
@@ -1990,9 +2009,12 @@ window.__ModuleLoader__.load({
 				panelBlurNote[key] = ["已按要求降级"];
 				return;
 			}
-		// 这个扫描是每个后代一次 getComputedStyle，所以只在磨砂真的开着时跑：
-		// 模糊关着时没有什么能被重新锚定。
-			var fixed = doc.body.dataset.glassBlur === "off" ? [] : fixedDescendants(host);
+		// 这个扫描是每个后代一次 getComputedStyle。磨砂关着时没有东西能被重新锚定，那份
+		// 注记就此收起；浮层探测照跑——列自己的 z-index:0 跟磨砂开不开无关，它照样会把
+		// 浮层关在兄弟面板下面。
+			var layers = fixedLayers(panelNodes[key], host);
+			var fixed = doc.body.dataset.glassBlur === "off" ? [] : layers.labels;
+			markFloatingLayer(key, layers.blocking);
 		// 材质元素上的 backdrop-filter 会把每个 fixed 后代重新锚到它身上。app 自己的
 		// 浮动控件就住在这些列里（侧边栏的折叠控件是一个），而重新锚定把它从顶栏挪
 		// 到了侧边栏 logo 上。定位胜过磨砂：这样的面板保住填充和镜边，不要模糊。
@@ -2647,6 +2669,8 @@ window.__ModuleLoader__.load({
 				var removed = record.removedNodes;
 				if (removed !== null && removed !== undefined) {
 					for (var q = 0; q < removed.length; q++) {
+						// 浮层被摘掉：磨砂和这一列的层叠顺序都要还回去。
+						if (inlineFloating(removed[q])) return true;
 						// 一个不属于本插件的节点离开列的直接子层：app 换了它的布局包装。
 						if (isPluginLayer(removed[q]) || !isPanelColumn(record.target)) continue;
 						return true;
@@ -2655,12 +2679,28 @@ window.__ModuleLoader__.load({
 				var added = record.addedNodes;
 				if (added !== null && added !== undefined) {
 					for (var n = 0; n < added.length; n++) {
+						// 浮层挂上来：不等下一趟深扫，这一批就要重新决定磨砂宿主。
+						if (inlineFloating(added[n])) return true;
 						if (isPluginLayer(added[n]) || !isPanelColumn(parentOf(added[n]))) continue;
 						return true;
 					}
 				}
 			}
 			return false;
+		}
+
+		/**
+		 * 这个节点自己是不是一个内联定位的浮层。别的插件的遮罩与对话框就是这样挂上来的：
+		 * 一次 childList 追加，节点带着 `style="position:fixed"`。读内联样式不解析样式表，
+		 * 所以每批的代价是一次字符串比较；靠 class 定位的浮层交给下一趟深扫。
+		 * @param node - 被加入或移走的节点。
+		 * @returns 它的内联样式是否声明了 fixed 定位。
+		 */
+		function inlineFloating(node) {
+			if (node === null || node === undefined) return false;
+			var style = node.style;
+			if (style === null || style === undefined) return false;
+			return typeof style.getPropertyValue === "function" && style.getPropertyValue("position") === "fixed";
 		}
 
 		/**
@@ -4230,21 +4270,73 @@ window.__ModuleLoader__.load({
 	 * @param node - 子树根。
 	 * @returns 至多两个 `tag.class` 标签；答不了时为 ["(unknown)"]。
 	 */
-			function fixedDescendants(node) {
-				var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle : null;
-				if (read === null || node === null || node === undefined || typeof node.querySelectorAll !== "function") return ["(unknown)"];
-				var all = null;
-				try { all = node.querySelectorAll("*"); } catch (error) { all = null; }
-				if (all === null || all === undefined) return ["(unknown)"];
-				var found = [];
-				var limit = all.length < 400 ? all.length : 400;
-				for (var i = 0; i < limit && found.length < 2; i++) {
-					var style = null;
-					try { style = read.call(win, all[i]); } catch (error) { style = null; }
-					if (style === null || style === undefined || String(style.position ?? "") !== "fixed") continue;
-					found.push((typeof all[i].tagName === "string" ? all[i].tagName.toLowerCase() : "?") + "." + String(all[i].getAttribute === undefined ? "" : (all[i].getAttribute("class") ?? "")));
+			/**
+			 * 这个 fixed 后代是不是一个"浮层"：带对话框身份的，或者盖住大半个面板的。
+			 * 一个小浮动按钮只需要磨砂让位（它没被压到兄弟面板下面），浮层两样都要。
+			 * @param node - 那个 fixed 后代。
+			 * @param own - 列自己的盒子，用来判断它是否跨满面板。
+			 * @returns 它是浮层时为 true。
+			 */
+			function isFloatingLayer(node, own) {
+				if (node === null || node === undefined) return false;
+				if (typeof node.getAttribute === "function") {
+					var role = node.getAttribute("role");
+					if (role === "dialog" || role === "alertdialog") return true;
+					if (node.getAttribute("aria-modal") === "true") return true;
 				}
-				return found;
+				if (own === null || own === undefined || typeof node.getBoundingClientRect !== "function") return false;
+				var box = node.getBoundingClientRect();
+				return box.width >= own.width * SURFACE_MIN_COVERAGE && box.height >= own.height * SURFACE_MIN_COVERAGE;
+			}
+
+			/**
+			 * 列出这个面板的列里所有 fixed 定位的后代，并分开两种伤害：住在材质元素内部的那些
+			 * 会被元素上的 backdrop-filter 重新锚定（磨砂必须让位），而整列里任何一个是浮层的
+			 * 都会被列自己的 z-index:0 关到兄弟面板下面（那一列要抬高）。
+			 * @param column - 面板列。
+			 * @param host - 当前承载材质的元素。
+			 * @returns {labels, blocking}：注记用的名字，和要不要抬高这一列。
+			 */
+			function fixedLayers(column, host) {
+				var out = { labels: [], blocking: false };
+				var read = win !== undefined && win !== null && typeof win.getComputedStyle === "function" ? win.getComputedStyle : null;
+				if (read === null || column === null || column === undefined || typeof column.querySelectorAll !== "function") return out;
+				var all = null;
+				try { all = column.querySelectorAll("*"); } catch (error) { all = null; }
+				if (all === null || all === undefined) return out;
+				var own = typeof column.getBoundingClientRect === "function" ? column.getBoundingClientRect() : null;
+				var limit = all.length < 400 ? all.length : 400;
+				for (var i = 0; i < limit; i++) {
+					var node = all[i];
+					if (node === null || node === undefined) continue;
+					var style = null;
+					try { style = read.call(win, node); } catch (error) { style = null; }
+					if (style === null || style === undefined || String(style.position ?? "") !== "fixed") continue;
+					if (out.labels.length < 2 && isInsideSurface(host, node)) {
+						out.labels.push((typeof node.tagName === "string" ? node.tagName.toLowerCase() : "?") + "." + String(node.getAttribute === undefined ? "" : (node.getAttribute("class") ?? "")));
+					}
+					if (out.blocking === false) out.blocking = isFloatingLayer(node, own);
+					if (out.labels.length >= 2 && out.blocking === true) break;
+				}
+				return out;
+			}
+
+			/**
+			 * 这个节点是不是祖先本身或它的后代。假 DOM 没有 contains，所以走 parent 链。
+			 * @param ancestor - 可能的祖先（缺失时按"是"处理，保持原来的整列扫描语义）。
+			 * @param node - 被检查的节点。
+			 * @returns 它是否落在那条子树里。
+			 */
+			function isInsideSurface(ancestor, node) {
+				if (ancestor === null || ancestor === undefined) return true;
+				var walk = node;
+				var guard = 0;
+				while (walk !== null && walk !== undefined && guard < 64) {
+					guard += 1;
+					if (walk === ancestor) return true;
+					walk = walk.parentElement !== undefined ? walk.parentElement : walk.parent;
+				}
+				return false;
 			}
 
 		/**
@@ -5038,6 +5130,8 @@ window.__ModuleLoader__.load({
 					for (var fl = 0; fl < fills.length; fl++) fills[fl].remove();
 					panelFills = { left: null, main: null, right: null };
 					for (var df = 0; df < tagged.length; df++) tagged[df].removeAttribute("data-glass-delegate");
+					var floaters = doc.querySelectorAll("[data-glass-floating]");
+					for (var fz = 0; fz < floaters.length; fz++) floaters[fz].removeAttribute("data-glass-floating");
 					var hollowed = doc.querySelectorAll("[data-glass-hollow]");
 					for (var hl = 0; hl < hollowed.length; hl++) hollowed[hl].removeAttribute("data-glass-hollow");
 					var blurHosts = doc.querySelectorAll("[data-glass-blur-host]");

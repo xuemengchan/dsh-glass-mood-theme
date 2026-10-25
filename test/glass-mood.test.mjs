@@ -74,10 +74,16 @@ function createDocument(fixture = {}) {
       return child
     },
     get firstChild() { return this.children[0] ?? null },
-    querySelector(selector) { return this.children.find((child) => matches(child, selector)) ?? null },
+    /* querySelector(All) 走的是整棵子树，和浏览器一样——只返回直接子节点会让"列里住着
+       一个 fixed 浮层"这类探测在测试里永远为假，而它在真实页面上天天发生。 */
+    querySelector(selector) {
+      const found = descendants(this).find((el) => (selector === '*' ? true : matches(el, selector)))
+      return found ?? null
+    },
     querySelectorAll(selector) {
       if (this.removed) return []
-      return selector === '*' ? [...this.children] : this.children.filter((child) => matches(child, selector))
+      const all = descendants(this)
+      return selector === '*' ? all : all.filter((el) => matches(el, selector))
     },
     remove() {
       this.removed = true
@@ -130,6 +136,18 @@ function createDocument(fixture = {}) {
     return el.tagName === part
   }
   const query = (selector) => all.find((el) => !el.removed && selector.split(',').some((one) => matches(el, one))) ?? null
+  /** 整棵子树，文档顺序，跳过已移除的节点——浏览器返回的就是这些。 */
+  const descendants = (node) => {
+    const out = []
+    const stack = [node]
+    while (stack.length > 0) {
+      const current = stack.pop()
+      if (current !== node && current.removed !== true) out.push(current)
+      const children = current.children ?? []
+      for (let i = children.length - 1; i >= 0; i--) stack.push(children[i])
+    }
+    return out
+  }
   const listeners = {}
   const document = {
     head,
@@ -1939,7 +1957,9 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
   assert.equal(layer.getAttribute('data-glass-surface'), 'right', 'app 自己的全屏层接走材质')
   assert.equal(layer.getAttribute('data-glass-fullscreen'), '', '且被标为全屏宿主')
   assert.ok(layer.querySelector('[data-glass-lens]'), '边缘透镜跟着材质搬到全屏层')
-  assert.equal(m.shell.right.querySelectorAll('[data-glass-lens]').length, 0, '列上不留旧透镜')
+  // 注意是"列自己不带透镜"：`querySelectorAll` 现在和浏览器一样走整棵子树，所以全屏层
+  // 里那一个是算不到的——上面一行刚断言过它存在。
+  assert.equal(m.shell.right.children.filter((kid) => kid.attributes['data-glass-lens'] !== undefined).length, 0, '列自己身上不留旧透镜')
   assert.equal(m.shell.right.getAttribute('data-glass-delegate'), 'on', '所以列退到一边，不在旧几何上画')
   assert.equal(m.engine.blurReport().right.delegated, true, '行报出授权')
   assert.equal(m.engine.blurReport().right.blurHost, 'element', '模糊在跨满模式的那一层上')
@@ -2216,6 +2236,13 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
     '侧边栏表面画但不圆——它自己的角会被裁成一截残段'
   )
   assert.match(css, /\[data-glass-panel\]\{position:relative;z-index:0;/, '自己画画的列同样')
+  // 这条 z-index:0 就是那个层叠上下文：别的插件的 fixed 浮层住在列里面，它的 901 只
+  // 在这个上下文里算数，于是整个浮层被兄弟面板压住——报上来的"面板自己消失"。
+  assert.match(
+    css,
+    /\[data-glass-panel\]\[data-glass-floating\]\{z-index:1\}/,
+    '而住着浮层的那一列有一条抬高的规则'
+  )
   // 两种排布都声明：元素承载的那个（实测是这个浏览器认的那个）和伪元素降级——它留给
   // 住着 fixed 后代的面板——一个带 backdrop-filter 的元素会成为那个后代的包含块，这正是
   // 曾经藏掉侧边栏重开控件的东西。
@@ -2280,6 +2307,41 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
   guard.engine.retag(true)
   assert.equal(guard.engine.blurReport().left.blurHost, 'element', '没有浮动控件的面板保住磨砂')
   assert.ok(!/含 fixed 子元素/.test(guard.engine.blurSummary().join(' ')), '控件一走，注记就清')
+  /* 上面测的是磨砂让位。还有第二件事：列自己的 z-index:0 是一个层叠上下文，别的插件
+     挂在列里面的 fixed 浮层被关在那下面——真实浏览器实测，浮层整个跑到右栏底下，看
+     起来就是"面板自己消失"。所以盖住面板、或者带对话框身份的浮层，要把这一列抬高；
+     一个小浮动按钮没有这个问题，不该顺手改掉面板的层叠。 */
+  const fab = guard.document.createElement('div')
+  fab.setAttribute('class', 'ScrollToBottom_fab')
+  fab.computed = { position: 'fixed' }
+  fab.box = { width: 44, height: 44, left: 40, top: 700 }
+  guard.shell.leftSurface.appendChild(fab)
+  guard.engine.retag(true)
+  assert.ok(noAttr(guard.shell.left, 'data-glass-floating'), '一个小浮动按钮不值得抬高整列')
+  fab.remove()
+
+  const scrim = guard.document.createElement('div')
+  scrim.setAttribute('class', 'Group_backdrop')
+  scrim.computed = { position: 'fixed' }
+  scrim.box = { width: guard.shell.left.box.width, height: guard.shell.left.box.height, left: 0, top: 0 }
+  guard.shell.leftSurface.appendChild(scrim)
+  guard.engine.retag(true)
+  assert.equal(guard.shell.left.getAttribute('data-glass-floating'), '', '盖住整块面板的遮罩抬高这一列')
+  assert.ok(noAttr(guard.shell.center, 'data-glass-floating'), '没有浮层的面板不抬高')
+  assert.ok(noAttr(guard.shell.right, 'data-glass-floating'), '一个面板付账，不是全部')
+  scrim.remove()
+
+  const dialog = guard.document.createElement('div')
+  dialog.setAttribute('class', 'Group_panel')
+  dialog.setAttribute('role', 'dialog')
+  dialog.computed = { position: 'fixed' }
+  dialog.box = { width: 400, height: 320, left: 800, top: 64 }
+  guard.shell.leftSurface.appendChild(dialog)
+  guard.engine.retag(true)
+  assert.equal(guard.shell.left.getAttribute('data-glass-floating'), '', '小对话框也抬高：它同样会被兄弟面板压住')
+  dialog.remove()
+  guard.engine.retag(true)
+  assert.ok(noAttr(guard.shell.left, 'data-glass-floating'), '浮层一走，抬标就还回去')
   guard.dispose()
   console.log('ok  磨砂宿主不形成背景根')
 }
@@ -2801,6 +2863,40 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
   assert.equal(m.engine.blurReport().main.delegated, true, '设置行报的还是授权，不是退回列上画')
   m.dispose()
   console.log('ok  切换会话时材质立刻跟上新内容根')
+}
+{
+  // 别的插件把遮罩挂到面板里面的那一刻，磨砂必须立刻让位——否则浮层先被重新锚到面板
+  // 上（真实症状：它出现在中间，过一会才跳回右上角）。这里唯一的推动者仍然是观察者：
+  // 现场由一次显式深扫建立，之后只往里塞一个内联 fixed 的节点。
+  const m = mount()
+  const root = conversationRoot(m)
+  m.shell.center.appendChild(root)
+  // 建立现场的那一批要先投递掉，否则它会和遮罩那一批混在一起，观察者响得名不副实。
+  m.flushMutations()
+  m.clock.advance(140)
+  m.engine.retag(true)
+  assert.equal(root.getAttribute('data-glass-blur-host'), 'element', '浮层没来之前磨砂骑在宿主上')
+
+  const scrim = m.document.createElement('div')
+  scrim.setAttribute('class', 'Group_backdrop')
+  scrim.style.setProperty('position', 'fixed')
+  scrim.computed = { position: 'fixed' }
+  scrim.box = { width: m.shell.center.box.width, height: m.shell.center.box.height, left: 0, top: 0 }
+  root.appendChild(scrim)
+  m.flushMutations()
+  m.clock.advance(140)
+  assert.ok(noAttr(root, 'data-glass-blur-host'), '挂上来的那一跳就把磨砂从宿主上摘掉')
+  assert.equal(m.engine.blurReport().main.blurHost, 'none', '并且报出为什么')
+  assert.equal(m.shell.center.getAttribute('data-glass-floating'), '', '同一跳也抬高这一列，浮层不被兄弟面板压住')
+
+  scrim.remove()
+  m.flushMutations()
+  m.clock.advance(140)
+  assert.equal(root.getAttribute('data-glass-blur-host'), 'element', '浮层摘走的那一跳磨砂回来')
+  assert.ok(noAttr(m.shell.center, 'data-glass-floating'), '抬标也还回去')
+  m.dispose()
+  assert.equal(m.document.querySelectorAll('[data-glass-floating]').length, 0, '卸载把抬标也收走')
+  console.log('ok  别的插件的浮层一跳之内被认出来')
 }
 
 {
