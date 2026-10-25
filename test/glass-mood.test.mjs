@@ -1668,14 +1668,14 @@ const rgbOf = (color) => /rgba\((\d+), (\d+), (\d+)/.exec(color).slice(1).map(Nu
 
 //#region version
 {
-  // 这一行打印构建，好让"修复没生效"永远不会和"新构建根本没加载"混为一谈——那每次都要
-  // 花掉一整轮往返。这使这个常量成为承重墙，所以它被锁到包上。
+  // 构建常量仍与包版本锁在一起：它进了诊断报告，一份报告得能说清自己来自哪一版。
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   const m = mount()
-  assert.equal(m.engine.build(), pkg.version, `打印出来的构建（${m.engine.build()}）与 package.json 一致`)
+  assert.equal(m.engine.build(), pkg.version, `上报的构建（${m.engine.build()}）与 package.json 一致`)
   assert.match(m.engine.build(), /^\d+\.\d+\.\d+$/, '且它是一个普通版本号')
+  assert.equal(m.engine.domReport().build, pkg.version, '诊断报告带着同一个构建号')
   m.dispose()
-  console.log('ok  这一行打印真正加载的构建')
+  console.log('ok  构建号与包版本一致')
 }
 //#endregion
 
@@ -2418,9 +2418,8 @@ function findNodes(node, predicate, found = []) {
   assert.equal(toggles[2].props.checked, true, '按压形变也一样')
   // 自检和模糊降级是诊断：它们绝不可以重新变成行设置，不管它们在追模糊时多有用。
   assert.ok(!/棋盘格自检|模糊降级/.test(panelText), '行里不留调试开关')
-  // 这个实例从没找到面板，所以诊断行有话要说——而那正是它被允许出现的时候。一个识别
-  // 齐全的挂载保持安静，这一点由无障碍/表面那几个块覆盖。
-  assert.match(panelText, /模糊挂载：左侧栏：未识别/, '有面板缺失时诊断开口')
+  // 诊断文本也不进设置行：版本号、模糊挂载明细、展开右栏的布局读数都只留在引擎与报告里。
+  assert.ok(!/版本 v|模糊挂载|已展开右栏/.test(panelText), '行里不留调试文本')
   assert.match(panelText, /左侧边栏/, '左列被标注')
   assert.match(panelText, /主打|主界面/, '中间列被标注')
   assert.match(panelText, /均已识别|未识别到面板/, '行报出找到了哪些列')

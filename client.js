@@ -93,11 +93,10 @@ window.__ModuleLoader__.load({
 		/** 一次性表面交叉淡变的窗口开多久（最慢的淡变 + 余量）。 */
 		var FADE_WINDOW_MS = 1100;
 		/**
-		 * 设置行打印的构建号。它存在的意义，是让"修复没生效"永远不会和"新构建
-		 * 根本没加载"混为一谈：屏幕上是谁，在 UI 里就看得见；另有一项测试把它
+		 * 诊断报告里记的构建号。一份报告要能说清自己来自哪一版；另有一项测试把它
 		 * 与 package.json 锁在一起。
 		 */
-		var BUILD = "1.53.2";
+		var BUILD = "1.53.3";
 		/** 停在用户交互上的一轮仍然是工作（这一轮还没结束）。 */
 		var COUNT_PENDING_AS_WORK = true;
 		/** 通透度拉满时还剩多少情绪染色（0 = 完全没有）。 */
@@ -4082,7 +4081,7 @@ window.__ModuleLoader__.load({
 			} catch (error) { /* 存储不可用：这个开关就是不持久化而已 */ }
 			return reportsEnabled();
 		},
-			/** 设置行打印的构建号。 */
+			/** 诊断报告与测试用的构建号。 */
 			build: function () { return BUILD; },
 			/**
 			 * 布局此刻量出来什么，为展开的右栏。材质必须落在一个跨满这个模式的元素上，
@@ -4409,28 +4408,11 @@ window.__ModuleLoader__.load({
 				var hint = missing.length === 0
 					? "透明度越低面板越薄、磨砂薄雾越明显；高光控制镜边与投影；分隔线只在「面板间隙 = 0」时可见"
 					: "未识别到面板：" + missing.map(function (key) { return FOUND_LABELS[key]; }).join(" / ") + "（若界面结构变化，可在插件页反馈）";
-			// 按需诊断：平时沉默，只在一个面板没被识别、或一次磨砂被迫绕着一个浮动控件
-			// 摆放时才开口。
-			var diagnosis = engine.blurSummary().filter(function (line) {
-				return /未识别|fixed|降级/.test(line);
-			});
-			// 右栏展开期间，布局正是被质疑的东西，所以这一行说明它量到了什么：列、持有
-			// 材质的元素，以及两者的宽度。
-				var layout = engine.layoutReport();
-				if (layout.expanded === true) diagnosis = diagnosis.concat(layout.lines);
 
 				return h("div", { className: "gm-row" },
 					h("div", null,
 						h("div", { className: "gm-row-title" }, "玻璃主题 · 面板与光感"),
-						h("div", { className: "gm-row-hint" }, hint),
-					// 屏幕上是哪个构建，好让一个"没生效"的修复永远不会和一个从未加载的
-					// 构建混为一谈。
-					h("div", { className: "gm-row-hint" }, "版本 v" + engine.build()),
-					// 模糊可能以一种任何计算值都揭示不了的方式失败，所以这一行过去会把每个
-					// 面板的材质和模糊最终落在哪里打印出来。那是诊断，不是设置：它如今只在
-					// 有话说的时候出现——一个它没能识别的面板，或一个磨砂被迫绕开浮动控件的
-					// 面板。
-						diagnosis.length > 0 ? h("div", { className: "gm-row-hint" }, "模糊挂载：" + diagnosis.join("；")) : null
+						h("div", { className: "gm-row-hint" }, hint)
 					),
 					panelLine("left"),
 					panelLine("main"),
