@@ -107,7 +107,7 @@ window.__ModuleLoader__.load({
 		 * 诊断报告里记的构建号。一份报告要能说清自己来自哪一版；另有一项测试把它
 		 * 与 package.json 锁在一起。
 		 */
-		var BUILD = "1.57.0";
+		var BUILD = "1.57.1";
 		/** 停在用户交互上的一轮仍然是工作（这一轮还没结束）。 */
 		var COUNT_PENDING_AS_WORK = true;
 		/** 通透度拉满时还剩多少情绪染色（0 = 完全没有）。 */
@@ -688,7 +688,7 @@ window.__ModuleLoader__.load({
 		   所以这里只管开关，不用排层。 */
 		"body[data-glass-mood=idle] #" + STAGE_ID + ">[data-glass-media]>video[data-glass-clip=idle],body[data-glass-mood=idle] #" + STAGE_ID + ">[data-glass-media]>video[data-glass-clip=both],body[data-glass-mood=idle] #" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still=idle],body[data-glass-mood=idle] #" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still=both]{opacity:1}",
 		"body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-media]>video[data-glass-clip=work],body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-media]>video[data-glass-clip=both],body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still=work],body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still=both]{opacity:1}",
-		/* 墙纸不再由盖板撑着了（静止帧永远垫在片子下面），但折射层还得退场：它只画
+		/* 墙纸不再靠冻结态撑着了（静止帧永远垫在片子下面），但折射层还得退场：它只画
 		   面板边缘那一圈带子，而它的画布会留着最后一次画的东西——墙纸不在了以后，那一
 		   圈就是屏幕上唯一还在作画的视频像素，读作「面板中间空白、四周一圈正常的边」。
 		   现在它下面垫着静止帧，那圈边只会变成一条接缝，所以是让它不画。 */
@@ -1148,11 +1148,6 @@ window.__ModuleLoader__.load({
 		 * @param column - 列元素。
 		 * @returns 表面元素；列自己就是表面时返回 null。
 		 */
-		function findSurface(win, column) {
-			var all = paintersIn(win, column);
-			return all.length === 0 ? null : all[all.length - 1];
-		}
-
 		/**
 		 * 属性是否挂在元素上。真实 DOM 在缺失时给 null，桩 DOM 给 undefined，所以两边
 		 * 都得认——`getAttribute(x) !== undefined` 在浏览器里恒为真，`=== undefined` 恒为假。
@@ -1672,8 +1667,8 @@ window.__ModuleLoader__.load({
 		/** 每槽是否已经留下过一帧。 */
 		var stillReady = { idle: false, work: false };
 		/** 静止帧此刻是否盖在舞台上。 */
-		var stillCovered = false;
-		/** 盖板的代次：上一次收/放之后才到的逐帧回调一律作废。 */
+		var stillFrozen = false;
+		/** 冻结态的代次：上一次冻/解之后才到的逐帧回调一律作废。 */
 		var stillGeneration = 0;
 		var stillTimer = 0;
 		/**
@@ -2561,39 +2556,31 @@ window.__ModuleLoader__.load({
 		}
 
 		function captureStills() {
-			var got = false;
-			for (var i = 0; i < SLOTS.length; i++) {
-				if (captureStill(SLOTS[i]) === true) got = true;
-			}
-			return got;
+			for (var i = 0; i < SLOTS.length; i++) captureStill(SLOTS[i]);
 		}
 
-		/**
-		 * 一条槽留下的帧不再是这张画了（换了片子、清了槽）：作废并让画布退场。
-		 * @param slot - 'idle' | 'work'。
-		 */
-		function invalidateStill(slot) {
-			stillReady[slot] = false;
-			var canvas = stillCanvases[slot];
-			if (canvas !== undefined && canvas !== null) canvas.setAttribute("data-glass-still", "none");
-			syncStillCover();
-		}
-
-		/** 盖板还站得住吗：一条能用的帧都没有就该收。 */
-		function syncStillCover() {
-			if (stillCovered !== true) return;
-			for (var i = 0; i < SLOTS.length; i++) {
-				if (stillReady[SLOTS[i]] === true) return;
-			}
-			lowerStillCover();
-		}
+	/**
+	 * 一条槽留下的帧不再是这张画了（换了片子、清了槽）：作废。
+	 *
+	 * 画布随即退回 `none`（不作画），于是那条槽只剩片子自己——而片子若此刻也画不出
+	 * 东西，那一块就是空的，这比拿一张别的画面的静止帧冒充墙纸好。
+	 * @param slot - 'idle' | 'work'。
+	 */
+	function invalidateStill(slot) {
+		stillReady[slot] = false;
+		var canvas = stillCanvases[slot];
+		if (canvas !== undefined && canvas !== null) canvas.setAttribute("data-glass-still", "none");
+		/* 一条能用的帧都没有了，冻结态就该解除（它管的是折射退不退场）。
+		   判一次就够了：`syncStill()` 会把其余情况一起收掉，不需要第二个入口。 */
+		syncStill();
+	}
 
 		/**
 		 * 把静止帧盖上舞台。一条能用的帧都没有就不盖：一块空画布只会更糟。
 		 * @returns 是否盖上了。
 		 */
-		function raiseStillCover() {
-			if (stillCovered === true) return true;
+		function freezeStill() {
+			if (stillFrozen === true) return true;
 			var ready = false;
 			for (var i = 0; i < SLOTS.length; i++) {
 				if (stillReady[SLOTS[i]] === true) {
@@ -2603,7 +2590,7 @@ window.__ModuleLoader__.load({
 			}
 			if (ready !== true) return false;
 			stillGeneration += 1;
-			stillCovered = true;
+			stillFrozen = true;
 			doc.body.dataset.glassStill = "on";
 			/* 折射层必须一起退场。它只画面板边缘那一圈带子，而 canvas 会留着最后一次
 			   画的东西——墙纸没了以后，屏幕上唯一还看得见画面的就是那一圈，读起来正是
@@ -2613,41 +2600,34 @@ window.__ModuleLoader__.load({
 		}
 
 		/** 收掉静止帧。交给 CSS 的过渡淡出，交接处不留一帧空白。 */
-		function lowerStillCover() {
+		function thawStill() {
 			stillGeneration += 1;
 			if (stillTimer !== 0) {
 				clearTimer(stillTimer);
 				stillTimer = 0;
 			}
-			if (stillCovered !== true) return;
-			stillCovered = false;
+			if (stillFrozen !== true) return;
+			stillFrozen = false;
 			doc.body.dataset.glassStill = "off";
 			if (disposed !== true) updateWebGLEnabled();
 		}
 
 		/**
-		 * 新的帧真的呈现出来了才收掉静止帧。
+		 * 画面真的回来了才解冻。
 		 *
-		 * `requestVideoFrameCallback` 只在一次呈现时回调，所以它答的正是"屏幕上已经有
-		 * 新帧了"——唯一不会早于画面的信号。没有它的浏览器退回看画面在不在走。
+		 * 只有**没有** `requestVideoFrameCallback` 的浏览器需要这一条：有它的时候，帧心跳
+		 * （`noteFrame`）本身就是这个信号，再挂一次逐帧回调只是重复。这里退回看播放位置
+		 * 在不在走——那是弱一档的证据，但总比永远不解冻好。
 		 */
 		function releaseStillWhenLive() {
-			if (stillCovered !== true) return;
+			if (stillFrozen !== true) return;
 			var video = videoFor(activeSlot());
 			if (video === null) {
-				lowerStillCover();
+				thawStill();
 				return;
 			}
+			if (typeof video.requestVideoFrameCallback === "function") return;
 			var generation = stillGeneration;
-			if (typeof video.requestVideoFrameCallback === "function") {
-				try {
-					video.requestVideoFrameCallback(function () {
-						// 一样要过合成器那一票：帧到了不等于帧上屏了。
-						if (generation === stillGeneration && painting() === true) lowerStillCover();
-					});
-					return;
-				} catch (error) { /* 退回计时器 */ }
-			}
 			var last = typeof video.currentTime === "number" ? video.currentTime : -1;
 			var tries = 0;
 			if (stillTimer !== 0) clearTimer(stillTimer);
@@ -2657,13 +2637,13 @@ window.__ModuleLoader__.load({
 				tries += 1;
 				var at = typeof video.currentTime === "number" ? video.currentTime : -1;
 				if (video.paused !== true && at > last) {
-					lowerStillCover();
+					thawStill();
 					return;
 				}
 				last = at;
-				// 一条彻底播不起来的片子不该让静止帧永久盖着：给它一秒钟。
+				// 一条彻底播不起来的片子不该让冻结态一直挂着：给它一秒钟。
 				if (tries >= 12) {
-					lowerStillCover();
+					thawStill();
 					return;
 				}
 				stillTimer = setTimer(tick, 60);
@@ -2713,7 +2693,7 @@ window.__ModuleLoader__.load({
 		 * 把"上一次有帧"这件事忘掉。
 		 *
 		 * 失去帧之后，旧的时间戳仍然新鲜，而它证明的只是**交出帧之前**屏幕上有画面。
-		 * 不清掉它，回来的那一刻会被误判成"画面还在走"，盖板立刻收掉——正好是上一版
+		 * 不清掉它，回来的那一刻会被误判成"画面还在走"，冻结态立刻解除——正好是上一版
 		 * 修不掉的那一次闪。无 `requestVideoFrameCallback` 的浏览器退回看播放位置，所以
 		 * 基准也要跟着重设，否则"位置本来就是 0"会被读成"位置动了"。
 		 */
@@ -2724,14 +2704,14 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 有一帧真的上屏了：记下时刻，并在盖板还站着的时候把它收掉。
+		 * 有一帧真的上屏了：记下时刻，并在还冻着的时候解除冻结。
 		 *
 		 * 收之前也要过合成器那一票：片子交了新帧，可窗口没在画，那一帧并没有到屏幕上，
-		 * 这时候收掉盖板就是把空白还给用户。
+		 * 这时候解除冻结，就是把还没有画面的那一帧交给用户。
 		 */
 		function noteFrame() {
 			lastFrameAt = now();
-			if (stillCovered === true && isAway() !== true && painting() === true) lowerStillCover();
+			if (stillFrozen === true && isAway() !== true && painting() === true) thawStill();
 		}
 
 		/**
@@ -2827,7 +2807,7 @@ window.__ModuleLoader__.load({
 				frameAge: lastFrameAt === -Infinity ? null : Math.round(now() - lastFrameAt),
 				paintAge: lastPaintAt === -Infinity ? null : Math.round(now() - lastPaintAt),
 				ready: { idle: stillReady.idle === true, work: stillReady.work === true },
-				covered: stillCovered,
+				frozen: stillFrozen,
 				wallpaper: hasWallpaperConfig(wallpaper)
 			};
 			/* 尺寸与槽标记只在"有情况"的那几趟里带：它俩是最大化那个假设的对表项。 */
@@ -2844,38 +2824,45 @@ window.__ModuleLoader__.load({
 			return video.getAttribute("data-glass-clip");
 		}
 
-		/** @returns 静止帧该不该盖在舞台上。 */
+		/** @returns 手上有没有一条还能用的静止帧。 */
+		function anyStillReady() {
+			for (var i = 0; i < SLOTS.length; i++) {
+				if (stillReady[SLOTS[i]] === true) return true;
+			}
+			return false;
+		}
+
+		/** @returns 该不该进入冻结态（折射退场）。 */
 		function stillWanted() {
 			if (hasWallpaperConfig(wallpaper) !== true) return false;
-			var ready = false;
-			for (var i = 0; i < SLOTS.length; i++) {
-				if (stillReady[SLOTS[i]] === true) {
-					ready = true;
-					break;
-				}
-			}
-			if (ready !== true) return false;
+			if (anyStillReady() !== true) return false;
 			/* 两件事都会让墙纸消失，而它们不是同一件事：文档说自己被隐藏了，以及
 			   画面其实已经不走了（窗口被遮挡时只有后一件发生）。 */
 			if (isAway() === true) return true;
 			return framesFlowing() !== true;
 		}
 
-		/** 让盖板跟着"有没有活帧"走：该盖就盖，画面回来了就收。 */
+		/** 让冻结态跟着"墙纸还在不在屏幕上"走。 */
 		function syncStill() {
 			if (disposed) return;
 			armPaintWatch();
 			if (stillWanted() === true) {
-				var raised = raiseStillCover();
-				recordStill("sync", "raise:" + (raised === true ? "on" : "no-still"));
+				freezeStill();
+				recordStill("sync", "freeze");
 				return;
 			}
-			if (stillCovered === true && framesFlowing() === true) {
-				lowerStillCover();
-				recordStill("sync", "lower");
+			if (stillFrozen !== true) {
+				recordStill("sync", "stay-thawed");
 				return;
 			}
-			recordStill("sync", stillCovered === true ? "hold" : "stay-down");
+			/* 还想继续冻着，得有东西可等。手上一条能用的帧都没有（换了片子、清了槽），
+			   就没什么可等的了——否则冻结态会一直挂着，而它管的折射也就永远不回来。 */
+			if (anyStillReady() !== true || framesFlowing() === true) {
+				thawStill();
+				recordStill("sync", "thaw");
+				return;
+			}
+			recordStill("sync", "hold");
 		}
 
 		/**
@@ -3100,7 +3087,7 @@ window.__ModuleLoader__.load({
 				counts: { play: playbackCounts.play, reload: playbackCounts.reload },
 				/** 静止帧此刻撑着舞台没有：后台往返里它就是墙纸。 */
 				still: {
-					covered: stillCovered,
+					frozen: stillFrozen,
 					ready: { idle: stillReady.idle === true, work: stillReady.work === true },
 					/* 这两个是"墙纸为什么没了"的取证口：可见性会撒谎（窗口被遮挡时它一动
 					   不动），而"上一次有帧呈现距今多久"不会。 */
@@ -3620,7 +3607,7 @@ window.__ModuleLoader__.load({
 				var active = hasWallpaperConfig(wallpaper);
 				doc.body.dataset.glassWallpaper = active ? "on" : "off";
 				// 壁纸关了就没有墙纸可盖；换了片子则旧帧作废，下一次后台再留。
-				if (active !== true) lowerStillCover();
+				if (active !== true) thawStill();
 				doc.body.style.setProperty("--gm-wall-fit", wallpaper.fit);
 				doc.body.style.setProperty("--gm-wall-opacity", String(wallpaper.opacity));
 				doc.body.style.setProperty("--gm-wall-blur", wallpaper.blur + "px");
@@ -3664,7 +3651,7 @@ window.__ModuleLoader__.load({
 			announceWallpaper();
 			schedulePace();
 			sampleMedia(true);
-			/* 片子可能刚换过：心跳要重新登记，盖板也要按新片子重新判一次。 */
+			/* 片子可能刚换过：心跳要重新登记，冻结态也要按新片子重新判一次。 */
 			armFrameWatch();
 			syncStill();
 		}
@@ -5419,7 +5406,7 @@ window.__ModuleLoader__.load({
 			/* 静止帧盖着的时候折射必须停着：它只画边缘那一圈带子，而它的画布会留着
 			   最后一次画的东西——墙纸不在了以后，那一圈就是屏幕上唯一还在作画的视频
 			   像素，看起来像"面板中间空白、四周一圈正常的边"。 */
-			if (on && stillCovered !== true) startWebGLLoop();
+			if (on && stillFrozen !== true) startWebGLLoop();
 			else stopWebGLLoop(true);
 		}
 
@@ -5760,7 +5747,11 @@ window.__ModuleLoader__.load({
 					stillTimer = 0;
 				}
 				stopStillWatch();
-				lowerStillCover();
+				thawStill();
+				/* 那张 4×4 的试纸和记账本都跟着这一轮走：留着它们，下一次挂载就会拿着
+				   一个已经脱离文档的画布去"验像素"，而验出来的结论没有任何人能对。 */
+				probeCanvas = null;
+				stillLog = [];
 				stopPolling();
 				for (var u = 0; u < unsubscribes.length; u++) {
 					try { unsubscribes[u](); } catch (error) { /* 一个死掉的数据源已经释放了 */ }
