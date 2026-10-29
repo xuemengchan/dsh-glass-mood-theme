@@ -44,6 +44,11 @@ function createDocument(fixture = {}) {
     /** 媒体表面：刚够引擎的静音自动播放路径。 */
     played: 0,
     paused: true,
+    /** 一条能上屏的片子：静止帧只在这三样都成立时才留。 */
+    readyState: 4,
+    networkState: 1,
+    videoWidth: 1920,
+    videoHeight: 1080,
     /** 片子走到哪儿。测试自己推进它，好区分"在播"和"播着但画面冻住"。 */
     currentTime: 0,
     play() {
@@ -160,9 +165,18 @@ function createDocument(fixture = {}) {
         el.width = 0
         el.height = 0
         el.getContext = () => ({
+          clearRect() {},
           // 取样到哪个元素是契约的一部分：每个槽都必须读进它自己的读数，否则一次
           // 心情切换会穿上另一条片子的颜色。`perSlot` 让一个测试给两条片子不同的帧。
           drawImage(video) {
+            // 舞台上的静止帧画布也走这条 2D 路。它的绘制单独记，采样计数才不会被
+            // 一次"切到后台"搅乱。
+            if (el.attributes['data-glass-slot'] !== undefined) {
+              fixture.canvas.stillDraws = (fixture.canvas.stillDraws ?? 0) + 1
+              return
+            }
+            // 留帧之前那张 4×4 的试纸：它不是一次媒体取样，不该进取样计数。
+            if (el.attributes['data-glass-probe'] !== undefined) return
             fixture.canvas.drawCalls += 1
             fixture.canvas.drawnSlots.push(video.getAttribute('data-glass-slot'))
             fixture.canvas.lastSlot = video.getAttribute('data-glass-slot')
@@ -273,6 +287,20 @@ function loadBundle(document, storage, requireImpl) {
     clearTimeout: (handle) => globalThis.clearTimeout(handle),
     setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
     clearInterval: (handle) => globalThis.clearInterval(handle),
+    /**
+     * 一个由测试手动派发的合成器。rAF 在窗口被遮挡时停止派发，而"这个窗口还在不在画"
+     * 正是墙纸存不存在的一半答案——所以替身必须能被停掉，否则这一半永远测不到。
+     */
+    __frames: [],
+    requestAnimationFrame(cb) { this.__frames.push(cb); return this.__frames.length },
+    cancelAnimationFrame() { this.__frames = [] },
+    /** 派发几帧。`times` 次，每次把当时排着的回调全跑一遍（回调里会再排）。 */
+    __flushFrames(times = 1) {
+      for (let i = 0; i < times; i++) {
+        const queue = this.__frames.splice(0)
+        for (const cb of queue) cb()
+      }
+    },
     getComputedStyle: (el) => {
       styleReads += 1
       return {
@@ -779,7 +807,10 @@ const SHIPPED_TOKENS = [
 /** 让引擎的 IndexedDB 微任务和恢复 promise 落定。 */
 const settle = async () => { for (let i = 0; i < 6; i++) await new Promise((resolve) => setImmediate(resolve)) }
 const stageEl = (m) => m.document.getElementById('dsh-glass-mood-bg')
-const videoEl = (m, slot) => stageEl(m).children.find((c) => c.tagName === 'video' && c.getAttribute('data-glass-slot') === slot) ?? null
+/** 墙纸栈：半透明挂在这一层，片子与静止帧都在它里面。 */
+const mediaEl = (m) => stageEl(m).children.find((c) => c.getAttribute('data-glass-media') !== null) ?? null
+const videoEl = (m, slot) => mediaEl(m).children.find((c) => c.tagName === 'video' && c.getAttribute('data-glass-slot') === slot) ?? null
+const stillEl = (m, slot) => mediaEl(m).children.find((c) => c.tagName === 'canvas' && c.getAttribute('data-glass-slot') === slot) ?? null
 /**
  * 属性确实不在元素上。写成 `getAttribute(x) === undefined` 在替身上会一直成立，而真实
  * DOM 给的是 null——这类断言只会绿在测试里，不会绿在用户屏幕上。
@@ -803,7 +834,8 @@ const alphaOf = (color) => {
 
 {
   const m = mount()
-  assert.equal(stageEl(m).children.filter((c) => c.tagName === 'video').length, 2, '每心情槽一个片子元素')
+  assert.equal(mediaEl(m).children.filter((c) => c.tagName === 'video').length, 2, '每心情槽一个片子元素')
+  assert.equal(mediaEl(m).children.filter((c) => c.tagName === 'canvas').length, 2, '每条片子下面垫一张静止帧')
   assert.equal(clipOf(m, 'idle'), 'none', '什么都没配时空闲片子不活跃')
   assert.equal(clipOf(m, 'work'), 'none', '什么都没配时工作片子不活跃')
   assert.equal(m.document.body.dataset.glassWallpaper, 'off', '挂载时没配壁纸')
@@ -1084,6 +1116,13 @@ function flatFrame(canvas, r, g, b) {
   canvas.pixels = framePixels(r, g, b)
   return canvas
 }
+/** 一帧什么都画不出来的画面：片子已经交不出像素了。 */
+function clearFrame(canvas) {
+  const pixels = []
+  for (let i = 0; i < 24 * 14; i++) pixels.push(0, 0, 0, 0)
+  canvas.pixels = pixels
+  return canvas
+}
 const newCanvas = () => ({ pixels: [], throws: false, drawCalls: 0, drawnSlots: [], lastSlot: null })
 /** 一帧单色的扁平画面，取样器看到的样子。 */
 const framePixels = (r, g, b) => {
@@ -1312,6 +1351,90 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
 }
 
 {
+  // 窗口切到后台时浏览器会交还视频层，舞台不能跟着变空：那一刻只剩渐变和面板填充，
+  // 整窗一块浅色——用户报的"切回来先闪一下"和"关于挡在后面时一直是白的"都是它。
+  // 失去可见性时把当前画面留在画布上，切回来之后等新的帧真的呈现才收。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/calm.mp4', slot: 'idle' })
+  m.clock.advance(120)
+  const idle = videoEl(m, 'idle')
+  const still = stillEl(m, 'idle')
+  assert.ok(still !== null, '舞台里有一条片子的静止帧画布')
+  assert.equal(still.getAttribute('data-glass-still'), 'none', '还没留帧时不参与作画')
+  assert.equal(m.document.body.dataset.glassStill, undefined, '看得见的时候不盖')
+  const draws = canvas.stillDraws ?? 0
+  m.document.hidden = true
+  m.document.emit('visibilitychange')
+  assert.equal(canvas.stillDraws, draws + 1, '隐藏的那一刻把画面留下')
+  assert.equal(still.getAttribute('data-glass-still'), 'both', '画布认领它服务的槽：一条片子覆盖两个心情')
+  assert.equal(m.document.body.dataset.glassStill, 'on', '并盖在舞台上')
+  assert.equal(idle.paused, true, '解码器照旧释放')
+  // 回来：静止帧先撑着，画面真的在走之后才收。
+  m.document.hidden = false
+  m.document.emit('visibilitychange')
+  assert.equal(m.document.body.dataset.glassStill, 'on', '回来后的第一帧仍由静止帧撑着')
+  idle.currentTime = 1.4
+  m.clock.advance(120)
+  assert.equal(m.document.body.dataset.glassStill, 'off', '新帧到位才收，交接不留空档')
+  m.dispose()
+  console.log('ok  后台往返由静止帧撑住舞台')
+}
+
+{
+  // 一帧都没留成（这里没有可画的 2D 画布）时不盖：一块空画布比没有更糟。
+  const m = mount()
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/plain.mp4', slot: 'idle' })
+  m.clock.advance(120)
+  m.document.hidden = true
+  m.document.emit('visibilitychange')
+  assert.equal(m.document.body.dataset.glassStill, undefined, '没有帧就不盖')
+  m.dispose()
+  console.log('ok  留不下帧时不盖一块空画布')
+}
+
+{
+  // 焦点先于可见性丢：「关于」是一扇盖满主窗的模态子窗，它一出现主窗就 blur，而
+  // 视频层可能在那之后、visibilitychange 之前就被交还。失焦先留帧，但不盖——窗口
+  // 也许还看得见，会动的墙纸更好。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/blur.mp4', slot: 'idle' })
+  m.clock.advance(120)
+  const draws = canvas.stillDraws ?? 0
+  m.window.emit('blur')
+  assert.equal(canvas.stillDraws, draws + 1, '失焦时先留下一帧')
+  assert.equal(m.document.body.dataset.glassStill, undefined, '但不在看得见的窗口上盖')
+  m.document.hidden = true
+  m.document.emit('visibilitychange')
+  assert.equal(m.document.body.dataset.glassStill, 'on', '真的看不见了才盖')
+  m.dispose()
+  assert.equal((m.window.listeners.blur ?? []).length, 0, '卸载收掉 blur 监听')
+  console.log('ok  失焦先留帧，真正不可见才盖')
+}
+
+{
+  // 换了片子，上一次留下的帧就不是这张画了：作废，盖板跟着收——宁可见到素舞台，
+  // 也不要一张别的画面的静止帧冒充墙纸。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/one.mp4', slot: 'idle' })
+  m.clock.advance(120)
+  m.document.hidden = true
+  m.document.emit('visibilitychange')
+  assert.equal(m.engine.playback().still.ready.idle, true, '留下了一帧')
+  m.document.hidden = false
+  m.document.emit('visibilitychange')
+  m.clock.advance(200)
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/two.mp4', slot: 'idle' })
+  assert.equal(m.engine.playback().still.ready.idle, false, '换了片子，旧帧作废')
+  assert.equal(m.document.body.dataset.glassStill, 'off', '也不再拿它盖舞台')
+  assert.equal(stillEl(m, 'idle').getAttribute('data-glass-still'), 'none', '画布退回不参与作画')
+  m.dispose()
+  console.log('ok  换片让旧静止帧作废')
+}
+
+{
   // 遮挡检测会骗人（驱动、虚拟桌面、锁屏之后常见）。一个拿到键盘焦点的窗口不可能
   // 没在被看，所以 `hidden` 单独不足以停掉解码器——否则窗口明明在屏幕上，壁纸却是死的。
   const m = mount()
@@ -1337,6 +1460,137 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
   assert.equal(videoEl(m, 'idle').paused, false, '回来了才重新播上')
   m.dispose()
   console.log('ok  焦点优先于会骗人的遮挡状态')
+}
+
+{
+  // 真正的后台是**被盖住**，不是被隐藏：窗口躲在别的应用后面、「关于」这类模态子窗
+  // 压在上面时，Electron 不把遮挡算进 `document.hidden`——可见性一动不动，合成器却按
+  // 遮挡把视频层收了回去。于是"文档说自己看得见"和"屏幕上已经没有墙纸"同时成立。
+  // 上一版把静止帧挂在 `document.hidden` 上，一次都没竖起来；面板中间因此变成空白，
+  // 只剩折射层那一圈边缘带还在画（它的画布留着最后一次画的东西）。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/occluded.mp4', slot: 'idle' })
+  m.document.hidden = false
+  m.clock.advance(120)
+  m.window.emit('blur')
+  assert.equal(canvas.stillDraws, 1, '失焦的那一刻趁帧还在留下一张')
+  assert.equal(m.document.body.dataset.glassStill, undefined, '刚失焦时画面还在走，不该盖')
+  assert.equal(m.document.hidden, false, '可见性从头到尾没变过 —— 这正是遮挡的样子')
+  // 画面不再有帧：时钟走过一帧的宽限，播放位置却一动不动。
+  m.clock.advance(1000)
+  assert.equal(m.document.body.dataset.glassStill, 'on', '画面停了就由静止帧顶上，可见性说了不算')
+  m.dispose()
+  console.log('ok  被遮挡而可见性不变时，静止帧照样顶上')
+}
+
+{
+  // 反过来：失焦但窗口还并排摆着，画面一直在走 —— 把会动的墙纸换成一张静止的是退步。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/side-by-side.mp4', slot: 'idle' })
+  m.clock.advance(120)
+  const idle = videoEl(m, 'idle')
+  m.window.emit('blur')
+  m.clock.advance(400)
+  idle.currentTime = 3.2
+  m.clock.advance(400)
+  assert.equal(m.document.body.dataset.glassStill, undefined, '画面还在走就不盖')
+  m.dispose()
+  console.log('ok  失焦但画面还在走时不盖')
+}
+
+{
+  // 帧心跳说了算，播放位置说了不算。解码在走不等于画面在上屏——窗口被遮挡时两者正好
+  // 分开，所以有 `requestVideoFrameCallback` 时它必须是唯一的证据。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/heartbeat.mp4', slot: 'idle' })
+  const idle = videoEl(m, 'idle')
+  const pending = []
+  idle.requestVideoFrameCallback = (cb) => { pending.push(cb); return pending.length }
+  m.document.hidden = true
+  m.document.emit('visibilitychange')
+  assert.equal(m.document.body.dataset.glassStill, 'on', '隐藏时盖住')
+  m.document.hidden = false
+  m.document.emit('visibilitychange')
+  assert.ok(pending.length > 0, '回到可见就把心跳挂上')
+  idle.currentTime = 9.5
+  m.clock.advance(400)
+  assert.equal(m.document.body.dataset.glassStill, 'on', '播放位置动了不算有帧')
+  pending.pop()()
+  assert.equal(m.document.body.dataset.glassStill, 'off', '新帧真的呈现了才收，交接不留空档')
+  m.dispose()
+  console.log('ok  帧心跳说了算，播放位置说了不算')
+}
+
+{
+  // 手上的静止帧必须一直新鲜：等到失去帧那一刻再去抓，抓到的常常是一片空白——那正是
+  // 上一版修不掉的原因。趁画面还在就换。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/banked.mp4', slot: 'idle' })
+  const idle = videoEl(m, 'idle')
+  m.clock.advance(1600)
+  idle.currentTime = 2
+  m.clock.advance(1600)
+  idle.currentTime = 4
+  m.clock.advance(1600)
+  assert.ok(canvas.stillDraws >= 2, '看得见的时候定期换一张：' + canvas.stillDraws)
+  m.dispose()
+  console.log('ok  静止帧趁画面还在定期更新')
+}
+
+{
+  // 合成器把视频层交还之后再去抓帧，抓到的是一片空白。旧代码会把那片空白画进画布，
+  // 还把它标成"有静止帧"——于是盖板竖起来盖住的是一块空白，比不盖更糟（这正是"最
+  // 大化 + 关于""切到后台"仍然异常的形状：盖板竖起来了，可盖的是空白）。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/ink.mp4', slot: 'idle' })
+  m.clock.advance(1600)
+  assert.equal(canvas.stillDraws, 1, '趁有像素先留下一张好的')
+  assert.equal(m.engine.playback().still.ready.idle, true, '手上有一张')
+  const good = canvas.stillDraws
+  clearFrame(canvas)
+  m.clock.advance(1600)
+  assert.equal(canvas.stillDraws, good, '空白那一趟连画都没画，旧帧没有被抹掉')
+  assert.equal(m.engine.playback().still.ready.idle, true, '旧帧继续作数')
+  m.dispose()
+  console.log('ok  抓到空白时不动手上的旧帧')
+}
+
+{
+  // "还有帧在呈现"这条判据自己就是本案的被告。换帧不能挂在它上面：它一撒谎（该说
+  // "没了"却说"还在"，或反过来），手上的帧就一直旧下去，真需要它的时候已经不是墙纸。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/liar.mp4', slot: 'idle' })
+  videoEl(m, 'idle').requestVideoFrameCallback = () => 0
+  m.clock.advance(1600)
+  assert.equal(m.engine.playback().still.frames, false, '判据说画面不在走')
+  assert.equal(canvas.stillDraws, 1, '换帧照旧：它只问这条片子还有没有像素')
+  m.dispose()
+  console.log('ok  换帧不挂在"帧还在不在"这条判据上')
+}
+
+{
+  // 合成器这一票。视频交了新帧，可窗口根本没在画（被遮挡时两条会分开），屏幕上照样
+  // 没有墙纸——所以"帧心跳新鲜"不足以把盖板按住。
+  const canvas = flatFrame(newCanvas(), 250, 140, 40)
+  const m = mount({ canvas })
+  m.engine.setWallpaper({ url: 'https://cdn.example.com/compositor.mp4', slot: 'idle' })
+  // 片子按自己的节奏一直交帧（自驱，时钟推进时它照样响）；合成器只有被手动派发才动。
+  videoEl(m, 'idle').requestVideoFrameCallback = (cb) => m.clock.setTimeout(cb, 200)
+  m.clock.advance(1600)
+  m.window.__flushFrames(3)
+  assert.equal(m.document.body.dataset.glassStill, undefined, '两条心跳都在响：不盖')
+  // 时钟往前走：片子还在交帧，合成器不再被驱动 —— 遮挡就是这个样子。
+  m.clock.advance(1500)
+  assert.equal(m.engine.playback().still.frames, false, '片子还在交帧，但屏幕没在画')
+  assert.equal(m.document.body.dataset.glassStill, 'on', '窗口不在画了就盖：屏幕上有没有墙纸，合成器也有一票')
+  m.dispose()
+  console.log('ok  合成器停了，哪怕片子还在交帧也要盖')
 }
 
 {
@@ -1641,12 +1895,53 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
     !/\[data-glass-fill\]\{[^}]*mask/.test(css),
     '填充层不带边缘遮罩：那一圈白边就是这么来的'
   )
-  assert.match(css, /#dsh-glass-mood-canvas\{[^}]*z-index:1/, '舞台 canvas 在视频之上、渐变层之下')
-  assert.match(css, /#dsh-glass-mood-bg>video\[data-glass-clip\]\{[^}]*z-index:0/, '视频在 canvas 之下')
+  assert.match(css, /#dsh-glass-mood-canvas\{[^}]*z-index:1/, '舞台 canvas 在墙纸之上、渐变层之下')
+  assert.match(css, /#dsh-glass-mood-bg>\[data-glass-media\]\{[^}]*z-index:0/, '墙纸栈在 canvas 之下')
   assert.match(css, /#dsh-glass-mood-bg>\[data-glass-layer\]\{[^}]*z-index:2/, '渐变/压暗层在 canvas 之上')
   assert.equal(m.document.body.dataset.glassWeblens, 'off', '桩 DOM 没有 WebGL 时退回 CSS 透镜')
   const stage = m.document.getElementById('dsh-glass-mood-bg')
-  assert.equal(stage.querySelectorAll('canvas').length, 0, '也不会往舞台里塞一个死 canvas')
+  assert.equal(stage.querySelectorAll('canvas').length, 2, '舞台里只有两条片子的静止帧画布')
+  assert.equal(stage.children.filter((c) => c.id === 'dsh-glass-mood-canvas').length, 0, 'WebGL 不可用时不挂一块死 canvas')
+  // ⭐ 半透明挂在栈上、不在片子上：这是"片子画不出东西时下面那张自己露出来"的前提。
+  //   挂在片子上就只能是 0.6 叠 0.6 = 0.84，墙纸会凭空变实。
+  assert.match(
+    css,
+    /#dsh-glass-mood-bg>\[data-glass-media\]\{position:absolute;inset:0;opacity:var\(--gm-wall-opacity,0\.6\)/,
+    '半透明挂在墙纸栈上，片子自己保持不透明'
+  )
+  assert.match(
+    css,
+    /body\[data-glass-mood=idle\] #dsh-glass-mood-bg>\[data-glass-media\]>canvas\[data-glass-still=idle\]/,
+    '静止帧跟着心情一起开关，不再等"盖板竖起"'
+  )
+  // 栈里的每一层都必须是**全不透明**：半透明只在栈上叠一次。片子或静止帧自己带 0.6，
+  // 交还之后露出来的就是 0.6×0.6=0.36 —— 墙纸会凭空淡掉一截，而没人会往这里找。
+  assert.match(
+    css,
+    /body\[data-glass-mood=idle\][^{]*canvas\[data-glass-still=both\][^{]*\{opacity:1\}/,
+    '静止帧在栈里是全不透明的：半透明只在栈上叠一次'
+  )
+  assert.match(
+    css,
+    /body\[data-glass-mood=work\][^{]*video\[data-glass-clip=both\][^{]*\{opacity:1\}/,
+    '片子在栈里也是全不透明的：它画不出东西时才真的变成透明'
+  )
+  assert.match(
+    css,
+    /body\[data-glass-still=on\] #dsh-glass-mood-canvas\{visibility:hidden\}/,
+    '墙纸被交还时折射层退场：它只画边缘那一圈带子，那圈边只会变成一条接缝'
+  )
+  const media = mediaEl(m)
+  const stillIndex = media.children.findIndex((c) => c.tagName === 'canvas' && c.getAttribute('data-glass-slot') === 'idle')
+  const videoIndex = media.children.findIndex((c) => c.tagName === 'video' && c.getAttribute('data-glass-slot') === 'idle')
+  const layerIndex = stage.children.findIndex((c) => c.getAttribute('data-glass-layer') !== null)
+  assert.ok(stillIndex >= 0 && videoIndex >= 0, '墙纸栈里每条槽都有静止帧和片子')
+  assert.ok(stillIndex < videoIndex, '静止帧垫在片子**下面**（片子画不出东西时它自己露出来）')
+  assert.ok(
+    media.children.findIndex((c) => c.getAttribute('data-glass-media') !== null) === -1 &&
+      stage.children.findIndex((c) => c.getAttribute('data-glass-media') !== null) < layerIndex,
+    '而染色/压暗层仍盖在墙纸之上'
+  )
   assert.equal(m.document.querySelectorAll('[data-glass-fill]').length, 3, '三个材质宿主各有填充层')
   assert.ok(m.shell.leftSurface.querySelector('[data-glass-fill]'), '左栏的填充层跟着材质宿主')
   assert.ok(m.shell.center.querySelector('[data-glass-fill]'), '主面板也有')
@@ -2236,6 +2531,15 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
     '侧边栏表面画但不圆——它自己的角会被裁成一截残段'
   )
   assert.match(css, /\[data-glass-panel\]\{position:relative;z-index:0;/, '自己画画的列同样')
+  // app 会把某些内层表面的宽度写死成轨道宽（侧栏根就带着内联 width:269px）。主题用边距
+  // 把列缩进成更窄的玻璃卡片以后，那份宽度比卡片多出一截，内容整体右移——报上来的
+  // "新会话按钮没居中"。max-width 压过内联 width，让表面回到卡片的宽度；全屏那一层
+  // 故意跨出列，所以它必须豁免。
+  assert.match(
+    css,
+    /\[data-glass-surface\]:not\(\[data-glass-fullscreen\]\)\{max-width:100%\}/,
+    '被授权的表面不许比它代表的面板更宽'
+  )
   // 这条 z-index:0 就是那个层叠上下文：别的插件的 fixed 浮层住在列里面，它的 901 只
   // 在这个上下文里算数，于是整个浮层被兄弟面板压住——报上来的"面板自己消失"。
   assert.match(
@@ -2850,12 +3154,15 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
   assert.equal(root.getAttribute('data-glass-surface'), 'main', '中间面板的材质在内层内容根上')
   assert.ok(root.querySelector('[data-glass-fill]'), '填充层住在宿主里面')
 
+  // 先让节流窗口处于"刚跑过"的状态：这样"等窗口尾沿"的写法就真的会拖到 120ms 之后，
+  // 断言才分得出"同步补"和"排队补"。
+  m.window.observers.at(-1).emit()
   const next = conversationRoot(m)
   root.remove()
   m.shell.center.appendChild(next)
+  // 材质丢了这件事在观察者的那一刻就补：回调跑在微任务检查点上，浏览器还没画。
+  // 节流的 120ms 是七帧素面板，那是留给"看起来可疑"的信号的，不是留给这个的。
   m.flushMutations()
-  // 两批 DOM 改动落在同一个节流窗口里，所以那一趟在窗口尾沿发出——仍然远早于 2.5s 的深扫。
-  m.clock.advance(140)
   assert.equal(next.getAttribute('data-glass-surface'), 'main', '新会话的内容根一跳之内拿到材质，不等下一趟深扫')
   assert.ok(next.querySelector('[data-glass-fill]'), '填充层跟着回来')
   assert.equal(next.getAttribute('data-glass-blur-host'), 'element', '磨砂也搬到新的宿主上')
@@ -2897,6 +3204,28 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
   m.dispose()
   assert.equal(m.document.querySelectorAll('[data-glass-floating]').length, 0, '卸载把抬标也收走')
   console.log('ok  别的插件的浮层一跳之内被认出来')
+}
+{
+  // 被遮挡期间 app 重建了会话内容根。结构观察者看得见，但它叫醒的那一趟走的是计时器，
+  // 而隐藏窗口里的计时器会被节流——于是恢复后的第一帧画出来的是没有填充和磨砂的素面板，
+  // 也就是"从别的应用切回来，界面闪一下"。回来这一跳必须同步补上，赶在那一帧之前。
+  const m = mount()
+  const root = conversationRoot(m)
+  m.shell.center.appendChild(root)
+  m.flushMutations()
+  m.clock.advance(140)
+  m.engine.retag(true)
+  assert.equal(root.getAttribute('data-glass-surface'), 'main', '先有材质')
+
+  const rebuilt = conversationRoot(m)
+  root.remove()
+  m.shell.center.appendChild(rebuilt)
+  // 既不投递观察者的那批改动，也不推进时钟：被节流的正是这一趟。
+  m.window.emit('focus')
+  assert.equal(rebuilt.getAttribute('data-glass-surface'), 'main', '回到可见的那一跳就把材质补上，不等计时器')
+  assert.ok(rebuilt.querySelector('[data-glass-fill]'), '填充跟着回来')
+  m.dispose()
+  console.log('ok  回到可见的那一跳先补材质')
 }
 
 {

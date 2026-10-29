@@ -56,6 +56,14 @@ window.__ModuleLoader__.load({
 		var IDB_KEY_PREFIX = "wallpaper:";
 		var IDB_LEGACY_KEY = "wallpaper";
 		var SLOTS = ["idle", "work"];
+		/** 静止帧画布的宽度上限（设备像素）：够撑住一次后台往返，又不至于吃掉几十 MB。 */
+		var STILL_MAX_WIDTH = 1600;
+		/** 可见时多久换一张静止帧：手上的那一帧永远不该比这个更旧。 */
+		var STILL_BANK_MS = 2000;
+		/** 多久没有新帧呈现就算画面已经不走了（30fps 的一帧是 33ms，留一个数量级）。 */
+		var FRAME_STALE_MS = 500;
+		/** 失焦期间的看门狗间隔：遮挡不会自己发事件，得去问画面还在不在。 */
+		var STILL_WATCH_MS = 300;
 		/** 珍珠心情返回前的逗留空闲时间——藏住步骤之间的间隙。 */
 		var IDLE_ENTER_MS = 1600;
 		/** 微小去抖：一帧的闪烁不该切到工作态。 */
@@ -99,7 +107,7 @@ window.__ModuleLoader__.load({
 		 * 诊断报告里记的构建号。一份报告要能说清自己来自哪一版；另有一项测试把它
 		 * 与 package.json 锁在一起。
 		 */
-		var BUILD = "1.55.1";
+		var BUILD = "1.57.0";
 		/** 停在用户交互上的一轮仍然是工作（这一轮还没结束）。 */
 		var COUNT_PENDING_AS_WORK = true;
 		/** 通透度拉满时还剩多少情绪染色（0 = 完全没有）。 */
@@ -658,17 +666,33 @@ window.__ModuleLoader__.load({
 			"body[data-glass-wallpaper=on][data-glass-mood=work] #" + STAGE_ID + ">[data-glass-layer=pulse]{opacity:.35}",
 			"@keyframes gm-breathe{0%,100%{opacity:.45}50%{opacity:.95}}",
 			"@media (prefers-reduced-motion: reduce){body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-layer=pulse]{animation:none;opacity:.4}}",
-		/* ---- 片子：每心情槽一个元素，由心情属性交叉淡变 ----
-		   两者都保持播放，所以切换从不等解码器；没有自己片子的槽标为 `both`，
-		   服务当前激活的心情。 */
-			"#" + STAGE_ID + ">video[data-glass-clip]{position:absolute;inset:0;width:100%;height:100%;object-fit:var(--gm-wall-fit,cover);object-position:center;opacity:0;filter:blur(var(--gm-wall-blur,0px));transform:scale(var(--gm-wall-scale,1));transform-origin:center;pointer-events:none;z-index:0;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1)}",
-			/* 边缘透镜的主实现：一张全屏 canvas 骑在视频之上、渐变/压暗层之下。它只画
-			   面板边缘带，所以面板的填充、镜边、圆角与接缝完全不受影响。 */
-			"#" + STAGE_CANVAS_ID + "{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:block;z-index:1}",
-			/* WebGL 版在工作时，CSS 兜底透镜完全退场，避免两层折射叠加。 */
-			"body[data-glass-weblens=on] [data-glass-lens]{display:none}",
-			"body[data-glass-mood=idle] #" + STAGE_ID + ">video[data-glass-clip=idle],body[data-glass-mood=idle] #" + STAGE_ID + ">video[data-glass-clip=both]{opacity:var(--gm-wall-opacity,0.6)}",
-			"body[data-glass-mood=work] #" + STAGE_ID + ">video[data-glass-clip=work],body[data-glass-mood=work] #" + STAGE_ID + ">video[data-glass-clip=both]{opacity:var(--gm-wall-opacity,0.6)}",
+	/* ---- 墙纸：每心情槽"静止帧在下、片子在上"，装在同一个半透明栈里 ----
+	   两者都保持播放，所以切换从不等解码器；没有自己片子的槽标为 `both`，
+	   服务当前激活的心情。
+
+	   ⭐ 半透明（`--gm-wall-opacity`）挂在**栈**上，不在片子自己身上：这样片子可以
+	   保持完全不透明，而它下面那张静止帧随时准备好。窗口被完全遮住时 Chromium 会
+	   按原生遮挡把视频层交还合成器，片子从此画不出任何东西——一个不透明的元素画不出
+	   东西就是**透明**，于是下面那张静止帧自己就露出来了。不需要检测、不需要事件、
+	   不需要抢在那一帧之前动手：结构本身就是兜底。（曾经试着靠"检测帧丢了再盖上去"，
+	   而遮挡检测是异步的、约一秒后才发作，那种抢跑永远追不上。） */
+		"#" + STAGE_ID + ">[data-glass-media]{position:absolute;inset:0;opacity:var(--gm-wall-opacity,0.6);pointer-events:none;z-index:0}",
+		"#" + STAGE_ID + ">[data-glass-media]>video,#" + STAGE_ID + ">[data-glass-media]>canvas{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0;filter:blur(var(--gm-wall-blur,0px));transform:scale(var(--gm-wall-scale,1));transform-origin:center;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1)}",
+		"#" + STAGE_ID + ">[data-glass-media]>video{object-fit:var(--gm-wall-fit,cover);object-position:center}",
+		/* 边缘透镜的主实现：一张全屏 canvas 骑在墙纸之上、渐变/压暗层之下。它只画
+		   面板边缘带，所以面板的填充、镜边、圆角与接缝完全不受影响。 */
+		"#" + STAGE_CANVAS_ID + "{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:block;z-index:1}",
+		/* WebGL 版在工作时，CSS 兜底透镜完全退场，避免两层折射叠加。 */
+		"body[data-glass-weblens=on] [data-glass-lens]{display:none}",
+		/* 心情决定**谁**在画。DOM 顺序已保证"每条片子压着自己的静止帧、工作槽压着空闲槽"，
+		   所以这里只管开关，不用排层。 */
+		"body[data-glass-mood=idle] #" + STAGE_ID + ">[data-glass-media]>video[data-glass-clip=idle],body[data-glass-mood=idle] #" + STAGE_ID + ">[data-glass-media]>video[data-glass-clip=both],body[data-glass-mood=idle] #" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still=idle],body[data-glass-mood=idle] #" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still=both]{opacity:1}",
+		"body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-media]>video[data-glass-clip=work],body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-media]>video[data-glass-clip=both],body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still=work],body[data-glass-mood=work] #" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still=both]{opacity:1}",
+		/* 墙纸不再由盖板撑着了（静止帧永远垫在片子下面），但折射层还得退场：它只画
+		   面板边缘那一圈带子，而它的画布会留着最后一次画的东西——墙纸不在了以后，那一
+		   圈就是屏幕上唯一还在作画的视频像素，读作「面板中间空白、四周一圈正常的边」。
+		   现在它下面垫着静止帧，那圈边只会变成一条接缝，所以是让它不画。 */
+		"body[data-glass-still=on] #" + STAGE_CANVAS_ID + "{visibility:hidden}",
 			/* 情绪染色骑在片子之上，随通透度升高而淡出。 */
 			"body[data-glass-wallpaper=on] #" + STAGE_ID + ">[data-glass-layer=idle]," +
 				"body[data-glass-wallpaper=on] #" + STAGE_ID + ">[data-glass-layer=work]{filter:saturate(.4)}",
@@ -779,6 +803,11 @@ window.__ModuleLoader__.load({
 		   的那一层。 */
 			"body[data-glass-panels] [data-glass-hollow]{background-color:transparent;background-image:none}",
 			"body[data-glass-panels] [data-glass-surface]{position:relative;z-index:0;border-radius:var(--gm-radius);overflow:hidden}",
+			/* app 会把某些内层表面的宽度写死成轨道宽（侧栏根就是 width:269px），而主题用
+			   边距把列缩进成更窄的玻璃卡片。那份宽度于是比卡片多出一截，内容整体右移，
+			   读起来就是"侧栏里的按钮没居中"。max-width 压过内联 width，内容跟着卡片重新居中；
+			   全屏那一层故意跨出列，豁免。 */
+			"body[data-glass-panels] [data-glass-surface]:not([data-glass-fullscreen]){max-width:100%}",
 		/* 外形必须在表面上，不能只在列上。
 		   一个被授权的面板自己不画填充（`background-color:transparent`），所以列上
 		   的圆角画不出任何东西——没有颜料可圆。颜料在内层表面上，它自己的半径是 0，
@@ -1623,6 +1652,8 @@ window.__ModuleLoader__.load({
 		var visibilityWatched = false;
 		/** `visibilitychange` 之外的第二条唤醒路径，见 `watchVisibility`。 */
 		var focusWatched = false;
+		/** 失焦时先留一帧：焦点先于可见性丢，帧可能先于事件消失。 */
+		var blurWatched = false;
 		/** 盯外壳三列的尺寸，好让正在展开的侧边栏立刻被打上标签。 */
 			var resizeObserver = null;
 			/** app 换掉材质宿主时的结构变化观察者。 */
@@ -1636,6 +1667,45 @@ window.__ModuleLoader__.load({
 		var videos = {};
 		/** 本插件创建的对象 URL，每槽一个。 */
 		var clipUrls = {};
+		/** 每槽一块静止帧画布：窗口进入后台时留下的最后一帧。 */
+		var stillCanvases = {};
+		/** 每槽是否已经留下过一帧。 */
+		var stillReady = { idle: false, work: false };
+		/** 静止帧此刻是否盖在舞台上。 */
+		var stillCovered = false;
+		/** 盖板的代次：上一次收/放之后才到的逐帧回调一律作废。 */
+		var stillGeneration = 0;
+		var stillTimer = 0;
+		/**
+		 * 最近一次**真的有帧被呈现出来**的时刻。
+		 *
+		 * 这是整套墙纸里唯一诚实的信号。窗口被别的窗盖住时（切到别的应用、「关于」这
+		 * 类模态子窗），Electron 不把它算进 `document.hidden`——可见性一动不动，而合成器
+		 * 按遮挡把视频层收了回去。于是 `document.hidden` 还在说"看得见"，屏幕上却已经
+		 * 没有墙纸了。所以该问的不是"文档隐藏了吗"，而是"还有帧在呈现吗"。
+		 */
+		var lastFrameAt = -Infinity;
+		/** 帧心跳已经登记在哪些片子上（一条片子只登记一个待处理的回调）。 */
+		var frameWatchPending = { idle: false, work: false };
+		/** 无 `requestVideoFrameCallback` 的浏览器退回看画面在不在走：上一次读到的位置。 */
+		var frameTimeSeen = -1;
+		/** 上一次趁画面还在换静止帧的时刻。 */
+		var lastBankAt = -Infinity;
+		/**
+		 * 最近一次浏览器真的画了一帧的时刻（合成器心跳）。
+		 *
+		 * 帧心跳答的是"视频有没有交出新帧"，合成器心跳答的是"这个窗口还在不在画"。
+		 * 两个不是一回事：Chromium 可以只把视频层交还而窗口照旧合成，也可以反过来。
+		 * 窗口被盖住时两条都会停，所以两条都新鲜才算"墙纸真的在屏幕上"。
+		 */
+		var lastPaintAt = -Infinity;
+		var paintWatchRunning = false;
+		/** 4×4 的试纸：留帧之前先问一句这条片子还有没有像素。 */
+		var probeCanvas = null;
+		/** 静止帧决策的记账本。真机上"为什么没盖上"只能靠它说，所以留 60 条。 */
+		var stillLog = [];
+		/** 失焦期间的看门狗：遮挡不发事件，只能自己去问画面还在不在。 */
+		var stillWatchTimer = 0;
 		var wallpaper = normalizeVideo(null);
 		var wallpaperListeners = [];
 		/**
@@ -1923,6 +1993,7 @@ window.__ModuleLoader__.load({
 				delete doc.body.dataset.glassBlur;
 				delete doc.body.dataset.glassFading;
 				delete doc.body.dataset.glassWallpaper;
+				delete doc.body.dataset.glassStill;
 				delete doc.body.dataset.glassRefract;
 				delete doc.body.dataset.glassWeblens;
 				return removed;
@@ -2291,6 +2362,12 @@ window.__ModuleLoader__.load({
 			evaluate();
 			keepPlayback();
 			sampleMedia(false);
+			/* 墙纸的生死不由"文档隐藏了吗"决定，而由"还有帧在呈现吗"决定。窗口被别的
+			   窗盖住时可见性一动不动，画面却已经没了——所以每一趟都把这个问一遍，
+			   并趁画面还在换一张静止帧。 */
+			armFrameWatch();
+			syncStill();
+			bankStills();
 		}, POLL_MS);
 	}
 
@@ -2371,6 +2448,482 @@ window.__ModuleLoader__.load({
 		function pauseSlots() {
 			for (var i = 0; i < SLOTS.length; i++) parkSlot(SLOTS[i]);
 		}
+
+		/**
+		 * 把一条片子此刻的画面留在舞台上。
+		 *
+		 * 窗口进入后台时，浏览器会把视频层交还合成器——它要省解码器，代价是这条片子
+		 * 不再有帧可画。而墙纸只有这一层：帧一走，整窗就只剩舞台的渐变和面板的填充，
+		 * 也就是"从别的应用切回来先白一下"、"关于挡在前面时一直是白的"。那一刻的画面
+		 * 是唯一的副本，所以趁它还在，画进一块画布；画布骑在视频之上，等新的帧真的
+		 * 呈现出来再退场。
+		 *
+		 * @param slot - 'idle' | 'work'。
+		 * @returns 是否留下了一帧。
+		 */
+		function captureStill(slot) {
+			if (disposed) return false;
+			var video = videos[slot];
+			var canvas = stillCanvases[slot];
+			if (video === undefined || video === null || canvas === undefined || canvas === null) return false;
+			if (video.getAttribute("data-glass-clip") === "none") return false;
+			// 还没上帧（刚换了源、刚回到开头）时留下的是空白，那比没有更糟。
+			if (typeof video.readyState === "number" && video.readyState < 2) return false;
+			var vw = video.videoWidth;
+			var vh = video.videoHeight;
+			if (!(vw > 0) || !(vh > 0)) return false;
+			var boxW = 0;
+			var boxH = 0;
+			var stage = doc.getElementById(STAGE_ID);
+			if (stage !== null && stage !== undefined && typeof stage.getBoundingClientRect === "function") {
+				var box = stage.getBoundingClientRect();
+				if (box !== null && box !== undefined) {
+					boxW = box.width;
+					boxH = box.height;
+				}
+			}
+			if (!(boxW > 0) || !(boxH > 0)) {
+				boxW = typeof win.innerWidth === "number" ? win.innerWidth : 0;
+				boxH = typeof win.innerHeight === "number" ? win.innerHeight : 0;
+			}
+			if (!(boxW > 0) || !(boxH > 0)) return false;
+			// 高分屏按设备像素留帧：CSS 像素一比一在 2x 屏上会糊成一片。
+			var dpr = typeof win.devicePixelRatio === "number" && win.devicePixelRatio > 0 ? Math.min(2, win.devicePixelRatio) : 1;
+			var shrink = Math.min(1, STILL_MAX_WIDTH / (boxW * dpr));
+			var cw = Math.max(1, Math.round(boxW * dpr * shrink));
+			var ch = Math.max(1, Math.round(boxH * dpr * shrink));
+			if (canvas.width !== cw) canvas.width = cw;
+			if (canvas.height !== ch) canvas.height = ch;
+			var context = null;
+			try { context = canvas.getContext("2d"); } catch (error) { context = null; }
+			if (context === null || context === undefined || typeof context.drawImage !== "function") return false;
+			// 和视频的 object-fit:cover 一样：按短边撑满，多出来的裁掉。
+			var scale = Math.max(cw / vw, ch / vh);
+			var dw = vw * scale;
+			var dh = vh * scale;
+			/* 先在一张 4×4 的试纸上画一次：片子这一刻到底还有没有像素。
+			   直接往静止帧画布上画是危险的——如果这一刻已经没有帧，`clearRect` 会把
+			   上一次留下的那张好画面先抹掉，再画一片空白上去，于是"有静止帧"变成了
+			   "有一块空白"，比没有更糟。探针不通过就整块不动，手上的旧帧继续作数。 */
+			if (hasInk(context, video) !== true) {
+				recordStill("capture-blank", slot);
+				return false;
+			}
+			try {
+				context.clearRect(0, 0, cw, ch);
+				context.drawImage(video, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+			} catch (error) {
+				return false;
+			}
+			stillReady[slot] = true;
+			var serving = video.getAttribute("data-glass-clip");
+			canvas.setAttribute("data-glass-still", serving === "none" || serving === null ? "none" : serving);
+			return true;
+		}
+
+		/**
+		 * @returns 这条片子这一刻还能不能交出像素。
+		 *
+		 * `readyState` 说的是"解码器有没有数据"，不等于"这一刻还能不能画出东西"——
+		 * 合成器把视频层交还之后，前者可能仍然报 4。只有真的画一次才知道。
+		 * 读不回来（跨源片子把画布污染了）就当成有：那种情况下没有更好的判据。
+		 */
+		function hasInk(context, video) {
+			if (probeCanvas === null) {
+				if (typeof doc.createElement !== "function") return true;
+				var scratch = doc.createElement("canvas");
+				if (scratch === null || scratch === undefined) return true;
+				scratch.width = 4;
+				scratch.height = 4;
+				scratch.setAttribute("data-glass-probe", "");
+				probeCanvas = scratch;
+			}
+			var probe = null;
+			try {
+				probe = probeCanvas.getContext("2d");
+				probe.clearRect(0, 0, 4, 4);
+				probe.drawImage(video, 0, 0, 4, 4);
+			} catch (error) {
+				return true;
+			}
+			if (probe === null || probe === undefined) return true;
+			var data = null;
+			try {
+				data = probe.getImageData(0, 0, 4, 4).data;
+			} catch (error) {
+				return true;
+			}
+			if (data === null || data === undefined) return true;
+			for (var p = 3; p < data.length; p += 4) {
+				if (data[p] > 0) return true;
+			}
+			return false;
+		}
+
+		function captureStills() {
+			var got = false;
+			for (var i = 0; i < SLOTS.length; i++) {
+				if (captureStill(SLOTS[i]) === true) got = true;
+			}
+			return got;
+		}
+
+		/**
+		 * 一条槽留下的帧不再是这张画了（换了片子、清了槽）：作废并让画布退场。
+		 * @param slot - 'idle' | 'work'。
+		 */
+		function invalidateStill(slot) {
+			stillReady[slot] = false;
+			var canvas = stillCanvases[slot];
+			if (canvas !== undefined && canvas !== null) canvas.setAttribute("data-glass-still", "none");
+			syncStillCover();
+		}
+
+		/** 盖板还站得住吗：一条能用的帧都没有就该收。 */
+		function syncStillCover() {
+			if (stillCovered !== true) return;
+			for (var i = 0; i < SLOTS.length; i++) {
+				if (stillReady[SLOTS[i]] === true) return;
+			}
+			lowerStillCover();
+		}
+
+		/**
+		 * 把静止帧盖上舞台。一条能用的帧都没有就不盖：一块空画布只会更糟。
+		 * @returns 是否盖上了。
+		 */
+		function raiseStillCover() {
+			if (stillCovered === true) return true;
+			var ready = false;
+			for (var i = 0; i < SLOTS.length; i++) {
+				if (stillReady[SLOTS[i]] === true) {
+					ready = true;
+					break;
+				}
+			}
+			if (ready !== true) return false;
+			stillGeneration += 1;
+			stillCovered = true;
+			doc.body.dataset.glassStill = "on";
+			/* 折射层必须一起退场。它只画面板边缘那一圈带子，而 canvas 会留着最后一次
+			   画的东西——墙纸没了以后，屏幕上唯一还看得见画面的就是那一圈，读起来正是
+			   「面板中间空白，四周一圈正常的边」。它退场之后，边缘也归静止帧。 */
+			stopWebGLLoop(true);
+			return true;
+		}
+
+		/** 收掉静止帧。交给 CSS 的过渡淡出，交接处不留一帧空白。 */
+		function lowerStillCover() {
+			stillGeneration += 1;
+			if (stillTimer !== 0) {
+				clearTimer(stillTimer);
+				stillTimer = 0;
+			}
+			if (stillCovered !== true) return;
+			stillCovered = false;
+			doc.body.dataset.glassStill = "off";
+			if (disposed !== true) updateWebGLEnabled();
+		}
+
+		/**
+		 * 新的帧真的呈现出来了才收掉静止帧。
+		 *
+		 * `requestVideoFrameCallback` 只在一次呈现时回调，所以它答的正是"屏幕上已经有
+		 * 新帧了"——唯一不会早于画面的信号。没有它的浏览器退回看画面在不在走。
+		 */
+		function releaseStillWhenLive() {
+			if (stillCovered !== true) return;
+			var video = videoFor(activeSlot());
+			if (video === null) {
+				lowerStillCover();
+				return;
+			}
+			var generation = stillGeneration;
+			if (typeof video.requestVideoFrameCallback === "function") {
+				try {
+					video.requestVideoFrameCallback(function () {
+						// 一样要过合成器那一票：帧到了不等于帧上屏了。
+						if (generation === stillGeneration && painting() === true) lowerStillCover();
+					});
+					return;
+				} catch (error) { /* 退回计时器 */ }
+			}
+			var last = typeof video.currentTime === "number" ? video.currentTime : -1;
+			var tries = 0;
+			if (stillTimer !== 0) clearTimer(stillTimer);
+			stillTimer = setTimer(function tick() {
+				stillTimer = 0;
+				if (generation !== stillGeneration) return;
+				tries += 1;
+				var at = typeof video.currentTime === "number" ? video.currentTime : -1;
+				if (video.paused !== true && at > last) {
+					lowerStillCover();
+					return;
+				}
+				last = at;
+				// 一条彻底播不起来的片子不该让静止帧永久盖着：给它一秒钟。
+				if (tries >= 12) {
+					lowerStillCover();
+					return;
+				}
+				stillTimer = setTimer(tick, 60);
+			}, 80);
+		}
+
+		/** 失去焦点但还看得见：先留一帧，并开始盯画面还在不在。 */
+		function noteStillOnFocusLoss() {
+			if (disposed) return;
+			captureStills();
+			startStillWatch();
+		}
+
+		/**
+		 * 帧心跳：`requestVideoFrameCallback` 只在一次**呈现**时回调，所以它答的正是
+		 * "屏幕上还有画面"。一条片子只挂一个待处理的回调，回调到了再挂下一个。
+		 */
+		function armFrameWatch() {
+			if (disposed) return;
+			for (var i = 0; i < SLOTS.length; i++) {
+				armFrameWatchSlot(SLOTS[i]);
+			}
+		}
+
+		function armFrameWatchSlot(slot) {
+			var video = videos[slot];
+			if (video === undefined || video === null) return;
+			if (video.getAttribute("data-glass-clip") === "none") return;
+			/* 已经挂着一个待处理的回调就不重复挂——**除非**它挂了很久也没响。一条被交还
+			   解码器的片子会让那个回调永远等下去，心跳也就跟着死了；轮询每趟都会回到这里，
+			   所以给它一个宽限之后重挂一次，代价最多是多响一声。 */
+			if (frameWatchPending[slot] === true && now() - lastFrameAt <= FRAME_STALE_MS * 4) return;
+			if (typeof video.requestVideoFrameCallback !== "function") return;
+			frameWatchPending[slot] = true;
+			try {
+				video.requestVideoFrameCallback(function () {
+					frameWatchPending[slot] = false;
+					noteFrame();
+					armFrameWatchSlot(slot);
+				});
+			} catch (error) {
+				frameWatchPending[slot] = false;
+			}
+		}
+
+		/**
+		 * 把"上一次有帧"这件事忘掉。
+		 *
+		 * 失去帧之后，旧的时间戳仍然新鲜，而它证明的只是**交出帧之前**屏幕上有画面。
+		 * 不清掉它，回来的那一刻会被误判成"画面还在走"，盖板立刻收掉——正好是上一版
+		 * 修不掉的那一次闪。无 `requestVideoFrameCallback` 的浏览器退回看播放位置，所以
+		 * 基准也要跟着重设，否则"位置本来就是 0"会被读成"位置动了"。
+		 */
+		function forgetFrames() {
+			lastFrameAt = -Infinity;
+			var video = videoFor(activeSlot());
+			frameTimeSeen = video !== null && video !== undefined && typeof video.currentTime === "number" ? video.currentTime : -1;
+		}
+
+		/**
+		 * 有一帧真的上屏了：记下时刻，并在盖板还站着的时候把它收掉。
+		 *
+		 * 收之前也要过合成器那一票：片子交了新帧，可窗口没在画，那一帧并没有到屏幕上，
+		 * 这时候收掉盖板就是把空白还给用户。
+		 */
+		function noteFrame() {
+			lastFrameAt = now();
+			if (stillCovered === true && isAway() !== true && painting() === true) lowerStillCover();
+		}
+
+		/**
+		 * 合成器心跳：一条只做 `lastPaintAt = now()` 的 `requestAnimationFrame` 循环。
+		 *
+		 * 它存在的唯一理由是回答"这个窗口还在不在画"。rAF 在窗口被遮挡/隐藏时停止派发，
+		 * 而那正是墙纸消失的时刻；反过来，只要它还在响，屏幕就一定在更新。
+		 */
+		function armPaintWatch() {
+			if (disposed) return;
+			if (typeof win.requestAnimationFrame !== "function") return;
+			if (paintWatchRunning === true) return;
+			if (hasWallpaperConfig(wallpaper) !== true) return;
+			if (isAway() === true) return;
+			paintWatchRunning = true;
+			try {
+				win.requestAnimationFrame(function tick() {
+					paintWatchRunning = false;
+					if (disposed) return;
+					lastPaintAt = now();
+					armPaintWatch();
+				});
+			} catch (error) {
+				paintWatchRunning = false;
+			}
+		}
+
+		/** @returns 这个窗口还在不在画。量不到就当在画（宁可不动，不要误判成后台）。 */
+		function painting() {
+			if (typeof win.requestAnimationFrame !== "function") return true;
+			if (lastPaintAt === -Infinity) return true;
+			return now() - lastPaintAt <= FRAME_STALE_MS * 2;
+		}
+
+		/**
+		 * @returns 此刻屏幕上还有没有活的墙纸帧。
+		 *
+		 * 优先用帧心跳；没有 `requestVideoFrameCallback` 的浏览器退回看播放位置在不在走
+		 * ——那个信号弱一档（解码在走不等于画面在上屏），但总比什么都不问强。
+		 * 最后还要合成器这一票：视频交了新帧，可窗口根本没在画，屏幕上照样没有墙纸。
+		 */
+		function framesFlowing() {
+			var video = videoFor(activeSlot());
+			if (video === null || video === undefined) return false;
+			if (painting() !== true) return false;
+			if (typeof video.requestVideoFrameCallback === "function") return now() - lastFrameAt <= FRAME_STALE_MS;
+			if (video.paused === true) return false;
+			var at = typeof video.currentTime === "number" ? video.currentTime : -1;
+			if (at > frameTimeSeen + 0.01) {
+				frameTimeSeen = at;
+				lastFrameAt = now();
+				return true;
+			}
+			return now() - lastFrameAt <= FRAME_STALE_MS;
+		}
+
+		/** 舞台与窗口此刻的尺寸：最大化时它会变，而"只有最大化时不灵"正要靠它对表。 */
+		function viewSize() {
+			var out = { stage: null, win: null, dpr: null };
+			var stage = doc.getElementById(STAGE_ID);
+			if (stage !== null && stage !== undefined && typeof stage.getBoundingClientRect === "function") {
+				try {
+					var box = stage.getBoundingClientRect();
+					if (box !== null && box !== undefined) out.stage = Math.round(box.width) + "x" + Math.round(box.height);
+				} catch (error) { /* 量不到就算了 */ }
+			}
+			if (typeof win.innerWidth === "number") out.win = win.innerWidth + "x" + win.innerHeight;
+			if (typeof win.devicePixelRatio === "number") out.dpr = win.devicePixelRatio;
+			return out;
+		}
+
+		/**
+		 * 记一条静止帧的决策。
+		 *
+		 * 实验室里量不到真机的遮挡（Playwright 的页面永远报 visible），所以"为什么没
+		 * 盖上"这件事只能让主题自己记账，回来再读。`__dshGlassMood.stillLog()`。
+		 */
+		function recordStill(what, decision) {
+			/* 只记变化。轮询每 1.5s 一趟、看门狗每 300ms 一趟，全记下来 60 条只够 18 秒，
+			   而有用的从来只是"从哪一条变成哪一条"。 */
+			if (what === "sync") {
+				var tail = stillLog.length > 0 ? stillLog[stillLog.length - 1] : null;
+				if (tail !== null && tail.what === "sync" && tail.decision === decision) return;
+			}
+			if (stillLog.length >= 60) stillLog.shift();
+			var entry = {
+				t: Math.round(now()),
+				what: what,
+				decision: decision,
+				away: isAway(),
+				frames: framesFlowing(),
+				paint: painting(),
+				frameAge: lastFrameAt === -Infinity ? null : Math.round(now() - lastFrameAt),
+				paintAge: lastPaintAt === -Infinity ? null : Math.round(now() - lastPaintAt),
+				ready: { idle: stillReady.idle === true, work: stillReady.work === true },
+				covered: stillCovered,
+				wallpaper: hasWallpaperConfig(wallpaper)
+			};
+			/* 尺寸与槽标记只在"有情况"的那几趟里带：它俩是最大化那个假设的对表项。 */
+			if (what === "sync" || what === "capture-blank") {
+				entry.view = viewSize();
+				entry.clips = { idle: clipMark("idle"), work: clipMark("work") };
+			}
+			stillLog.push(entry);
+		}
+
+		function clipMark(slot) {
+			var video = videos[slot];
+			if (video === undefined || video === null) return null;
+			return video.getAttribute("data-glass-clip");
+		}
+
+		/** @returns 静止帧该不该盖在舞台上。 */
+		function stillWanted() {
+			if (hasWallpaperConfig(wallpaper) !== true) return false;
+			var ready = false;
+			for (var i = 0; i < SLOTS.length; i++) {
+				if (stillReady[SLOTS[i]] === true) {
+					ready = true;
+					break;
+				}
+			}
+			if (ready !== true) return false;
+			/* 两件事都会让墙纸消失，而它们不是同一件事：文档说自己被隐藏了，以及
+			   画面其实已经不走了（窗口被遮挡时只有后一件发生）。 */
+			if (isAway() === true) return true;
+			return framesFlowing() !== true;
+		}
+
+		/** 让盖板跟着"有没有活帧"走：该盖就盖，画面回来了就收。 */
+		function syncStill() {
+			if (disposed) return;
+			armPaintWatch();
+			if (stillWanted() === true) {
+				var raised = raiseStillCover();
+				recordStill("sync", "raise:" + (raised === true ? "on" : "no-still"));
+				return;
+			}
+			if (stillCovered === true && framesFlowing() === true) {
+				lowerStillCover();
+				recordStill("sync", "lower");
+				return;
+			}
+			recordStill("sync", stillCovered === true ? "hold" : "stay-down");
+		}
+
+		/**
+		 * 趁画面还在，定期换一张静止帧。
+		 *
+		 * 只在**有帧的时候**留：等到失去帧的那一刻再去抓，抓到的常常是一片空白——那正是
+		 * 上一版修不掉的原因。手上永远有一张不超过 `STILL_BANK_MS` 的旧帧，"什么时候
+		 * 被遮挡"就变成一个不需要预报的事件。
+		 */
+		function bankStills() {
+			if (disposed) return;
+			if (hasWallpaperConfig(wallpaper) !== true) return;
+			/* 这里刻意**不**问 `framesFlowing()`。那条判据自己就是本案的被告：一旦它在
+			   真机上撒谎（该说"没了"却说"还在"），换帧就跟着停，而手上那张旧帧会一直
+			   旧下去——等到真需要它的时候，它已经不是墙纸了。留帧的门槛只看"这条片子
+			   还有没有像素"（`hasInk` 会在 `captureStill` 里再判一次），不看别的。 */
+			if (now() - lastBankAt < STILL_BANK_MS) return;
+			lastBankAt = now();
+			captureStills();
+		}
+
+		/**
+		 * 失焦期间自己去看画面还在不在。
+		 *
+		 * 遮挡没有事件：窗口被盖住时 `visibilitychange` 可能永远不来，而时钟和轮询都还
+		 * 醒着，于是"墙纸没了"这件事没有人上报。这条看门狗只在一个没有焦点的窗口上跑，
+		 * 只读一个时间戳。
+		 */
+		function startStillWatch() {
+			if (disposed) return;
+			if (stillWatchTimer !== 0) return;
+			/* 一直跑到 `focus` 来收它。不能靠 `document.hasFocus()` 续命：一个合成事件
+			   的 blur（以及某些遮挡路径）里它仍然报真，看门狗会在第一跳就自尽，而那正是
+			   需要它盯着的那一整段时间。 */
+			stillWatchTimer = setTimer(function tick() {
+				stillWatchTimer = 0;
+				if (disposed) return;
+				syncStill();
+				stillWatchTimer = setTimer(tick, STILL_WATCH_MS);
+			}, STILL_WATCH_MS);
+		}
+
+		function stopStillWatch() {
+			if (stillWatchTimer === 0) return;
+			clearTimer(stillWatchTimer);
+			stillWatchTimer = 0;
+		}
+
 
 		/** 每条片子最后一次"画面确实在走"的读数，用来抓停在同一帧的那条。 */
 		var playbackWatch = { idle: null, work: null };
@@ -2545,6 +3098,16 @@ window.__ModuleLoader__.load({
 				pollAlive: poll !== 0,
 				retagAlive: retagTimer !== 0,
 				counts: { play: playbackCounts.play, reload: playbackCounts.reload },
+				/** 静止帧此刻撑着舞台没有：后台往返里它就是墙纸。 */
+				still: {
+					covered: stillCovered,
+					ready: { idle: stillReady.idle === true, work: stillReady.work === true },
+					/* 这两个是"墙纸为什么没了"的取证口：可见性会撒谎（窗口被遮挡时它一动
+					   不动），而"上一次有帧呈现距今多久"不会。 */
+					away: isAway(),
+					frames: framesFlowing(),
+					frameAgeMs: lastFrameAt === -Infinity ? null : Math.round(now() - lastFrameAt)
+				},
 				slots: {}
 			};
 			for (var i = 0; i < SLOTS.length; i++) {
@@ -2579,6 +3142,13 @@ window.__ModuleLoader__.load({
 		 */
 		function applyVisibility() {
 			if (isAway() === true) {
+				/* 顺序就是全部：先趁帧还在把它留下，再让解码器停。晚一步，留下的
+				   就是一块空白。
+				   盖不盖由 `syncStill()` 说了算——它会同时看"文档说被隐藏了"和"画面
+				   还走不走"，后者才是窗口被遮挡时唯一会动的那个。 */
+				captureStills();
+				forgetFrames();
+				syncStill();
 				stopPolling();
 				stopRetag();
 				pauseSlots();
@@ -2589,6 +3159,19 @@ window.__ModuleLoader__.load({
 			schedulePace();
 			evaluate();
 			sampleMedia(true);
+		/* 回到可见先补一趟材质，再让浏览器画这一帧。被遮挡的那段时间 app 可能重建过内层
+		   表面（换会话、刷新列表都算），结构观察者会看见，但它叫醒的那一趟走计时器——
+		   而隐藏窗口里的计时器会被节流。于是恢复后的第一帧画的是没有填充和磨砂的素面板，
+		   也就是"从别的应用切回来时界面闪一下"。这一步是同步的，赶在那一帧之前。 */
+			runResizePass();
+			/* 材质补好了，但墙纸的帧可能还没解出来。静止帧撑到新的帧真的呈现为止，
+			   而不是撑到"事件到了"为止。 */
+			stopStillWatch();
+			armFrameWatch();
+			armPaintWatch();
+			syncStill();
+			bankStills();
+			releaseStillWhenLive();
 		}
 
 		/**
@@ -2645,7 +3228,7 @@ window.__ModuleLoader__.load({
 		 * @param records - 一批 MutationObserver 记录。
 		 * @returns 是否需要立刻重打标签。
 		 */
-		function panelMaterialStale(records) {
+		function panelMaterialMissing() {
 			for (var i = 0; i < PANEL_KEYS.length; i++) {
 				var key = PANEL_KEYS[i];
 				var column = panelNodes[key];
@@ -2662,6 +3245,16 @@ window.__ModuleLoader__.load({
 				var lens = panelLenses[key];
 				if (lens !== null && lens !== undefined && parentOf(lens) !== host) return true;
 			}
+			return false;
+		}
+
+		/**
+		 * 这一批结构改动可疑到值得一趟重打标签吗。材质真的丢了的时候，
+		 * `panelMaterialMissing` 已经在同一批里同步接管，这里只剩"形状像"的信号。
+		 * @param records - 一批 MutationObserver 记录。
+		 * @returns 是否需要一趟节流的重打标签。
+		 */
+		function panelMaterialStale(records) {
 			if (records === null || records === undefined) return false;
 			for (var r = 0; r < records.length; r++) {
 				var record = records[r];
@@ -2715,6 +3308,13 @@ window.__ModuleLoader__.load({
 			if (target === null || target === undefined) return;
 			materialObserver = new win.MutationObserver(function (records) {
 				if (disposed) return;
+				/* 材质已经不在它该在的地方（宿主换了、填充掉了）：这一帧就在眼前，
+				   节流的 120ms 是七帧素面板，所以在这里同步补。观察者回调跑在微任务
+				   检查点上，浏览器还没画——补完再画，用户看不到中间那一帧。 */
+				if (panelMaterialMissing()) {
+					runResizePass();
+					return;
+				}
 				if (panelMaterialStale(records)) schedulePanelPass();
 			});
 			try {
@@ -2777,6 +3377,12 @@ window.__ModuleLoader__.load({
 					win.addEventListener("focus", applyVisibility, false);
 					focusWatched = true;
 				} catch (error) { /* a window without events still gets the theme */ }
+				/* 焦点先于可见性丢：「关于」是一扇盖满主窗的模态子窗，它一出现主窗就
+				   blur，而视频层可能在这之后、visibilitychange 之前就被交还。 */
+				try {
+					win.addEventListener("blur", noteStillOnFocusLoss, false);
+					blurWatched = true;
+				} catch (error) { /* a window without events still gets the theme */ }
 			}
 		}
 
@@ -2787,11 +3393,20 @@ window.__ModuleLoader__.load({
 				} catch (error) { /* already gone */ }
 				visibilityWatched = false;
 			}
-			if (focusWatched !== true || win === undefined || win === null || typeof win.removeEventListener !== "function") return;
-			try {
-				win.removeEventListener("focus", applyVisibility, false);
-			} catch (error) { /* already gone */ }
-			focusWatched = false;
+			if (win !== undefined && win !== null && typeof win.removeEventListener === "function") {
+				if (focusWatched === true) {
+					try {
+						win.removeEventListener("focus", applyVisibility, false);
+					} catch (error) { /* already gone */ }
+					focusWatched = false;
+				}
+				if (blurWatched === true) {
+					try {
+						win.removeEventListener("blur", noteStillOnFocusLoss, false);
+					} catch (error) { /* already gone */ }
+					blurWatched = false;
+				}
+			}
 		}
 
 		/** 订阅每个能报告活动的可观察源。 */
@@ -2985,10 +3600,27 @@ window.__ModuleLoader__.load({
 				return { checker: true, selfTest: true, forcedBlur: "40px" };
 			}
 
+			/**
+			 * 把静止帧和它服务的槽对齐。一条没有片子的槽没有墙纸可盖。
+			 * @param slot - 'idle' | 'work'。
+			 * @param value - 槽标记，或 "none"。
+			 */
+			function markStillSlot(slot, value) {
+				if (value === "none") {
+					invalidateStill(slot);
+					return;
+				}
+				var canvas = stillCanvases[slot];
+				if (canvas === undefined || canvas === null) return;
+				canvas.setAttribute("data-glass-still", stillReady[slot] === true ? value : "none");
+			}
+
 			function renderWallpaper() {
 				if (disposed) return;
 				var active = hasWallpaperConfig(wallpaper);
 				doc.body.dataset.glassWallpaper = active ? "on" : "off";
+				// 壁纸关了就没有墙纸可盖；换了片子则旧帧作废，下一次后台再留。
+				if (active !== true) lowerStillCover();
 				doc.body.style.setProperty("--gm-wall-fit", wallpaper.fit);
 				doc.body.style.setProperty("--gm-wall-opacity", String(wallpaper.opacity));
 				doc.body.style.setProperty("--gm-wall-blur", wallpaper.blur + "px");
@@ -3006,6 +3638,7 @@ window.__ModuleLoader__.load({
 					var clip = entry.clip;
 					if (clip === null) {
 						video.setAttribute("data-glass-clip", "none");
+						markStillSlot(slot, "none");
 						try { video.pause(); } catch (error) { /* 从未启动 */ }
 						video.removeAttribute("src");
 						if (typeof video.load === "function") {
@@ -3014,12 +3647,15 @@ window.__ModuleLoader__.load({
 						continue;
 					}
 					video.setAttribute("data-glass-clip", active ? entry.slot : "none");
+					markStillSlot(slot, active ? entry.slot : "none");
 					// 存下来的文件从这个槽的对象 URL 播放；链接直接播。
 					var next = clipSrcFor(slot, clip);
 					if (next === "") continue;
 					if (video.getAttribute("src") !== next) {
 						video.setAttribute("src", next);
 						video.src = next;
+						// 换了一张画：上一次留下的帧不再是这张片子。
+						invalidateStill(slot);
 					}
 				// 两条活着的片子保持播放：这才让切换成为交叉淡变，而不是解码器卡顿。
 					startPlayback(video);
@@ -3028,6 +3664,9 @@ window.__ModuleLoader__.load({
 			announceWallpaper();
 			schedulePace();
 			sampleMedia(true);
+			/* 片子可能刚换过：心跳要重新登记，盖板也要按新片子重新判一次。 */
+			armFrameWatch();
+			syncStill();
 		}
 
 			/**
@@ -4774,12 +5413,15 @@ window.__ModuleLoader__.load({
 			}
 
 			/** 开关到达 DOM：WebGL 在场时 CSS 兜底透镜退场，失败时它接管。 */
-			function updateWebGLEnabled() {
-				var on = webglWanted();
-				doc.body.dataset.glassWeblens = on ? "on" : "off";
-				if (on) startWebGLLoop();
-				else stopWebGLLoop(true);
-			}
+		function updateWebGLEnabled() {
+			var on = webglWanted();
+			doc.body.dataset.glassWeblens = on ? "on" : "off";
+			/* 静止帧盖着的时候折射必须停着：它只画边缘那一圈带子，而它的画布会留着
+			   最后一次画的东西——墙纸不在了以后，那一圈就是屏幕上唯一还在作画的视频
+			   像素，看起来像"面板中间空白、四周一圈正常的边"。 */
+			if (on && stillCovered !== true) startWebGLLoop();
+			else stopWebGLLoop(true);
+		}
 
 			function startWebGLLoop() {
 				if (webglRunning || webgl === null) return;
@@ -4841,9 +5483,12 @@ window.__ModuleLoader__.load({
 					seen.push(video);
 					if (video.readyState !== undefined && video.readyState < 2) continue;
 					if (!(video.videoWidth > 0) || !(video.videoHeight > 0)) continue;
-					var weight = 0;
-					try { weight = parseFloat(win.getComputedStyle(video).opacity); } catch (error) { weight = 0; }
-					if (!(weight > 0.005)) continue;
+				var weight = 0;
+				try { weight = parseFloat(win.getComputedStyle(video).opacity); } catch (error) { weight = 0; }
+				/* 半透明现在挂在墙纸栈上（`--gm-wall-opacity`），片子自己是不透明的，所以
+				   这里要把它乘回去——否则折射带会按全不透明去采样，比面板上的墙纸实。 */
+				weight = weight * (typeof wallpaper.opacity === "number" ? wallpaper.opacity : 1);
+				if (!(weight > 0.005)) continue;
 					items.push({ video: video, weight: weight });
 					total += weight;
 					var frame = video.currentTime;
@@ -4976,19 +5621,32 @@ window.__ModuleLoader__.load({
 				style.textContent = CSS;
 				doc.head.appendChild(style);
 
-				var stage = doc.createElement("div");
-				stage.id = STAGE_ID;
-				stage.setAttribute("aria-hidden", "true");
-				stage.setAttribute("data-plugin", PLUGIN_ID);
-				// 两条片子 upfront 挂载：一次心情切换是交叉淡变，从来不是加载。
-				for (var v = 0; v < SLOTS.length; v++) {
-					var video = doc.createElement("video");
-					video.setAttribute("data-glass-clip", "none");
-					video.setAttribute("data-glass-slot", SLOTS[v]);
-					video.setAttribute("aria-hidden", "true");
-					stage.appendChild(video);
-					videos[SLOTS[v]] = video;
-				}
+			var stage = doc.createElement("div");
+			stage.id = STAGE_ID;
+			stage.setAttribute("aria-hidden", "true");
+			stage.setAttribute("data-plugin", PLUGIN_ID);
+			/* 墙纸栈：半透明挂在这一层，所以里面的片子可以保持完全不透明——而"完全
+			   不透明却画不出东西"正是它变成透明的那一刻，下面垫着的静止帧随即接上。 */
+			var media = doc.createElement("div");
+			media.setAttribute("data-glass-media", "");
+			media.setAttribute("aria-hidden", "true");
+			stage.appendChild(media);
+			// 两条片子 upfront 挂载：一次心情切换是交叉淡变，从来不是加载。
+			for (var v = 0; v < SLOTS.length; v++) {
+				// 顺序就是层：这条槽的静止帧先落座，片子压在它上面。
+				var stillFor = doc.createElement("canvas");
+				stillFor.setAttribute("data-glass-slot", SLOTS[v]);
+				stillFor.setAttribute("data-glass-still", "none");
+				stillFor.setAttribute("aria-hidden", "true");
+				media.appendChild(stillFor);
+				stillCanvases[SLOTS[v]] = stillFor;
+				var video = doc.createElement("video");
+				video.setAttribute("data-glass-clip", "none");
+				video.setAttribute("data-glass-slot", SLOTS[v]);
+				video.setAttribute("aria-hidden", "true");
+				media.appendChild(video);
+				videos[SLOTS[v]] = video;
+			}
 			// 舞台 canvas 插在视频之后、渐变/压暗之前：只覆盖面板边缘带。
 			initWebGL(stage);
 			// `dim` 刻意最后追加：它是罩在整个媒体栈上的一层可读性遮挡，正如 Apple 为
@@ -5052,7 +5710,16 @@ window.__ModuleLoader__.load({
 				/** 重新找外壳列（布局变化后）。 */
 				retag: tagPanels,
 				/** 播放现场与自愈账本：`__dshGlassMood.playback()`。 */
-				playback: playbackReport
+				playback: playbackReport,
+				/**
+				 * 静止帧的记账本：`__dshGlassMood.stillLog()`。
+				 *
+				 * "为什么没盖上"在实验室里量不到（Playwright 的页面永远报 visible，遮挡也
+				 * 发不出来），所以让主题自己记：每一条带上 `away`（文档说自己隐藏了吗）、
+				 * `frames`（还有帧在呈现吗）、`paint`（窗口还在画吗）和两者各自的龄。
+				 * 复现一次"最大化 + 关于"或"切到后台"，回来读它。
+				 */
+				stillLog: function () { return stillLog.slice(); }
 			};
 
 				return shutdown;
@@ -5088,7 +5755,13 @@ window.__ModuleLoader__.load({
 						clearTimer(parkTimer);
 						parkTimer = 0;
 					}
-					stopPolling();
+				if (stillTimer !== 0) {
+					clearTimer(stillTimer);
+					stillTimer = 0;
+				}
+				stopStillWatch();
+				lowerStillCover();
+				stopPolling();
 				for (var u = 0; u < unsubscribes.length; u++) {
 					try { unsubscribes[u](); } catch (error) { /* 一个死掉的数据源已经释放了 */ }
 				}

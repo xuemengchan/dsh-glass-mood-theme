@@ -1,6 +1,6 @@
 {
   "name": "dsh-glass-mood-theme",
-  "version": "1.55.1",
+  "version": "1.57.0",
   "description": "DeepSeek Harness 网页界面的玻璃拟态主题：随情绪切换的调色板、每状态一段 MP4/WebM 壁纸、逐面板玻璃、不透明的内容表面、随内容变化的光线与压暗、按压形变，并应答减弱透明 / 增强对比度 / 减弱动效。",
   "keywords": [
     "dsh",
