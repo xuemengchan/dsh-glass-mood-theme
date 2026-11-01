@@ -107,7 +107,7 @@ window.__ModuleLoader__.load({
 		 * 诊断报告里记的构建号。一份报告要能说清自己来自哪一版；另有一项测试把它
 		 * 与 package.json 锁在一起。
 		 */
-		var BUILD = "1.57.1";
+		var BUILD = "1.57.2";
 		/** 停在用户交互上的一轮仍然是工作（这一轮还没结束）。 */
 		var COUNT_PENDING_AS_WORK = true;
 		/** 通透度拉满时还剩多少情绪染色（0 = 完全没有）。 */
@@ -677,10 +677,17 @@ window.__ModuleLoader__.load({
 	   不需要抢在那一帧之前动手：结构本身就是兜底。（曾经试着靠"检测帧丢了再盖上去"，
 	   而遮挡检测是异步的、约一秒后才发作，那种抢跑永远追不上。） */
 		"#" + STAGE_ID + ">[data-glass-media]{position:absolute;inset:0;opacity:var(--gm-wall-opacity,0.6);pointer-events:none;z-index:0}",
-		"#" + STAGE_ID + ">[data-glass-media]>video,#" + STAGE_ID + ">[data-glass-media]>canvas{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0;filter:blur(var(--gm-wall-blur,0px));transform:scale(var(--gm-wall-scale,1));transform-origin:center;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1)}",
+		"#" + STAGE_ID + ">[data-glass-media]>video,#" + STAGE_ID + ">[data-glass-media]>canvas[data-glass-still]{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0;filter:blur(var(--gm-wall-blur,0px));transform:scale(var(--gm-wall-scale,1));transform-origin:center;transition:opacity var(--gm-fade) cubic-bezier(.4,0,.2,1)}",
 		"#" + STAGE_ID + ">[data-glass-media]>video{object-fit:var(--gm-wall-fit,cover);object-position:center}",
 		/* 边缘透镜的主实现：一张全屏 canvas 骑在墙纸之上、渐变/压暗层之下。它只画
-		   面板边缘带，所以面板的填充、镜边、圆角与接缝完全不受影响。 */
+		   面板边缘带，所以面板的填充、镜边、圆角与接缝完全不受影响。
+
+		   ⭐ 它必须**在墙纸栈里面**，不能是舞台的兄弟。栈上的 `--gm-wall-opacity`
+		   是一层组不透明度：整栈先合成、再统一按 0.6 压到背景上。骑在栈外面的话，
+		   那一圈带子就是一个不透明组之上又叠的一层——它按自己的 alpha 合成，读数
+		   与旁边不同，于是面板四周出现一圈比中间更实的环状带（在浅色背景上是一圈
+		   暗带）。放进栈里、带子画成不透明，组先把它和下面的片子压成一层再一起压
+		   透明度，环就消失了：带子里面就是片子本身，只是被位移了几像素。 */
 		"#" + STAGE_CANVAS_ID + "{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:block;z-index:1}",
 		/* WebGL 版在工作时，CSS 兜底透镜完全退场，避免两层折射叠加。 */
 		"body[data-glass-weblens=on] [data-glass-lens]{display:none}",
@@ -5281,7 +5288,11 @@ window.__ModuleLoader__.load({
 				"  if (best <= 0.0) discard;",
 				"  float m = length(disp);",
 				"  if (m > 1.0) disp /= m;",
-				"  gl_FragColor = vec4(sampleAt(screen + disp * uBend).rgb, base.a);",
+				/* 带子画成不透明：它住在墙纸栈里，栈的不透明度会统一压下来，所以这里
+				   的 alpha 必须是"片子自己的样子"（1），而不是片子当前的可见度。
+				   若把 base.a（≈0.6）写出去，带子就会和它下面同一张片子叠两次，边缘
+				   读作一圈更实的环。 */
+				"  gl_FragColor = vec4(sampleAt(screen + disp * uBend).rgb, 1.0);",
 				"}"
 			].join("\n");
 
@@ -5293,8 +5304,14 @@ window.__ModuleLoader__.load({
 				return shader;
 			}
 
-			function initWebGL(stage) {
+			/**
+			 * @param stage - 舞台，兜底（没有墙纸栈时）就挂在它下面。
+			 * @param media - 墙纸栈。透镜必须在栈**里面**，好让栈的组不透明度和片子
+			 *   一起压下来；挂成兄弟层会让边缘带自成一层，读作一圈环。
+			 */
+			function initWebGL(stage, media) {
 				if (webgl !== null || webglFailed || stage === null || stage === undefined) return;
+				var host = media !== null && media !== undefined ? media : stage;
 				var canvas = doc.createElement("canvas");
 				canvas.id = STAGE_CANVAS_ID;
 				canvas.setAttribute("aria-hidden", "true");
@@ -5364,7 +5381,7 @@ window.__ModuleLoader__.load({
 					snapshot: snapshot, ctx: ctx, u: u,
 					snapshotSignature: "", geometrySignature: ""
 				};
-				stage.appendChild(canvas);
+				host.appendChild(canvas);
 				updateWebGLPanels();
 				updateWebGLEnabled();
 			}
@@ -5472,8 +5489,9 @@ window.__ModuleLoader__.load({
 					if (!(video.videoWidth > 0) || !(video.videoHeight > 0)) continue;
 				var weight = 0;
 				try { weight = parseFloat(win.getComputedStyle(video).opacity); } catch (error) { weight = 0; }
-				/* 半透明现在挂在墙纸栈上（`--gm-wall-opacity`），片子自己是不透明的，所以
-				   这里要把它乘回去——否则折射带会按全不透明去采样，比面板上的墙纸实。 */
+				/* 权重只用来判断"这条片子此刻是否看得见"，以及交叉淡变时的配比。它不进
+				   画布：半透明归墙纸栈上的 `--gm-wall-opacity` 去压，快照本身必须是不
+				   透明的片子（见下面归一化的 globalAlpha）。 */
 				weight = weight * (typeof wallpaper.opacity === "number" ? wallpaper.opacity : 1);
 				if (!(weight > 0.005)) continue;
 					items.push({ video: video, weight: weight });
@@ -5499,6 +5517,12 @@ window.__ModuleLoader__.load({
 				var sx = offW / Math.max(1, viewW);
 				var sy = offH / Math.max(1, viewH);
 				var wallScale = 1 + (wallpaper.blur / 32) * 0.08;
+				/* 片子身上挂着 `filter: blur(--gm-wall-blur)`，这张快照是直接画原始帧的。
+				   不补这一笔，模糊墙纸上的带子会是清晰的，那就又是一圈看得出边的地方。 */
+				var blurPx = typeof wallpaper.blur === "number" && wallpaper.blur > 0 ? wallpaper.blur * sx * wallScale : 0;
+				if (blurPx > 0) {
+					try { ctx.filter = "blur(" + blurPx.toFixed(2) + "px)"; } catch (error) { /* 老画布不认 filter */ }
+				}
 				for (var j = 0; j < items.length; j++) {
 					var item = items[j];
 					var vw = item.video.videoWidth;
@@ -5515,10 +5539,16 @@ window.__ModuleLoader__.load({
 					}
 					var dx = (viewW - dw) / 2;
 					var dy = (viewH - dh) / 2;
-					ctx.globalAlpha = Math.min(1, item.weight);
+					/* 快照要画成**不透明**的片子本体：半透明归栈上的 `--gm-wall-opacity`
+					   去压，这里再乘一次就等于把片子叠两遍。所以权重按总量归一，交叉淡变
+					   的配比不变，而 alpha 落到 1——带子和它下面的墙纸因此完全同色。 */
+					ctx.globalAlpha = total > 0 ? Math.min(1, item.weight / total) : 1;
 					try { ctx.drawImage(item.video, dx * sx, dy * sy, dw * sx, dh * sy); } catch (error) { /* 纹理上传会报告污染 */ }
 				}
 				ctx.globalAlpha = 1;
+				if (blurPx > 0) {
+					try { ctx.filter = "none"; } catch (error) { /* 同上 */ }
+				}
 				webgl.snapshotSignature = signature;
 				return true;
 			}
@@ -5634,8 +5664,8 @@ window.__ModuleLoader__.load({
 				media.appendChild(video);
 				videos[SLOTS[v]] = video;
 			}
-			// 舞台 canvas 插在视频之后、渐变/压暗之前：只覆盖面板边缘带。
-			initWebGL(stage);
+			// 透镜 canvas 落在墙纸栈的最后：只覆盖面板边缘带，且和片子一起被栈的半透明压下来。
+			initWebGL(stage, media);
 			// `dim` 刻意最后追加：它是罩在整个媒体栈上的一层可读性遮挡，正如 Apple 为
 			// 明亮媒体上的玻璃所规定。
 				var layers = ["idle", "work", "pulse", "dim"];

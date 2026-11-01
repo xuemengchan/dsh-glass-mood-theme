@@ -1978,6 +1978,24 @@ const rgbOf = (color) => /rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color).sl
   console.log('ok  舞台着色器只折射，不额外加光')
 }
 
+{
+  // 报上来的现象：中间面板四周一圈环状带。量出来那圈正好 44px 宽（= 透镜带），
+  // 亮度比面板里侧低一截——不是镜边的白，也不是 CSS 兜底透镜，是舞台 canvas 那条
+  // 带子：它把片子当前的可见度（0.6）写成了带子的 alpha，于是同一张片子被叠了两遍。
+  //
+  // 两条约束必须同时在场，缺一条这圈就回来：带子画成不透明；画布住在墙纸栈**里面**，
+  // 栈的组不透明度把它和片子一起压下来。少了后者，带子就成了一张不透明组之上的
+  // 另一层，读数仍然和旁边不同。
+  const shader = /var WEBGL_FS = \[([\s\S]*?)\]\.join/.exec(source)
+  assert.match(shader[1], /vec4\(sampleAt\(screen \+ disp \* uBend\)\.rgb, 1\.0\)/, '带子画成不透明')
+  assert.ok(!/base\.a\)/.test(shader[1]), '片子的可见度不写进带子')
+  assert.match(source, /initWebGL\(stage, media\)/, '透镜拿到墙纸栈')
+  assert.match(source, /host\.appendChild\(canvas\)/, '画布挂在墙纸栈里，不做舞台的兄弟层')
+  assert.match(source, /item\.weight \/ total/, '快照画成不透明的片子本体：权重按总量归一')
+  assert.match(source, /\[data-glass-media\]>canvas\[data-glass-still\]/, '墙纸栈里只有静止帧吃那条淡入规则')
+  console.log('ok  边缘带和它下面的墙纸同色（不再套一圈更实的环）')
+}
+
 //#region accessibility
 {
   // 报上来的现象：右栏展开到全屏时，那个面板的不透明度和模糊不再覆盖它，对着中间面板
